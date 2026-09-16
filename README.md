@@ -4,14 +4,31 @@ A distraction-free macOS viewer for local HTML artifacts — a native reading ro
 
 Built with Tauri 2 + React + TypeScript. Ships as a small native `.app` (no Node runtime needed once built).
 
-## Install
+## Repositories
+
+Sky Pie is four repositories under [alilloig](https://github.com/alilloig?tab=repositories&q=topic%3Askypie):
+
+| Repository | Holds |
+|---|---|
+| **skypie-core** (this one) | `crates/` — the IPC contract, the MCP server, the networked stack, the in-app-purchase plugin. `app/` — the Tauri app library: every command, the builder, the state. `ui/` — the React front end both apps render. `cli/` — the `skypie` CLI. |
+| [skypie-desktop](https://github.com/alilloig/skypie-desktop) | The macOS shell: `tauri.conf.json`, icons, capabilities, `main`. Pulls this repo in as the `core` submodule. |
+| [skypie-ios](https://github.com/alilloig/skypie-ios) | The iOS shell: `tauri.conf.json`, the XcodeGen spec, the mobile entry point. Same `core` submodule. |
+| [skypie-plugin](https://github.com/alilloig/skypie-plugin) | The Claude Code plugin: MCP server launcher, pairing hook, artifact-links skill. |
+
+The app library takes the Tauri context from the shell that owns
+`tauri.conf.json` (`skypie_app::app::run(tauri::generate_context!())`), so one
+`app/` serves both targets and each shell stays a handful of files.
+
+## Build
 
 ```bash
-./scripts/build-app.sh
-cp -R target/release/bundle/macos/Sky Pie.app /Applications/
+cargo test --workspace          # every crate and the app library
+cd ui && pnpm install && pnpm test && pnpm build
+./scripts/build-plugin.sh       # a local plugin bundle with a prebuilt skypie-mcp
 ```
 
-First launch: right-click → Open (Gatekeeper prompt — the app isn't notarized).
+To build the apps, use the shell repositories: `skypie-desktop/scripts/build-app.sh`
+and `skypie-ios/scripts/build-ios-sim.sh`.
 
 ## Use
 
