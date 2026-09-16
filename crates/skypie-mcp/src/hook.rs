@@ -48,8 +48,8 @@ pub enum Event {
     ///
     /// The same code path as `Read`; the two names exist so `hooks.json` reads
     /// as what it matches. (An earlier draft of this doc also promised
-    /// provenance recording, which was never implemented — the plan puts
-    /// smart collections after submission.)
+    /// provenance recording, which was never implemented — smart collections
+    /// are a later plan item.)
     Wrote,
     /// `UserPromptSubmit` — one line naming files that are waiting.
     Prompt,

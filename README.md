@@ -6,14 +6,14 @@ Built with Tauri 2 + React + TypeScript. Ships as a small native `.app` (no Node
 
 ## Repositories
 
-Sky Pie is four repositories under [alilloig](https://github.com/alilloig?tab=repositories&q=topic%3Askypie):
+Sky Pie is four repositories under [alilloig](https://github.com/orgs/contract-hero/repositories?q=topic%3Askypie):
 
 | Repository | Holds |
 |---|---|
 | **skypie-core** (this one) | `crates/` — the IPC contract, the MCP server, the networked stack, the in-app-purchase plugin. `app/` — the Tauri app library: every command, the builder, the state. `ui/` — the React front end both apps render. `cli/` — the `skypie` CLI. |
-| [skypie-desktop](https://github.com/alilloig/skypie-desktop) | The macOS shell: `tauri.conf.json`, icons, capabilities, `main`. Pulls this repo in as the `core` submodule. |
-| [skypie-ios](https://github.com/alilloig/skypie-ios) | The iOS shell: `tauri.conf.json`, the XcodeGen spec, the mobile entry point. Same `core` submodule. |
-| [skypie-plugin](https://github.com/alilloig/skypie-plugin) | The Claude Code plugin: MCP server launcher, pairing hook, artifact-links skill. |
+| [skypie-desktop](https://github.com/contract-hero/skypie-desktop) | The macOS shell: `tauri.conf.json`, icons, capabilities, `main`. Pulls this repo in as the `core` submodule. |
+| [skypie-ios](https://github.com/contract-hero/skypie-ios) | The iOS shell: `tauri.conf.json`, the XcodeGen spec, the mobile entry point. Same `core` submodule. |
+| [skypie-plugin](https://github.com/contract-hero/skypie-plugin) | The Claude Code plugin: MCP server launcher, pairing hook, artifact-links skill. |
 
 The app library takes the Tauri context from the shell that owns
 `tauri.conf.json` (`skypie_app::app::run(tauri::generate_context!())`), so one

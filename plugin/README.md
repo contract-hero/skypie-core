@@ -4,7 +4,7 @@ Hand a report to the device the user actually reads on, and read what they say
 about it.
 
 ```
-/plugin marketplace add alilloig/skypie-plugin
+/plugin marketplace add contract-hero/skypie-plugin
 /plugin install skypie@skypie
 ```
 
@@ -51,7 +51,7 @@ before it ships.
 ## Publishing
 
 This directory is the bundle. The marketplace repository is separate and
-public — the app's own source is not. Copy `dist/plugin` into it, tag, push.
+public. Copy `dist/plugin` into it, tag, push.
 
-Copyright (c) 2026. Proprietary; see the LICENSE in the application
-repository.
+Copyright (c) 2026 Contract Hero. Licensed under Apache-2.0; see the LICENSE
+in the application repository.

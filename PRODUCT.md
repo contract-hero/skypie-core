@@ -112,20 +112,14 @@ Markdown viewer has no HTML fidelity.
 - **Install shape.** macOS: a local `.app` built by `./scripts/build-app.sh`
   and copied to `/Applications`; an unnotarized build needs a right-click →
   Open past Gatekeeper on first launch. iOS: the App Store.
-- **Distribution.** The macOS app ships as a free binary, not as open source
-  (the repository is proprietary; see `LICENSE`). The Claude Code plugin ships
-  from a public marketplace repository with a prebuilt universal binary, so
-  `claude plugin install` stays the single install step. The iOS app ships
-  through the App Store with an in-app subscription.
-- **Money.** One entitlement, `comments`. Reading is free on every platform,
-  forever. Commenting, replying and resolving are paid on iOS; macOS is free
-  by decision and reports `platform-free`. Purchases go through the official
-  RevenueCat `purchases-ios` SDK, wrapped by
-  `crates/tauri-plugin-skypie-iap`.
+- **Distribution.** Open source under Apache-2.0 at `github.com/contract-hero`.
+  The macOS app is built locally or from releases. The iOS app ships through
+  the App Store, free. The Claude Code plugin ships from the marketplace.
+- **Money.** Reading, commenting, replying and resolving are free on every
+  platform, forever.
 - **Still no telemetry.** Nothing about what the user reads, opens or writes
-  leaves the machine. RevenueCat sees a purchase; it does not see a file name.
-  Networking stays opt-in: the app opens no sockets until the first remote
-  action.
+  leaves the machine. Networking stays opt-in: the app opens no sockets until
+  the first remote action.
 
 ## Capabilities and Constraints
 

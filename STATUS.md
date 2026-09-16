@@ -132,26 +132,10 @@
 Decisions and their rationale live in `product-plan-notes.html`; `PRODUCT.md`
 has been rewritten to match.
 
-**Needs a human, cannot be done from here:**
-- Create the public `alilloig/skypie-plugin` marketplace repository and
-  push `dist/plugin` into it. `plugin/.claude-plugin/marketplace.json` and
-  `plugin/README.md` are the contents; the app's own source stays private.
-- Set `alilloig/skypie-core` to private on GitHub before any public exposure.
-- App Store Connect: app record, bundle id, subscription group, the three
-  products (monthly, annual, lifetime) with a 7-day free trial.
-- RevenueCat: project, an entitlement whose identifier is exactly `comments`
-  (the Swift constant `entitlementID` in `SkyPieIapPlugin.swift` is the single
-  declaration), products attached, and the public `appl_…` key exported as
-  `REVENUECAT_API_KEY`.
-- `EULA.md`: replace `[LEGAL ENTITY]`, `[JURISDICTION]` and `[SUPPORT EMAIL]`.
-- Store assets: 1024 icon, 1179×2556 screenshot, the 2-minute video, promo
-  codes for judges.
-
 **Code still open:**
 - The wire messages exist and are tested end to end, but **nothing calls them
   yet**: no Tauri command, no UI, and no offline queue for a phone that
-  commented while the Mac was asleep. The plan sequences that after
-  submission.
+  commented while the Mac was asleep.
 - Known gaps in the 2026-09-15 comments rework: no Rust `CssSelector` arm (the `Other` arm round-trips it, so nothing is lost); a pin on an image file paints the whole image, not the spot; note alignment is unverified at a zoom other than 100%; on iOS the tapped block keeps its `:hover` paint until the next tap; and a `skypie://pair` dial from an already-paired phone raises a "Confirm pairing" dialog on the Mac that neither Confirm nor Decline can clear (autopair had already resolved it) — seen with the simulator, predates this work.
 - **Review of the rework found six real bugs, all fixed in the same PR** and worth recording because each is a trap the next change could fall into. (1) Any `.line` span made the host locator call the whole document a code file, and shiki emits those into rendered Markdown — one fence sent every note on the file into it; blocks now win over lines on both the placing and the picking side. (2) Wrapping each Markdown token in a `<div>` to carry its source line split raw HTML that spans tokens, so a `<details>` body escaped its disclosure; the line is carried by an HTML COMMENT now, which nests inside nothing. (3) `blockLines` matched `token.raw` against the unnormalised source, but marked normalises CRLF inside `raw`, so every block in a Windows-authored file drifted a line per blank line. (4) The frame's anchor cache observed `document.body` from a script that runs inside `<head>`, where it is still null — the observer never attached and a resolution MISS was cached for the life of the frame. (5) That cache was keyed by id alone while the composer reuses one id, so the second pick in a generation was answered with the first one's element. (6) The margin-note height cache dropped its callback on every detach, which is the identity-churn loop the cache exists to prevent, reached from the code meant to bound its growth.
 - **A pin is not a text anchor.** `reanchor` has a `region` rung so a pin never runs down the text ladder and reports "the text this comment pointed at is no longer in the file" one second after it was dropped — the same false-data-loss trap the `detached`/`unknown` split was built for. Pins also store a `CssSelector` for the image they landed on; before that, every pin in a document resolved to the first image and the identity was never written, so the mis-attachment could not be recovered.
