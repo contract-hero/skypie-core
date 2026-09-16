@@ -49,7 +49,7 @@ Two ways a file leaves this Mac:
   the app runs and until the link expires or is stopped.
 
 Registering the server costs nothing. It connects to the app at the first tool
-call, and `open -b ai.skypie.app` launches the app if the socket is not
+call, and `open -b ai.skypie.SkyPie` launches the app if the socket is not
 there.
 
 ## Build
@@ -296,7 +296,7 @@ the same boundary `identity.key` already draws.
 ## Troubleshooting
 
 **"Sky Pie is not running and could not be launched"** — `open -b
-ai.skypie.app` failed: the app is not installed, or a dev build is
+ai.skypie.SkyPie` failed: the app is not installed, or a dev build is
 registered under another id (`SKYPIE_APP_BUNDLE_ID`). Open the app by hand and
 try again.
 

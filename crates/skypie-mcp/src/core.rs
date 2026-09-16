@@ -37,7 +37,7 @@ pub const REPLY_TIMEOUT: Duration = Duration::from_secs(90);
 /// The app's bundle id, which `open -b` resolves through Launch Services
 /// without anybody knowing where the .app sits. Frozen with the scheme and
 /// the state directory (STATUS.md).
-pub const APP_BUNDLE_ID: &str = "ai.skypie.app";
+pub const APP_BUNDLE_ID: &str = "ai.skypie.SkyPie";
 
 /// How the app is started when the socket is absent. A closure so the tests
 /// can watch it being called — and refuse — without a Launch Services call.

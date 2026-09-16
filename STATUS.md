@@ -34,7 +34,7 @@
 - **Binary-size impact**: release `skypie-app` ~28 MB with `iroh` + `iroh-blobs`; accepted for a local .app.
 
 ### MCP server (crates/skypie-mcp)
-- **A thin client of the running app** (2026-09-12), with no iroh, no identity and no state of its own. The app listens on `<state_dir>/app.sock` (`src-tauri/src/ipc_server.rs`, macOS only, `0600`, one JSON line in / one out per connection, contract in `crates/skypie-ipc`); every `#[tauri::command]` is a thin wrapper over a `pub(crate) …_for(&AppHandle)` the socket dispatcher also calls, so there is one implementation per operation. `skypie-mcp` connects at the first tool call and runs `open -g -b ai.skypie.app` when nothing listens, retrying for 15 s. A stale socket file is removed; a live one from a second app instance is respected (that instance does not serve).
+- **A thin client of the running app** (2026-09-12), with no iroh, no identity and no state of its own. The app listens on `<state_dir>/app.sock` (`src-tauri/src/ipc_server.rs`, macOS only, `0600`, one JSON line in / one out per connection, contract in `crates/skypie-ipc`); every `#[tauri::command]` is a thin wrapper over a `pub(crate) …_for(&AppHandle)` the socket dispatcher also calls, so there is one implementation per operation. `skypie-mcp` connects at the first tool call and runs `open -g -b ai.skypie.SkyPie` when nothing listens, retrying for 15 s. A stale socket file is removed; a live one from a second app instance is respected (that instance does not serve).
 - Tools: `share_link` (new — a `skypie://open?…&from=` link for paired devices), `beam_artifact`, `stop_beam`, `list_devices { probe }` (online/offline/refused/unpaired/unknown, probe bounded at `PROBE_TIMEOUT` 12 s, all devices at once), `pair_device`, `pair_status`, `confirm_pairing { accept, node_id? }`, `forget_device`, `server_status`. `send_to_device` is gone: nothing is pushed, nothing is queued.
 - Env: `SKYPIE_MCP_ROOTS` gates **only** `beam_artifact` (what a prompt-steered model may publish to strangers; `share_link` reaches only the user's own devices); `SKYPIE_STATE_DIR` locates the socket; `SKYPIE_APP_BUNDLE_ID` overrides the launch target. `SKYPIE_MCP_STATE_DIR` is gone; an old `SkyPie/mcp/` tree can be deleted.
 - Documented in `README-MCP.md`.
@@ -108,7 +108,7 @@
 
 ## Deliberately unchanged (display-only rebrand)
 
-`skypie://` scheme, `skypie` CLI binary, bundle id `ai.skypie.app`, state dir `~/Library/Application Support/SkyPie/`, `skypie.*` localStorage keys, `skypie://*` event names — external tooling (Finicky, CLAUDE.md deep-link instructions) depends on the scheme; the rest avoids a pointless migration. Delete the old `SkyPie.app` from `/Applications` after installing so LaunchServices doesn't route `skypie://` to the stale binary.
+`skypie://` scheme, `skypie` CLI binary, bundle id `ai.skypie.SkyPie`, state dir `~/Library/Application Support/SkyPie/`, `skypie.*` localStorage keys, `skypie://*` event names — external tooling (Finicky, CLAUDE.md deep-link instructions) depends on the scheme; the rest avoids a pointless migration. Delete the old `SkyPie.app` from `/Applications` after installing so LaunchServices doesn't route `skypie://` to the stale binary.
 
 ## Open items
 

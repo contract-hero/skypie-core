@@ -166,7 +166,7 @@ in-process Beam transfer test).
   distrust as any artifact. Content moves only over the end-to-end-encrypted
   peer link; relays, when used, carry ciphertext.
 - Identifiers are frozen for compatibility, not for taste: the `skypie://`
-  scheme, the `skypie` CLI name, bundle id `ai.skypie.app`, the state
+  scheme, the `skypie` CLI name, bundle id `ai.skypie.SkyPie`, the state
   directory `~/Library/Application Support/SkyPie/`, `skypie.*` localStorage
   keys, and `skypie://*` event names. External tooling depends on the scheme.
 - The workspace tree is read-only. The product reads and reveals files. It
