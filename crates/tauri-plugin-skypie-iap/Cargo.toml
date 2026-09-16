@@ -1,0 +1,15 @@
+[package]
+name = "tauri-plugin-skypie-iap"
+version.workspace = true
+edition.workspace = true
+description = "In-app purchase for the Sky Pie iOS companion, over the official RevenueCat purchases-ios SDK."
+links = "tauri-plugin-skypie-iap"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tauri = { version = "2", features = [] }
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

@@ -1,0 +1,2901 @@
+/*
+ * Sky Pie design system — Linear.
+ *
+ * Identity: a near-black canvas (#010102) with a four-step surface ladder,
+ * 1px hairline borders instead of shadows, one lavender-blue accent
+ * (#5e6ad2) spent only on brand, focus, links and the "current object"
+ * marker, and SF Pro display type at weight 500-600 with negative tracking.
+ * The chrome is a dark frame; the artifact is the protagonist.
+ *
+ * Plane order, deepest first: the reading field (--bg) sits at canvas depth
+ * and the chrome (--bg-chrome) lifts one step above it. This inverts the
+ * previous system on purpose — it puts the artifact on the deepest surface,
+ * so a self-contained HTML page reads as a lifted panel inside a dark frame.
+ *
+ * Theme tokens — useTheme() sets `<html data-theme="dark|light">`. The dark
+ * block doubles as the pre-hydration fallback so there is no flash of
+ * unstyled values. Linear ships no light marketing surface; the light theme
+ * here is derived from its documented inverse tokens (inverse-canvas,
+ * inverse-surface-1/2, inverse-ink) because macOS system appearance is a
+ * design surface for this app (PRODUCT.md, Operating Context).
+ */
+:root,
+:root[data-theme="dark"] {
+  /* type — Linear Display / Linear Text are proprietary; on macOS the
+     documented substitute is SF Pro, which -apple-system resolves to
+     exactly. Inter is the cross-platform fallback the source names. */
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", Inter, system-ui, sans-serif;
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+
+  /* Linear's scale is a marketing scale; the chrome of a dense desktop app
+     lives one step below its body size. --text-ui (13px) is the chrome
+     default, --text-body-sm (14px) is Linear body-sm for rows and buttons,
+     --text-body (16px) is Linear body and belongs to the reading field. */
+  --text-caption: 12px;
+  --text-ui: 13px;
+  --text-body-sm: 14px;
+  --text-body: 16px;
+
+  /* Display tracking pulls negative as size grows; the eyebrow pulls
+     positive, which is what marks it as taxonomy rather than voice. */
+  --track-display: -0.03em;
+  --track-headline: -0.02em;
+  --track-body: -0.003em;
+  --track-eyebrow: 0.4px;
+
+  font-family: var(--font-ui);
+  font-size: var(--text-ui);
+
+  /* space & shape */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-pill: 9999px;
+
+  /* chrome bands — the sidebar header, tab strip and toolbar are all one
+     height so their bottom borders can form unbroken rules; the inset is
+     the macOS traffic-light clearance (titleBarStyle: Overlay). Tokens so
+     the equalities are real instead of asserted in comments. */
+  --band-h: 40px;
+  --titlebar-inset: 78px;
+  /* The Apple HIG minimum comfortable touch target. Every phone control is
+     at least this tall; widths still vary with the control. */
+  --tap-min: 44px;
+
+  /* Layer order, lowest first. Every overlay picks from this scale instead of
+     a fresh number, so the ordering reads on one screen rather than out of a
+     dozen rules 500 lines apart.
+       sheet   — the iOS bottom sheets, inside the phone shell
+       overlay — app-modal surfaces: Quick Open, Settings
+       popover — anchored to a trigger, above the surface it belongs to
+       raised  — an overlay that must survive OVER another overlay. The
+                 pairing dialog is the case: it arrives while Settings is
+                 open (Settings is where the link was minted) and six
+                 fingerprint words behind a dialog cannot be compared.
+       menu    — the context menu, which can open from anything above */
+  --z-sheet: 40;
+  --z-overlay: 100;
+  --z-popover: 120;
+  --z-overlay-raised: 150;
+  --z-menu: 200;
+
+  /* motion */
+  --dur-fast: 80ms;
+  --dur: 160ms;
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+
+  /* elevation — Linear carries depth with the surface ladder and hairlines,
+     and resists drop shadows on dark almost entirely. Shadows survive here
+     only on true floating overlays (menu, quick open, toast), which have no
+     surface below them to lift against. The signature detail is the edge
+     highlight: a 1px white line on the top edge of a lifted panel. */
+  --shadow-menu: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.7);
+  --edge-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+
+  color-scheme: dark;
+  /* surface ladder: canvas -> 1 -> 2 -> 3 -> 4 */
+  --bg: #010102;
+  --bg-chrome: #0f1011;
+  --bg-row-hover: #141516;
+  --bg-elevated: #18191a;
+  --bg-row-selected: #191a1b;
+
+  /* ink ladder */
+  --fg: #f7f8f8;
+  --heading-fg: #f7f8f8;
+  --fg-strong: #d0d6e0;
+  --fg-muted: #8a8f98;
+  --fg-dim: #62666d;
+  /* Paths carry the information that tells two same-named artifacts apart.
+     In the previous palette they needed a token of their own to clear
+     4.5:1; --fg-muted clears it on every surface in this ladder (5.36:1 on
+     the lightest, --bg-row-selected), so the token stays as the place that
+     constraint is checked rather than as a separate value. Aliased, not
+     copied, so the two cannot drift apart in one theme only. */
+  --fg-path: var(--fg-muted);
+  --empty-fg: var(--fg-muted);
+  --label-active-fg: #ffffff;
+
+  /* hairlines carry every boundary in the system */
+  --border: #23252a;
+  --border-strong: #34343a;
+  --border-tertiary: #3e3e44;
+
+  /* the one chromatic accent */
+  --accent: #5e6ad2;
+  --accent-strong: #828fff;
+  --accent-focus: #5e69d1;
+  --on-accent: #ffffff;
+
+  /* semantic — the source has no error color (Known Gaps); #eb5757 is
+     Linear's in-product red and clears 5.9:1 on canvas. Linear's one
+     documented semantic, success green, has no role in this product yet and
+     so is recorded in DESIGN.md rather than declared here. */
+  --error-fg: #eb5757;
+
+  --code-bg: #141516;
+  /* Code and badge text are the reading-field ink step in both themes —
+     aliased so a change to the ink ladder carries into both. */
+  --code-fg: var(--fg-strong);
+  --pre-bg: #0f1011;
+  --button-hover-bg: #23252a;
+  --scrollbar-thumb: #2c2e33;
+  --scrollbar-thumb-hover: #3e3e44;
+  /* The artifact iframe paints AFTER its srcdoc loads. A white value here
+     flashes on every open and on every live reload; matching the reading
+     field makes the swap invisible. Must track render/html.tsx themeStyle(). */
+  --iframe-bg: var(--bg);
+  --badge-bg: #18191a;
+  --badge-fg: var(--fg-strong);
+  --input-bg: #0f1011;
+  --input-border: #23252a;
+  --input-border-focus: var(--accent-focus);
+  /* Both mark an object the user singled out, so both ARE the accent
+     rather than a copy of its value (DESIGN.md, The One Lavender Rule). */
+  --resizer-hover: var(--accent);
+  --star-active: var(--accent);
+  --star-idle: var(--border-tertiary);
+  --overlay-scrim: rgba(0, 0, 0, 0.6);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --shadow-menu: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.18);
+  --edge-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+
+  /* Derived from the inverse ladder. The plane relationship is preserved:
+     the reading field is the extreme (white), the chrome one step in.
+     The source's inverse-surface-1 (#f5f6f6) sits only 2% off white, which
+     on a full window reads as one flat field rather than as two planes, so
+     the chrome and the hairlines each take one extra step here. */
+  --bg: #ffffff;
+  --bg-chrome: #f0f1f3;
+  --bg-row-hover: #e5e7eb;
+  --bg-elevated: #ffffff;
+  --bg-row-selected: #dcdfe6;
+
+  --fg: #08090a;
+  --heading-fg: #000000;
+  --fg-strong: #34343a;
+  --fg-muted: #5f636b;
+  --fg-dim: #8a8f98;
+  --label-active-fg: #000000;
+
+  --border: #dcdee3;
+  --border-strong: #c5c8d0;
+  --border-tertiary: #b4b7c0;
+
+  /* #5e6ad2 holds 4.7:1 on white, so the accent does not change hue across
+     themes; only the emphasis step darkens. */
+  --accent: #5e6ad2;
+  --accent-strong: #4a55b8;
+  --accent-focus: #5e69d1;
+
+  --error-fg: #c02a2a;
+
+  --code-bg: #eceef1;
+  --pre-bg: #f6f7f9;
+  --button-hover-bg: #dcdfe6;
+  --scrollbar-thumb: #c5c8d0;
+  --scrollbar-thumb-hover: #a8abb3;
+  --iframe-bg: #ffffff;
+  --badge-bg: #e5e7eb;
+  --input-bg: #ffffff;
+  --input-border: #c5c8d0;
+  --input-border-focus: var(--accent-focus);
+  --overlay-scrim: rgba(0, 0, 0, 0.25);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  letter-spacing: var(--track-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Linear specifies a 2px primary-focus ring at 50% opacity. At 50% over a
+   #010102 canvas that lands near 1.9:1 against the surface it marks, below
+   the 3:1 a focus indicator has to hold, so the ring ships solid in the
+   focus tint. The size, color and role are the source's; the alpha is not. */
+:focus-visible {
+  outline: 2px solid var(--accent-focus);
+  outline-offset: -2px;
+  border-radius: var(--r-xs);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* The window is a row: the sidebar column, then the preview column.
+   .app-shell only owns the viewport box. */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+}
+
+.app {
+  display: flex;
+  flex-direction: row;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+.pane {
+  height: 100%;
+  overflow: auto;
+}
+
+.pane-sidebar {
+  /* Width applied inline by App.tsx (state.panes.sidebar_px); min/max are
+     the clamp constraints honored by the resizer. Overflow hidden, not
+     auto: the header owns the traffic-light inset and the drag region, so
+     it must never scroll out of the window — the drawers scroll instead. */
+  min-width: 200px;
+  max-width: 480px;
+  flex-shrink: 0;
+  background: var(--bg-chrome);
+  border-right: 1px solid var(--border);
+  position: relative;
+  overflow: hidden;
+}
+
+/* The handle is an OVERLAY, not a column. As a 6px flex item it opened a
+   transparent gap between the sidebar and the preview pane that ran the full
+   height of the pane row — including straight through the 40px chrome band,
+   where it broke the single unbroken rule that height exists to produce. It now takes no width in the layout and carries its 6px
+   pointer target in a pseudo-element straddling the seam. */
+.sidebar-resizer {
+  flex: 0 0 0;
+  width: 0;
+  height: 100%;
+  position: relative;
+  z-index: 5;
+  cursor: col-resize;
+}
+.sidebar-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background var(--dur) var(--ease);
+}
+.sidebar-resizer:hover::before,
+.sidebar-resizer.dragging::before {
+  background: var(--resizer-hover);
+  opacity: 0.6;
+}
+
+.pane-preview {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Anchor for the floating .app-notice toast. */
+  position: relative;
+}
+
+/* ── Tab strip ─────────────────────────────────────────────────────────── */
+/* Sits at the top of the preview column, aligned with the reading field —
+   it never crosses into the sidebar. Band height matches the sidebar
+   header, so their bottom borders form one unbroken rule across the seam.
+   Still a drag region: empty strip space drags the window over the preview
+   half. */
+.tab-strip {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 var(--band-h);
+  min-height: var(--band-h);
+  width: 100%;
+  background: var(--bg-chrome);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  user-select: none;
+}
+.tab-strip::-webkit-scrollbar { height: 0; }
+/* Traffic-light clearance while the sidebar is hidden (⌘B, reader mode) —
+   the strip is then the leftmost band. Sticky, not in-flow: the strip
+   scrolls horizontally, and a scrolled-away gutter would slide tabs under
+   the traffic lights. Opaque so tabs pass behind it. */
+.titlebar-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-chrome);
+  flex: 0 0 var(--titlebar-inset);
+  width: var(--titlebar-inset);
+  height: 100%;
+}
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 var(--space-2) 0 var(--space-3);
+  max-width: 220px;
+  min-width: 110px;
+  font-size: var(--text-ui);
+  color: var(--fg-muted);
+  border-right: 1px solid var(--border);
+  cursor: default;
+  position: relative;
+  background: transparent;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.tab:hover { background: var(--bg-row-hover); }
+/* The active tab drops to canvas depth. Outside reader mode a toolbar band
+   separates the tab from the reading field, so the canvas fill and the
+   lavender rule carry the state rather than physical continuity — and they
+   keep carrying it in reader mode, where the tab meets the field directly. */
+.tab.active {
+  background: var(--bg);
+  color: var(--fg);
+}
+/* Signature: the lavender rule on the active tab. Along with the selected
+   explorer row, this is the system's "current object" marker. */
+.tab.active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: var(--accent);
+}
+.tab.dragging { opacity: 0.4; }
+.tab.drop-target { box-shadow: inset 2px 0 0 0 var(--accent); }
+.tab-icon {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.tab-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab-loading {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  animation: tab-pulse 1s var(--ease) infinite;
+}
+@keyframes tab-pulse {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+/* A control that is focusable must be VISIBLE when it holds focus — an
+   `opacity: 0` button in the tab order is a target the keyboard can reach and
+   the eye cannot find. */
+.tab:hover .tab-close,
+.tab.active .tab-close,
+.tab-close:focus-visible { opacity: 1; }
+.tab-close:hover { background: var(--button-hover-bg); color: var(--fg); }
+.tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.tab-new:hover { background: var(--bg-row-hover); color: var(--fg); }
+
+/* ── Toolbar / address bar ────────────────────────────────────────────── */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 0 var(--band-h);
+  min-height: var(--band-h);
+  padding: 0 var(--space-2);
+  background: var(--bg-chrome);
+  border-bottom: 1px solid var(--border);
+}
+.toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.toolbar-button:hover:not(:disabled) { background: var(--button-hover-bg); color: var(--fg); }
+.toolbar-button:disabled { color: var(--fg-dim); opacity: 0.5; cursor: default; }
+.toolbar-button.star-active { color: var(--star-active); }
+/* Navigation and file actions are different jobs. Without a separator the
+   toolbar reads as one undifferentiated run of up to seven identical
+   28px squares. */
+.toolbar-sep {
+  flex: 0 0 1px;
+  align-self: center;
+  width: 1px;
+  height: 18px;
+  margin: 0 var(--space-1);
+  background: var(--border);
+}
+.address-bar {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+.address-bar input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--input-bg);
+  color: var(--fg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--r-md);
+  padding: 5px 12px;
+  font: inherit;
+  font-size: var(--text-ui);
+  font-family: var(--font-mono);
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.address-bar input:focus { border-color: var(--input-border-focus); }
+.address-bar-error {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: var(--space-2);
+  z-index: 10;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 3px 8px;
+  color: var(--error-fg);
+  font-size: var(--text-caption);
+}
+/* status-badge: pill, surface-2 fill, caption type. */
+.toolbar-zoom {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+  font: inherit;
+  font-size: var(--text-caption);
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+}
+.toolbar-zoom:hover { color: var(--fg); }
+
+/* Transient message about something that happened OUTSIDE the reading flow
+   (a rejected deep link). It floats over the preview instead of sitting in
+   the column: an in-flow strip pushed the artifact down on arrival and back
+   up on expiry, moving the text under the reader's eyes. */
+.app-notice {
+  position: absolute;
+  left: var(--space-3);
+  bottom: var(--space-3);
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  max-width: min(520px, calc(100% - var(--space-6)));
+  padding: 8px 8px 8px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-menu), var(--edge-highlight);
+  color: var(--error-fg);
+  font-size: var(--text-ui);
+  animation: notice-rise 160ms var(--ease);
+}
+@keyframes notice-rise {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+.app-notice-text { flex: 1 1 auto; word-break: break-word; }
+.app-notice-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.app-notice-dismiss:hover { background: var(--button-hover-bg); color: var(--fg); }
+
+/* ── Tab view / preview scroll container ──────────────────────────────── */
+.tab-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  /* Row, not column: the comment rail is a sibling of the document, the way
+     the sidebar is a sibling of the preview pane. A rail overlaid on top of
+     the artifact would cover the very text it is about. */
+  flex-direction: row;
+}
+.tab-view > * {
+  flex: 1 1 auto;
+  /* Both axes: the row direction means a wide artifact would otherwise push
+     the comment rail off the edge instead of scrolling inside its own box. */
+  min-height: 0;
+  min-width: 0;
+}
+.preview-scroll {
+  overflow: auto;
+  height: 100%;
+}
+.preview-empty {
+  padding: var(--space-4);
+  color: var(--empty-fg);
+}
+
+.preview-badge-external {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: var(--text-caption);
+  border-radius: var(--r-pill);
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+  vertical-align: middle;
+  flex: 0 0 auto;
+}
+
+/* One shape for every "this file is not readable right now" state: deleted,
+   unreadable, permission-denied. Naming the problem and offering the two
+   useful actions is the same job in each case. */
+.file-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: 100%;
+  color: var(--fg-muted);
+  text-align: center;
+  padding: var(--space-5);
+}
+.file-notice-title {
+  font-family: var(--font-display);
+  font-size: var(--text-body);
+  font-weight: 600;
+  letter-spacing: var(--track-headline);
+  color: var(--heading-fg);
+  margin: 0;
+}
+.file-notice-path,
+.file-notice-hint { max-width: 60ch; font-size: var(--text-body-sm); }
+.file-notice-path {
+  font-family: var(--font-mono);
+  color: var(--fg-path);
+  margin: 0;
+  word-break: break-all;
+}
+.file-notice-hint { margin: 0 0 var(--space-2); }
+.file-notice-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+[data-testid="html-renderer"] {
+  display: flex !important;
+  flex-direction: column;
+  height: 100%;
+}
+[data-testid="html-renderer"] > iframe {
+  flex: 1 1 auto;
+  height: auto !important;
+  width: 100%;
+  border: none;
+  background: var(--iframe-bg);
+}
+/* Propagate the host theme into the artifact's srcdoc document. The iframe
+   origin is opaque, so `prefers-color-scheme` inside it does NOT follow the
+   OS on its own. Per CSS Color Adjustment L1, the iframe element's used
+   `color-scheme` informs the embedded document's preferred scheme — this is
+   what makes a self-contained artifact's dark-mode media query fire. */
+:root[data-theme="dark"] [data-testid="html-renderer"] > iframe { color-scheme: dark; }
+:root[data-theme="light"] [data-testid="html-renderer"] > iframe { color-scheme: light; }
+
+/* ── Markdown rendering ───────────────────────────────────────────────── */
+/* The reading field runs Linear body: 16px / 1.5 / -0.05px. Headings step
+   up to the display cut at weight 600 with tracking pulling negative as
+   size grows. */
+[data-testid="md-content"] {
+  /* The reading column. `padding-left` leaves room for the source-line
+     gutter drawn in the left margin of each block — see the gutter rules. */
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 32px 28px 32px 64px;
+  color: var(--fg-strong);
+  font-size: var(--text-body);
+  line-height: 1.6;
+  letter-spacing: var(--track-body);
+}
+[data-testid="md-content"] h1,
+[data-testid="md-content"] h2,
+[data-testid="md-content"] h3,
+[data-testid="md-content"] h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--heading-fg);
+  margin-top: 1.6em;
+  margin-bottom: 0.6em;
+  line-height: 1.2;
+}
+[data-testid="md-content"] h1 {
+  font-size: 2em;
+  letter-spacing: var(--track-display);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3em;
+}
+[data-testid="md-content"] h2 {
+  font-size: 1.5em;
+  letter-spacing: var(--track-headline);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3em;
+}
+[data-testid="md-content"] h3 { font-size: 1.25em; letter-spacing: var(--track-headline); }
+[data-testid="md-content"] h4 { font-size: 1em; letter-spacing: 0; }
+[data-testid="md-content"] p { margin: 0.6em 0; }
+/* Link emphasis is one of the four jobs the accent is allowed to do. The
+   lighter step carries it: #5e6ad2 lands at 4.4:1 on canvas, just under the
+   4.5:1 body text has to hold; #828fff clears 7.2:1. */
+[data-testid="md-content"] a { color: var(--accent-strong); text-decoration: none; }
+[data-testid="md-content"] a:hover { text-decoration: underline; }
+[data-testid="md-content"] code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  padding: 0.15em 0.4em;
+  border-radius: var(--r-xs);
+}
+[data-testid="md-content"] pre {
+  background: var(--pre-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  overflow: auto;
+  margin: 0.8em 0;
+}
+[data-testid="md-content"] pre code {
+  background: transparent;
+  padding: 0;
+  font-size: var(--text-ui);
+  color: var(--fg-strong);
+}
+/* A quotation rule is structure, not brand. The accent is reserved for the
+   brand mark, focus, link emphasis and the current-object marker, so this
+   edge takes the strong hairline instead. */
+[data-testid="md-content"] blockquote {
+  border-left: 2px solid var(--border-strong);
+  margin: 1em 0;
+  padding: 0 14px;
+  color: var(--fg-muted);
+}
+[data-testid="md-content"] table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: var(--text-body-sm);
+}
+[data-testid="md-content"] th,
+[data-testid="md-content"] td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+}
+[data-testid="md-content"] th {
+  background: var(--bg-chrome);
+  color: var(--fg);
+  font-weight: 500;
+}
+[data-testid="md-content"] img,
+[data-testid="md-content"] svg {
+  max-width: 100%;
+  height: auto;
+}
+[data-testid="md-content"] ul,
+[data-testid="md-content"] ol {
+  padding-left: 1.6em;
+}
+[data-testid="md-content"] li { margin: 0.2em 0; }
+[data-testid="md-content"] hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.6em 0;
+}
+
+/* ── File glyphs ──────────────────────────────────────────────────────── */
+/* Glyphs carry SHAPE; hue belongs to the design system (see FileIcon.tsx).
+   Two tones only: `is-subject` marks the artifacts this app exists to read
+   (.html/.md), everything else recedes. Both step up together on hover and
+   selection so the glyph follows its row instead of competing with it. */
+.file-glyph,
+.folder-glyph {
+  color: var(--fg-dim);
+  transition: color var(--dur-fast) var(--ease);
+}
+.file-glyph.is-subject,
+.folder-glyph { color: var(--fg-muted); }
+
+:is(
+  .row:hover,
+  .row.selected,
+  .start-row:hover,
+  .quick-open-list li.selected,
+  [data-section] li:hover
+) .file-glyph { color: var(--fg-muted); }
+
+:is(
+  .row:hover,
+  .row.selected,
+  .start-row:hover,
+  .quick-open-list li.selected,
+  [data-section] li:hover
+) .file-glyph.is-subject { color: var(--fg); }
+
+.row:hover .folder-glyph,
+.row.selected .folder-glyph { color: var(--fg); }
+
+.tab .file-glyph { color: var(--fg-dim); }
+.tab.active .file-glyph { color: var(--fg-muted); }
+.tab.active .file-glyph.is-subject { color: var(--fg); }
+
+/* ── Sidebar ──────────────────────────────────────────────────────────── */
+.sidebar-empty {
+  /* Extra top padding: with no header row, the macOS traffic lights overlay
+     this pane's top-left corner — content starts below their band. */
+  padding: 52px var(--space-5) var(--space-5);
+  text-align: center;
+}
+.sidebar-empty-text {
+  color: var(--fg-muted);
+  margin: 0 0 14px;
+  font-size: var(--text-body-sm);
+}
+/* button-primary: the lavender CTA, 8px corners, 8px/14px padding, label at
+   14px weight 500. It is the one filled button in the product — the
+   first-run workspace picker and the actions on a file notice. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--accent);
+  color: var(--on-accent);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  padding: 8px 14px;
+  font: inherit;
+  font-size: var(--text-body-sm);
+  font-weight: 500;
+  letter-spacing: 0;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+  margin: var(--space-1);
+}
+.button:hover { background: var(--accent-strong); }
+.button:active { background: var(--accent-focus); }
+/* button-secondary: charcoal fill on surface-1 with a hairline border. */
+.button-secondary {
+  background: var(--bg-chrome);
+  color: var(--fg);
+  border-color: var(--border);
+  font-weight: 500;
+}
+.button-secondary:hover { background: var(--bg-row-hover); border-color: var(--border-strong); }
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+/* The scroll container for the three drawers. The header stays out of it,
+   pinned to the top of the pane, so overflow can never move the traffic
+   lights or the drag region. */
+.sidebar-drawers {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* The window's top-left band. Height matches the tab strip (same token):
+   they sit side by side at the top of the window, so their bottom borders
+   form ONE unbroken rule instead of a 1px step at the sidebar seam. The
+   left inset keeps the macOS traffic lights clear (titleBarStyle: Overlay);
+   the header itself is the drag region on this side. It never scrolls —
+   .pane-sidebar is overflow:hidden and only .sidebar-drawers scrolls. */
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 var(--band-h);
+  height: var(--band-h);
+  padding: 0 var(--space-3) 0 var(--titlebar-inset);
+  font-size: var(--text-ui);
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--fg);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-chrome);
+}
+.sidebar-header-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-header-change {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-xs);
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.sidebar-header-change:hover { color: var(--fg); background: var(--button-hover-bg); }
+
+/* ── Eyebrow ──────────────────────────────────────────────────────────── */
+/* Linear's section label: 12-13px, weight 500, POSITIVE tracking. The
+   positive tracking against the negatively-tracked display is what marks a
+   label as taxonomy. It replaces the uppercase 10-11px/700 micro-caps the
+   previous system used. */
+[data-section] h4,
+.start-section h2 {
+  font-family: var(--font-ui);
+  font-size: var(--text-caption);
+  font-weight: 500;
+  letter-spacing: var(--track-eyebrow);
+  text-transform: none;
+  color: var(--fg-muted);
+}
+
+/* ── Sidebar sections (Bookmarks / Recent / Files) ────────────────────── */
+/* One collapsible shape for every sidebar group, so "pinned", "recently
+   read", and "the whole tree" read as three drawers of one cabinet instead
+   of two lists fused to an explorer. */
+[data-section] { flex: 0 0 auto; }
+/* The Files section owns the leftover height and hands it to the Explorer's
+   internal scroll (flex column all the way down, min-height 0 to allow it). */
+[data-section].section-grow {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+[data-section] .section-row-icon {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+[data-section] h4 {
+  margin: var(--space-3) var(--space-3) var(--space-1);
+}
+[data-section] .section-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  user-select: none;
+}
+[data-section] .section-header-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 1 1 auto;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+[data-section] .section-header-toggle:hover { color: var(--fg); }
+[data-section] .section-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  transition: transform var(--dur-fast) var(--ease);
+}
+[data-section] .section-chevron.open { transform: rotate(90deg); }
+[data-section] .section-count {
+  margin-left: auto;
+  margin-right: var(--space-1);
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+[data-section] ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+[data-section] li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 4px var(--space-3);
+  font-size: var(--text-body-sm);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-section] li:hover {
+  background: var(--bg-row-hover);
+  color: var(--fg);
+}
+[data-section] li.dragging { opacity: 0.4; }
+[data-section] li.drop-target {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+[data-section] .section-row-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.section-empty-hint {
+  margin: 2px var(--space-3) var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--fg-muted);
+}
+.section-header-empty { cursor: default; }
+.bookmark-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+[data-section] li:hover .bookmark-remove,
+.bookmark-remove:focus-visible { opacity: 1; }
+.bookmark-remove:hover { color: var(--error-fg); }
+
+/* ── Explorer ─────────────────────────────────────────────────────────── */
+.explorer {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-1) 0 var(--space-4);
+  user-select: none;
+}
+.explorer-loading,
+.explorer-error {
+  padding: 14px var(--space-4);
+  color: var(--fg-muted);
+  font-size: var(--text-body-sm);
+}
+.explorer-error { color: var(--error-fg); }
+
+.row {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  font-size: var(--text-body-sm);
+  color: var(--fg-strong);
+  cursor: pointer;
+  padding-right: var(--space-3);
+  white-space: nowrap;
+}
+.row:hover { background: var(--bg-row-hover); }
+/* Selection = surface lift PLUS the current-object marker, the same 2px
+   lavender gesture the active tab uses. On this ladder the lift alone is a
+   single step and cannot carry the state by itself. */
+.row.selected {
+  background: var(--bg-row-selected);
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+
+.row .chevron,
+.row .chevron-placeholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--fg-dim);
+  margin-right: 6px;
+  transition: transform var(--dur-fast) var(--ease);
+  flex: 0 0 auto;
+}
+.row .chevron.open { transform: rotate(90deg); }
+.row .chevron-placeholder { color: transparent; }
+
+.row .icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-right: var(--space-2);
+  flex: 0 0 auto;
+}
+
+.row .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 400;
+  flex: 1 1 auto;
+}
+
+.row.folder .label { color: var(--fg); font-weight: 500; }
+.row.file .label { color: var(--fg-strong); }
+.row.file:hover .label { color: var(--label-active-fg); }
+.row.selected .label { color: var(--label-active-fg); }
+
+.row.error-row {
+  color: var(--error-fg);
+  font-size: var(--text-caption);
+  cursor: default;
+}
+
+.row .star-toggle {
+  background: transparent;
+  border: 0;
+  padding: 2px 4px;
+  margin-left: var(--space-1);
+  flex: 0 0 auto;
+  cursor: pointer;
+  color: var(--star-idle);
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.35;
+  transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.row:hover .star-toggle,
+.row .star-toggle:focus-visible { opacity: 1; }
+.row .star-toggle.bookmarked {
+  color: var(--star-active);
+  opacity: 1;
+}
+.row .star-toggle:hover {
+  color: var(--star-active);
+  opacity: 1;
+}
+
+/* ── Start page ───────────────────────────────────────────────────────── */
+.start-page {
+  overflow: auto;
+  height: 100%;
+}
+.start-page-inner {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 56px var(--space-6) var(--space-6);
+  animation: start-rise 360ms var(--ease);
+}
+@keyframes start-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+/* The wordmark. The display cut at weight 600 with tracking pulled hard
+   negative is the whole gesture — there is no serif and no second family. */
+.start-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-2);
+}
+/* The brand mark is one of the four jobs the accent is allowed to do. */
+.start-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-family: var(--font-display);
+  font-size: var(--text-body);
+  font-weight: 600;
+  letter-spacing: var(--track-headline);
+  user-select: none;
+}
+.start-title {
+  font-family: var(--font-display);
+  font-size: 40px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+  color: var(--heading-fg);
+  margin: 0;
+}
+.start-subtitle {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--fg-muted);
+  margin: 0 0 var(--space-5);
+  word-break: break-all;
+}
+.start-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-6);
+  flex-wrap: wrap;
+}
+.start-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--bg-chrome);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 8px 14px;
+  font: inherit;
+  font-size: var(--text-body-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.start-action:hover { background: var(--bg-row-hover); border-color: var(--border-strong); }
+.start-action kbd,
+.start-empty kbd {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  background: var(--badge-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  padding: 1px 5px;
+  color: var(--fg-muted);
+}
+.start-section { margin-bottom: var(--space-5); }
+.start-section h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 var(--space-2);
+}
+.start-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.start-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--fg-strong);
+  font: inherit;
+  font-size: var(--text-body-sm);
+  text-align: left;
+  padding: 6px var(--space-2);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.start-row:hover { background: var(--bg-row-hover); color: var(--fg); }
+.start-row-icon { display: inline-flex; flex: 0 0 auto; }
+.start-row-name { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* `direction: rtl` moves the ellipsis to the HEAD, so the DEEPEST segments
+   survive. That is the right trade here: recents can hold absolute paths for
+   files outside the workspace, where the head is the `/Users/…/workspace/`
+   prefix every row shares. <bdi> keeps the path reading left-to-right inside
+   the right-to-left box. Quick Open does the opposite — see .quick-open-dir. */
+.start-row-dir {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  color: var(--fg-path);
+  font-size: var(--text-caption);
+  font-family: var(--font-mono);
+  text-align: right;
+}
+.start-empty {
+  color: var(--fg-muted);
+  font-size: var(--text-body-sm);
+  line-height: 1.5;
+}
+
+/* ── Quick open (⌘P) ──────────────────────────────────────────────────── */
+.quick-open-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  background: var(--overlay-scrim);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+.quick-open {
+  width: min(560px, 86vw);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-overlay), var(--edge-highlight);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 60vh;
+}
+.quick-open-input {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 12px var(--space-4);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.quick-open-input input {
+  flex: 1;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-body);
+  letter-spacing: var(--track-body);
+}
+.quick-open-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1);
+  overflow: auto;
+}
+.quick-open-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  font-size: var(--text-body-sm);
+  cursor: pointer;
+  color: var(--fg-strong);
+}
+.quick-open-list li.selected {
+  background: var(--bg-row-selected);
+  color: var(--fg);
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+.quick-open-icon { display: inline-flex; flex: 0 0 auto; }
+.quick-open-name { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* TAIL-truncated, unlike .start-row-dir. These paths are always relative to
+   the workspace root, so there is no shared prefix to drop and the leading
+   segment is the repo name — the one part that disambiguates two files with
+   the same name. Cutting the head would remove exactly that. */
+.quick-open-dir {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--fg-path);
+  font-size: var(--text-caption);
+  font-family: var(--font-mono);
+}
+.quick-open-empty { color: var(--fg-muted); cursor: default; }
+.quick-open-footer {
+  padding: 6px var(--space-4);
+  font-size: var(--text-caption);
+  color: var(--fg-muted);
+  border-top: 1px solid var(--border);
+}
+
+/* ── Context menu ─────────────────────────────────────────────────────── */
+.context-menu {
+  position: fixed;
+  z-index: var(--z-menu);
+  min-width: 180px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-menu), var(--edge-highlight);
+  padding: var(--space-1);
+  display: flex;
+  flex-direction: column;
+}
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: 0;
+  background: transparent;
+  color: var(--fg-strong);
+  font: inherit;
+  font-size: var(--text-body-sm);
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.context-menu-item:hover { background: var(--bg-row-selected); color: var(--fg); }
+.context-menu-item.danger { color: var(--error-fg); }
+.context-menu-icon { display: inline-flex; color: var(--fg-muted); }
+.context-menu-sep {
+  height: 1px;
+  background: var(--border);
+  margin: var(--space-1) 6px;
+}
+
+/* ── Image & metadata renderers ───────────────────────────────────────── */
+.image-renderer { padding: var(--space-4); }
+.image-renderer img,
+.image-renderer svg { max-width: 100%; height: auto; }
+
+.metadata-renderer {
+  padding: var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-ui);
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+.metadata-path {
+  color: var(--fg);
+  margin-bottom: var(--space-2);
+  word-break: break-all;
+}
+.metadata-reason { color: var(--fg-path); }
+
+/* ── Code blocks / plain text ─────────────────────────────────────────── */
+.shiki-block pre {
+  margin: 0;
+  padding: var(--space-4);
+}
+.shiki-block pre.shiki {
+  background: transparent !important;
+}
+/* Shiki writes an inline `background-color` on the <pre> it emits, and in
+   rendered Markdown that <pre> is NOT inside a .shiki-block — md.tsx replaces
+   `code.parentElement` in place. An inline style beats any selector, so the
+   block would paint GitHub's #24292e on our canvas without !important. */
+[data-testid="md-content"] pre.shiki {
+  background: var(--pre-bg) !important;
+}
+
+pre {
+  margin: 0;
+  padding: var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-ui);
+  line-height: 1.5;
+  color: var(--fg-strong);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Scrollbars ───────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--r-pill);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ── Beam (remote-control-design.html v1) ──────────────────────────────── */
+/* Send/receive dialog: same overlay grammar as QuickOpen — scrim, elevated
+   card, hairline border. Kept narrower: it is a confirm, not a palette. */
+.beam-backdrop {
+  position: fixed;
+  inset: 0;
+  /* Raised, not level with Settings: the pairing dialog has to be readable
+     over it (see the --z-* scale). DOM order alone decided this before, and
+     Settings mounts last. */
+  z-index: var(--z-overlay-raised);
+  background: var(--overlay-scrim);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 18vh;
+}
+.beam-dialog {
+  width: min(460px, 86vw);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-overlay), var(--edge-highlight);
+  overflow: hidden;
+}
+.beam-dialog-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 12px var(--space-4);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-ui);
+  font-weight: 600;
+  color: var(--fg);
+}
+.beam-dialog-header svg { color: var(--accent-strong); flex: 0 0 auto; }
+.beam-dialog-close {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.beam-dialog-close:hover { background: var(--button-hover-bg); color: var(--fg); }
+.beam-dialog-body { padding: var(--space-4); }
+.beam-file-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.beam-file-name {
+  font-size: var(--text-body-sm);
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.beam-file-meta { font-size: var(--text-caption); color: var(--fg-muted); flex: 0 0 auto; }
+.beam-file-path {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.beam-sender-row {
+  margin-top: var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--fg-muted);
+}
+.beam-fingerprint {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--fg);
+  background: var(--badge-bg);
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+}
+.beam-hint {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-caption);
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+.beam-warn { margin: var(--space-2) 0 0; font-size: var(--text-caption); color: var(--warning-fg, var(--fg)); }
+.beam-error {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-caption);
+  line-height: 1.5;
+  color: var(--error-fg);
+  overflow-wrap: anywhere;
+}
+.beam-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-4);
+  /* .button carries --space-1 margins; the row only aligns them. */
+}
+/* The field box, shared with .settings-input further down (both render in
+   the Settings panel). Only the type and the top margin differ per class. */
+.beam-link-input,
+.settings-input {
+  width: 100%;
+  padding: 7px 10px;
+  color: var(--fg);
+  background: var(--bg-chrome);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  outline: none;
+}
+.beam-link-input:focus,
+.settings-input:focus { border-color: var(--input-border-focus); }
+.beam-link-input {
+  margin-top: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+}
+.beam-progress {
+  margin-top: var(--space-4);
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--badge-bg);
+  overflow: hidden;
+}
+/* Determinate progress scales a full-width fill (compositor-only transform,
+   never width) via --beam-progress ∈ [0,1] set inline by the dialog. */
+.beam-progress-fill {
+  height: 100%;
+  width: 100%;
+  background: var(--accent);
+  border-radius: var(--r-pill);
+  transform-origin: left;
+  transform: scaleX(var(--beam-progress, 0));
+  transition: transform var(--dur-fast) var(--ease);
+}
+.beam-progress-fill.indeterminate {
+  width: 30%;
+  transform: none;
+  transition: none;
+  animation: beam-slide 1.2s var(--ease) infinite;
+}
+/* -100% … 334% of the 30%-wide fill = fully off both ends of the track. */
+@keyframes beam-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(334%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .beam-progress-fill.indeterminate { animation: none; width: 100%; opacity: 0.4; }
+}
+
+/* Toolbar "beaming" indicator: a pill that exists only while serving. */
+.beam-indicator-wrap { position: relative; display: inline-flex; }
+.beam-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--accent-strong);
+  font-size: var(--text-caption);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.beam-indicator:hover { background: var(--button-hover-bg); }
+.beam-popover-scrim { position: fixed; inset: 0; z-index: calc(var(--z-popover) - 1); }
+.beam-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: var(--z-popover);
+  width: 280px;
+  padding: var(--space-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-overlay), var(--edge-highlight);
+}
+.beam-popover-title {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-caption);
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.beam-popover-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+}
+.beam-popover-info { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.beam-popover-name {
+  font-size: var(--text-ui);
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.beam-popover-meta { font-size: var(--text-caption); color: var(--fg-muted); }
+.beam-popover-row .button { padding: 3px 10px; font-size: var(--text-caption); margin: 0; }
+.beam-stop:hover { color: var(--error-fg); border-color: var(--error-fg); }
+.beam-popover-received {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.beam-popover-received:hover { background: var(--bg-row-hover); }
+.beam-popover-received .beam-popover-meta { margin-left: auto; flex: 0 0 auto; }
+
+/* The Share menu: the same popover shell as the ⚡ list, as a menu. */
+.share-menu { width: 240px; padding: var(--space-1); }
+.share-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 6px var(--space-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-body-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.share-menu-item:hover { background: var(--bg-row-hover); }
+.share-menu-item svg { flex: none; color: var(--fg-muted); }
+.share-menu-hint {
+  padding: 0 var(--space-2) 6px calc(var(--space-2) + 13px + var(--space-2));
+  font-size: var(--text-caption);
+  color: var(--fg-muted);
+}
+.share-menu-sep { height: 1px; margin: var(--space-1) var(--space-2); background: var(--border); }
+
+/* The pairing QR: a light square on any theme, because a camera needs one. */
+.settings-qr {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--space-3);
+}
+.settings-qr .qr-code {
+  border-radius: var(--r-md);
+  box-shadow: var(--edge-highlight);
+}
+
+/* ── Remote (remote-control-design.html v2 — Scope) ────────────────────── */
+/* The drawer reuses the shared [data-section] row grammar; only the
+   header's presence dot / Follow toggle and the active-tab highlight are
+   new here. */
+[data-section] li.active {
+  background: var(--bg-row-selected);
+  color: var(--fg);
+}
+.remote-presence-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: var(--space-1);
+  background: var(--fg-muted);
+}
+.remote-presence-dot.remote-presence-online { background: var(--accent-strong); }
+.remote-presence-dot.remote-presence-connecting {
+  background: var(--fg-muted);
+  animation: remote-pulse 1.2s ease-in-out infinite;
+}
+.remote-presence-dot.remote-presence-offline { background: var(--border-strong); }
+@keyframes remote-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+.remote-fingerprint-words {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+}
+.remote-fingerprint-words span {
+  font-family: var(--font-mono);
+  font-size: var(--text-body-sm);
+  color: var(--fg);
+  background: var(--badge-bg);
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+}
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  background: var(--overlay-scrim);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 8vh;
+  overflow-y: auto;
+}
+.settings-dialog {
+  width: min(560px, 90vw);
+  margin-bottom: 8vh;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-overlay), var(--edge-highlight);
+  overflow: hidden;
+}
+
+/* The panel itself. One markup for both hosts — the desktop dialog above and
+   the phone sheet (SettingsModal branches on the platform) — so the two
+   cannot drift apart. Sections are hairline cards; every row is label-left,
+   control-right, which is the grammar a thumb needs and the desktop reads
+   fine in. The panel carries its own padding because neither host has any. */
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-4);
+}
+.settings-section { display: flex; flex-direction: column; }
+.settings-section-title {
+  margin: 0;
+  font-size: var(--text-body-sm);
+  font-weight: 600;
+  letter-spacing: var(--track-headline);
+  color: var(--heading-fg);
+}
+/* The panel's caption voice: every explanatory line under a heading, a
+   control or a row. One rule, so the iOS size bump has one place to reach. */
+.settings-section-hint,
+.settings-row-hint,
+.settings-peer-meta,
+.settings-empty {
+  font-size: var(--text-caption);
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+.settings-section-hint { margin: var(--space-1) 0 0; }
+.settings-section-hint code {
+  padding: 1px 4px;
+  border-radius: var(--r-xs);
+  background: var(--badge-bg);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+.settings-block { margin-top: var(--space-3); }
+.settings-empty { margin: var(--space-2) 0 0; }
+
+/* Roots, globs and peers all live in the same hairline-bounded list, so
+   three different collections read as one kind of object. */
+.settings-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.settings-list > li { border-bottom: 1px solid var(--border); }
+.settings-list > li:last-child { border-bottom: 0; }
+.settings-list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 34px;
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-3);
+}
+.settings-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--fg-path);
+}
+
+/* A single preference: text on the left, one control on the right. The row
+   is a <label>, so the whole card is the hit target. */
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 40px;
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.settings-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-row-label { font-size: var(--text-body-sm); color: var(--fg); }
+
+/* The switch — a checkbox wearing the platform's affordance, in place of a
+   13px tick box no thumb can hit. */
+.settings-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 22px;
+  margin: 0;
+  border-radius: var(--r-pill);
+  background: var(--border-strong);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.settings-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--on-accent);
+  transition: transform var(--dur) var(--ease);
+}
+.settings-switch:checked { background: var(--accent); }
+.settings-switch:checked::after { transform: translateX(16px); }
+.settings-switch:focus-visible {
+  outline: 2px solid var(--input-border-focus);
+  outline-offset: 2px;
+}
+
+.settings-choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 30px;
+  margin-top: var(--space-2);
+  font-size: var(--text-body-sm);
+  color: var(--fg);
+  cursor: pointer;
+}
+/* Box comes from the shared rule beside .beam-link-input. */
+.settings-input { margin-top: var(--space-2); font: inherit; font-size: var(--text-body-sm); }
+/* Wraps instead of overflowing: Copy + Share + Done do not fit one phone
+   line. `.button` carries its own --space-1 margins, so the negative side
+   margins here pull the row back flush with the section above it. */
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: var(--space-2) calc(var(--space-1) * -1) 0;
+}
+/* Unpair and Remove destroy something; a secondary button that looks exactly
+   like Connect is a mis-tap waiting to happen on a touch screen. */
+.button-danger { color: var(--error-fg); }
+.button-danger:hover { background: var(--bg-row-hover); border-color: var(--error-fg); }
+
+/* Peer row: identity on one side, the scope menu and the two actions on the
+   other. One line on the desktop; the iOS block below drops the actions to
+   their own line, because a name plus a menu plus two buttons never fit
+   390pt. */
+.settings-peer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+.settings-peer-info {
+  flex: 1 1 160px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-peer-name {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  font-size: var(--text-body-sm);
+  color: var(--fg);
+}
+/* text-overflow does nothing on the flex row above, so the device name — the
+   one part long enough to overflow a phone — truncates in its own box. */
+.settings-peer-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-peer-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* ── iOS companion (PRODUCT.md: read-only companion, no desktop chrome) ──
+   `platform-ios`/`platform-macos` are set on <body> by PlatformProvider
+   (src/state/platform.tsx). Same tokens, different architecture: the phone
+   never mounts the desktop panes — PhoneShell is one column (title band /
+   artifact / bottom bar) with Library and Tabs as bottom sheets. The
+   artifact stays the protagonist; the chrome stays a dark frame. */
+body.platform-ios .app-shell {
+  /* 100vh overshoots WKWebView's visible viewport on iOS (the browser-chrome
+     vh bug); dvh tracks the real one so the bottom bar stays on screen. */
+  height: 100dvh;
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  /* No bottom padding: .phone-bar owns the home-indicator inset so its
+     surface runs to the physical edge of the screen. */
+}
+body.platform-ios [data-section] li,
+body.platform-ios .start-row {
+  min-height: var(--tap-min);
+}
+
+.phone-shell {
+  position: relative; /* anchor for the floating .app-notice toast */
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--bg);
+}
+
+/* Title band — the only top chrome. One centered label; the live dot sits
+   in the flow beside it and pulses when the open artifact is rewritten
+   (locally or across the wire — the one place the accent moves). */
+.phone-titlebar {
+  flex: none;
+  height: var(--band-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  background: var(--bg-chrome);
+  border-bottom: 1px solid var(--border);
+}
+.phone-title {
+  font-size: var(--text-ui);
+  font-weight: 500;
+  letter-spacing: var(--track-body);
+  color: var(--fg-strong);
+  max-width: 72%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.phone-title-brand {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: var(--track-headline);
+  color: var(--fg);
+}
+.phone-title-from {
+  margin-left: var(--space-2);
+  font-size: var(--text-caption);
+  font-weight: 500;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.phone-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Bottom bar — navigation at the thumb. It owns the home-indicator inset
+   so the chrome surface runs to the screen edge. */
+.phone-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  padding: 2px var(--space-3) env(safe-area-inset-bottom);
+  min-height: 50px;
+  background: var(--bg-chrome);
+  border-top: 1px solid var(--border);
+  box-shadow: var(--edge-highlight);
+}
+.phone-bar-button {
+  width: 64px;
+  height: var(--tap-min);
+  display: grid;
+  place-items: center;
+  background: none;
+  border: none;
+  border-radius: var(--r-md);
+  color: var(--fg-muted);
+}
+.phone-bar-button:active { background: var(--bg-row-hover); color: var(--fg-strong); }
+.phone-bar-button:disabled { color: var(--fg-dim); opacity: 0.55; }
+.phone-tab-count {
+  min-width: 21px;
+  height: 21px;
+  padding: 0 3px;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid currentColor;
+  border-radius: var(--r-xs);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sheets — the Library and the open-tab list rise from the bar and leave
+   the artifact visible behind the scrim. */
+.phone-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-sheet);
+  border: none;
+  padding: 0;
+  background: var(--overlay-scrim);
+}
+.phone-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: calc(var(--z-sheet) + 1);
+  max-height: 78%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border-top: 1px solid var(--border-strong);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  box-shadow: var(--shadow-overlay), var(--edge-highlight);
+  padding-bottom: env(safe-area-inset-bottom);
+  animation: phone-sheet-up var(--dur) var(--ease);
+}
+@keyframes phone-sheet-up {
+  from { transform: translateY(24px); opacity: 0.6; }
+  to { transform: none; opacity: 1; }
+}
+.phone-sheet-grab {
+  flex: none;
+  width: 36px;
+  height: 5px;
+  margin: 8px auto 4px;
+  border-radius: var(--r-pill);
+  background: var(--border-tertiary);
+}
+.phone-sheet-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 4px var(--space-3) 8px var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.phone-sheet-title {
+  flex: 1;
+  font-size: var(--text-body-sm);
+  font-weight: 600;
+  letter-spacing: var(--track-headline);
+  color: var(--fg);
+}
+/* Width stays at the icon's visual size; the HEIGHT carries the touch target,
+   because these sit in a row where a wider button would eat the title. */
+.phone-sheet-action {
+  width: 40px;
+  min-height: var(--tap-min);
+  display: grid;
+  place-items: center;
+  background: none;
+  border: none;
+  border-radius: var(--r-md);
+  color: var(--fg-muted);
+}
+.phone-sheet-action:active { background: var(--bg-row-hover); color: var(--fg-strong); }
+.phone-sheet-body {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  min-height: 120px;
+}
+/* Settings is the one sheet with more content than a list of rows, so it
+   takes the taller stop. The scrim stays visible above it — the sheet is
+   still a sheet, not a second screen. */
+.phone-sheet-tall { max-height: 92%; }
+
+/* Settings on the phone: the same panel as the desktop, at thumb scale.
+   Nothing here changes what the panel says, only what it takes to hit. */
+body.platform-ios .settings-panel {
+  gap: var(--space-6);
+  padding: var(--space-3) var(--space-4) var(--space-5);
+}
+body.platform-ios .settings-section-title,
+body.platform-ios .settings-row-label,
+body.platform-ios .settings-peer-name {
+  font-size: var(--text-body);
+}
+/* One step up for every explanatory line too: 12px is a desktop caption size
+   and reads as fine print at arm's length. Scoped to the panel, because
+   `.beam-hint` also belongs to the Beam dialogs, which keep their size. */
+body.platform-ios .settings-panel :is(
+  .settings-section-hint,
+  .settings-row-hint,
+  .settings-peer-meta,
+  .settings-empty,
+  .beam-hint
+) {
+  font-size: var(--text-body-sm);
+}
+/* Only the controls the phone actually renders: the desktop-only sections
+   (roots, globs, drag-out, Slack) never mount here. */
+body.platform-ios .settings-row { min-height: var(--tap-min); }
+/* 16px is also what stops iOS from zooming the viewport when a field takes
+   focus, so the reading size and the no-zoom size are the same number. */
+body.platform-ios .settings-panel .button {
+  min-height: var(--tap-min);
+  font-size: var(--text-body);
+}
+
+.phone-tab-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.phone-tab-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 52px;
+  padding: 0 var(--space-2) 0 var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.phone-tab-row.is-active {
+  background: var(--bg-row-selected);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.phone-tab-row-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 0;
+  background: none;
+  border: none;
+  text-align: left;
+  color: inherit;
+}
+.phone-tab-row-name {
+  font-size: var(--text-body-sm);
+  font-weight: 500;
+  color: var(--fg);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Same treatment as .start-row-dir, mono included: a path reads as a path. */
+.phone-tab-row-path {
+  font-size: var(--text-caption);
+  font-family: var(--font-mono);
+  color: var(--fg-path);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* keep the discriminating tail of a long path visible */
+  text-align: left;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .phone-sheet { animation: none; }
+}
+
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Comments
+   The rail beside the preview (macOS) and the threads inside the iOS sheet.
+   One thread component renders in both, so everything from `.comment-thread`
+   down is shared and must not assume a desktop width.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.comment-rail {
+  flex: 0 0 var(--comment-rail-w, 320px);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-chrome);
+  border-left: 1px solid var(--border);
+}
+
+.comment-rail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.comment-rail-title {
+  font-size: var(--text-ui);
+  font-weight: 600;
+  letter-spacing: var(--track-eyebrow);
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.comment-rail-toggle {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-caption);
+  color: var(--accent);
+}
+.comment-rail-toggle:hover { color: var(--accent-strong); }
+
+.comment-rail-error {
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-caption);
+  color: var(--error-fg);
+}
+.comment-rail-empty {
+  margin: 0;
+  padding: var(--space-4);
+  font-size: var(--text-body-sm);
+  line-height: 1.5;
+  color: var(--empty-fg);
+}
+
+.comment-rail-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2) 0 var(--space-5);
+}
+
+/* ── The composer for a fresh selection ───────────────────────────────── */
+.comment-new {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.comment-quote {
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-2);
+  border-left: 2px solid var(--accent);
+  font-size: var(--text-caption);
+  line-height: 1.45;
+  color: var(--fg-muted);
+  /* A three-line cap: the quote is a reminder of what is being commented on,
+     not a second copy of the document. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.comment-new-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.comment-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-body-sm);
+  line-height: 1.45;
+}
+.comment-input:focus-visible {
+  outline: 2px solid var(--accent-focus);
+  outline-offset: -1px;
+}
+
+.comment-send {
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-size: var(--text-caption);
+  font-weight: 600;
+  cursor: pointer;
+}
+.comment-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ── One thread ───────────────────────────────────────────────────────── */
+.comment-thread {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.comment-thread-active {
+  background: var(--bg-row-selected);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.comment-thread-resolved .comment-body { color: var(--fg-muted); }
+.comment-thread-resolved .comment-thread-jump { opacity: 0.7; }
+/* Detached: visible and greyed, never removed. The user wrote it; only they
+   get to decide it no longer matters. */
+.comment-thread-detached { opacity: 0.75; }
+
+.comment-thread-jump {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.comment-author {
+  font-size: var(--text-caption);
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+.comment-time {
+  font-size: var(--text-caption);
+  color: var(--fg-dim);
+}
+.comment-anchor {
+  margin-left: auto;
+  font-size: var(--text-caption);
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+.comment-detached-note {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-caption);
+  color: var(--warn-fg, var(--fg-muted));
+}
+
+.comment-body {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-body-sm);
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.comment-body-empty { color: var(--fg-dim); font-style: italic; }
+
+.comment-reply {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-left: var(--space-2);
+  color: var(--fg-muted);
+}
+.comment-reply > div { min-width: 0; }
+
+.comment-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+.comment-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--text-caption);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.comment-action:hover { color: var(--fg); }
+.comment-status {
+  margin-left: auto;
+  font-size: var(--text-caption);
+  color: var(--fg-dim);
+}
+
+.comment-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+/* Every tap target on the phone clears the 44px minimum. */
+.platform-ios .comment-action,
+.platform-ios .comment-send,
+.platform-ios .comment-thread-jump {
+  min-height: var(--tap-min);
+}
+.platform-ios .comment-rail {
+  /* Inside the sheet the rail is the whole width and carries no border of
+     its own — the sheet already draws one. */
+  flex: 1 1 auto;
+  border-left: 0;
+  background: transparent;
+}
+/* A comment quotes whatever the document had, which can be one unbroken
+   token wider than the sheet. Breaking it is the real fix; the composer
+   additionally needs `min-width: 0`, because WebKit measures a line-clamped
+   `-webkit-box` at its FULL unwrapped width and a flex item will not shrink
+   below that on its own. Scoped to the composer — the rail's other children
+   hold no quoted text. */
+.comment-quote { overflow-wrap: anywhere; }
+.comment-new { min-width: 0; }
+/* iOS zooms the whole page when a field under 16px takes focus, and the
+   sheet — fixed to the viewport — then overflows the screen. 16px keeps
+   the page still; the composer is the one place on the phone that types. */
+.platform-ios .comment-input { font-size: 16px; }
+
+/* The open-comment count on the phone's comments button. */
+.phone-bar-button { position: relative; }
+.phone-bar-badge {
+  position: absolute;
+  top: 4px;
+  right: 50%;
+  transform: translateX(150%);
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Paywall
+   Shown inside the comment rail / sheet, never as a launch screen: it
+   appears at the moment the user tries to write, and nowhere else.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.paywall {
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.paywall-head { color: var(--fg-muted); }
+.paywall-title {
+  margin: var(--space-2) 0 var(--space-1);
+  font-family: var(--font-display);
+  font-size: var(--text-body);
+  font-weight: 600;
+  letter-spacing: var(--track-headline);
+  color: var(--heading-fg);
+}
+.paywall-sub,
+.paywall-renewal,
+.paywall-fine {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-caption);
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+.paywall-fine { margin-top: var(--space-3); color: var(--fg-dim); }
+.paywall-error {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--error-fg);
+}
+
+.paywall-products { list-style: none; margin: var(--space-3) 0 0; padding: 0; }
+.paywall-products li + li { margin-top: var(--space-2); }
+.paywall-product {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--tap-min);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.paywall-product:hover { border-color: var(--accent); }
+.paywall-product:disabled { opacity: 0.6; cursor: default; }
+.paywall-product-title { font-size: var(--text-body-sm); font-weight: 600; }
+.paywall-product-price {
+  margin-left: auto;
+  font-size: var(--text-caption);
+  color: var(--fg-muted);
+}
+.paywall-busy { color: var(--accent); }
+
+.paywall-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Line numbers
+   Code and plain text carry a GitHub-style gutter: one number per `.line`
+   span (shiki's shape, which the plain fallback copies), drawn as a
+   ::before so it is never selected or copied. Rendered Markdown numbers
+   each top-level block by the SOURCE line it starts on, in the left margin,
+   so "line 42" in a comment means the same thing in the file.
+   ────────────────────────────────────────────────────────────────────────── */
+.shiki-block code,
+pre[data-fallback] code {
+  counter-reset: line;
+}
+.shiki-block .line,
+pre[data-fallback] .line {
+  display: inline-block;
+  width: 100%;
+  min-height: 1.5em;
+  counter-increment: line;
+  border-radius: var(--r-xs);
+}
+.shiki-block .line::before,
+pre[data-fallback] .line::before {
+  content: counter(line);
+  display: inline-block;
+  width: 3.5ch;
+  margin-right: var(--space-4);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-dim);
+  user-select: none;
+  -webkit-user-select: none;
+}
+[data-testid="md-content"] > [data-source-line] {
+  position: relative;
+}
+[data-testid="md-content"] > [data-source-line]::before {
+  content: attr(data-source-line);
+  position: absolute;
+  top: 0.35em;
+  left: -48px;
+  width: 36px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-dim);
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
+}
+[data-testid="md-content"] > hr[data-source-line]::before { top: -0.4em; }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   The comment tool
+   While the tool is in hand the pointer is a crosshair and the block under
+   it lights up in the accent — the one object the app is about to act on.
+   Inside an HTML frame the bridge script draws the same box itself.
+   ────────────────────────────────────────────────────────────────────────── */
+.comment-tool-on,
+.comment-tool-on .preview-scroll,
+.comment-tool-on a,
+.comment-tool-on img {
+  cursor: crosshair;
+}
+.comment-tool-on .line:hover,
+.comment-tool-on [data-testid="md-content"] > [data-source-line]:hover,
+.comment-tool-on .image-renderer img:hover,
+.comment-tool-on .image-renderer svg:hover {
+  background: rgba(94, 106, 210, 0.10);
+  outline: 1.5px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+/* The anchor of the note being read, hovered or written. */
+[data-comment-anchor] {
+  background: rgba(94, 106, 210, 0.16);
+  outline: 1.5px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Margin notes (desktop)
+   A layer over the right edge of the preview. It takes no pointer events
+   itself, so the document under it keeps scrolling and selecting; only the
+   cards do. Cards are the one floating overlay in the product that lifts
+   with a shadow, because there is no surface to lift against with a border.
+   ────────────────────────────────────────────────────────────────────────── */
+.tab-view { position: relative; }
+.comment-overlay {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 340px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 5;
+}
+.comment-note {
+  position: absolute;
+  top: 0;
+  right: var(--space-3);
+  width: 300px;
+  pointer-events: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: 0 10px 28px -14px rgba(0, 0, 0, 0.7);
+  /* Placed with `transform: translateY()` from the layout pass, never `top`:
+     the position is re-targeted on every scroll frame, and `top` would cost
+     a reflow each time. No transition on it either — a transition whose
+     target moves every frame never arrives, and the note would trail the
+     line it belongs to for as long as the user keeps scrolling. */
+  transition: border-color var(--dur-fast) var(--ease);
+  overflow: hidden;
+}
+.comment-note:hover { border-color: var(--border-tertiary); }
+.comment-note-active,
+.comment-note-composer {
+  border-color: var(--accent);
+  z-index: 2;
+}
+.comment-note-paywall {
+  top: var(--space-2);
+  z-index: 3;
+}
+.comment-note .comment-thread {
+  border-bottom: 0;
+}
+.comment-note .comment-thread-active {
+  background: transparent;
+  box-shadow: none;
+}
+.comment-note .comment-new {
+  border-bottom: 0;
+}
+/* Threads whose anchor is not on this page stack at the top, where a
+   comment whose text vanished is the first thing seen. */
+.comment-unplaced {
+  position: absolute;
+  top: var(--space-2);
+  right: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+/* No anchor on this page: the card stacks at the top of the overlay instead
+   of floating, so `transform` must not move it. */
+.comment-note-unplaced {
+  position: static;
+  margin-right: var(--space-3);
+  transform: none;
+}
+.comment-note-composer.comment-note-unplaced {
+  position: absolute;
+  top: var(--space-2);
+}
+.comment-compact {
+  display: block;
+  width: 100%;
+  padding: 10px var(--space-3);
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.comment-compact-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.comment-compact-body {
+  display: block;
+  margin-top: 3px;
+  font-size: var(--text-body-sm);
+  line-height: 1.4;
+  color: var(--fg-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.comment-compact-resolved .comment-compact-body { color: var(--fg-muted); }
+.comment-compact-replies {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--text-caption);
+  color: var(--fg-muted);
+}
+.comment-overlay-resolved {
+  position: absolute;
+  right: var(--space-3);
+  bottom: var(--space-3);
+  padding: 3px 10px;
+  pointer-events: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  font: inherit;
+  font-size: var(--text-caption);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.comment-overlay-resolved:hover { color: var(--fg); border-color: var(--border-tertiary); }
+.comment-overlay-error {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-3);
+  /* Above the cards. It says WHY a write was refused, and the composer that
+     kept the user's draft is placed at the same top with `z-index: 2` — so
+     without this the explanation renders behind the card that needs it. */
+  z-index: 4;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  pointer-events: auto;
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  font-size: var(--text-caption);
+  color: var(--error-fg);
+}
+
+/* The composer's target: what kind of thing, then the words. */
+.comment-new-target { margin-bottom: var(--space-2); }
+.comment-new-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: var(--text-caption);
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+/* Toolbar: the two comment tiles. */
+.toolbar-button { position: relative; }
+.toolbar-button-pressed { color: var(--fg); background: var(--bg-row-hover); }
+.toolbar-button-tool,
+.toolbar-button-tool:hover:not(:disabled) {
+  color: var(--accent-strong);
+  background: rgba(94, 106, 210, 0.14);
+}
+.toolbar-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+.phone-bar-button-tool,
+.phone-bar-button-tool:active { color: var(--accent-strong); }
+
+/* The root error screen: readable, selectable, and nothing else. */
+.root-error {
+  padding: var(--space-6);
+  color: var(--fg);
+  font-size: var(--text-body-sm);
+}
+.root-error h1 { font-size: 1.25em; margin: 0 0 var(--space-2); }
+.root-error p { color: var(--fg-muted); margin: 0 0 var(--space-4); }
+.root-error pre {
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--pre-bg);
+  font-size: var(--text-caption);
+  white-space: pre-wrap;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.root-error-reload {
+  margin-right: var(--space-3);
+  padding: 6px 12px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-size: var(--text-ui);
+  cursor: pointer;
+}

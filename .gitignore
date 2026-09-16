@@ -1,0 +1,13 @@
+node_modules/
+target/
+dist/
+.DS_Store
+*.log
+.env
+.env.local
+.pnpm-store/
+.vscode/
+.idea/
+# Generated on every iOS build of a plugin crate
+crates/*/.tauri/
+crates/*/ios/.build/

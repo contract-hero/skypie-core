@@ -1,0 +1,589 @@
+// IPC surface between the React frontend and the Rust Tauri core.
+
+import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { parseRemoteAddress } from "./utils/remote-address";
+import type {
+  Annotation,
+  AnnotationIndexEntry,
+  Selector,
+  Status as AnnotationStatus,
+} from "./annotations/types";
+// Re-exported so a consumer of the IPC surface imports the shapes it
+// returns from the same module, as it already does for RecentEntry.
+export type { Annotation, AnnotationIndexEntry, Selector };
+
+export interface ProjectEntry {
+  name: string;
+  path: string;
+}
+
+export interface TreeEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+}
+
+export interface FilePayload {
+  path: string;
+  size: number;
+  mtime: number;
+  is_binary: boolean;
+  oversized: boolean;
+  /** How `content` is encoded: UTF-8 text or base64 (raster images). */
+  encoding?: "text" | "base64";
+  content: string | null;
+  /** Authored by another machine — a beam landing under `received/`, or a
+   * file pulled from a paired device under `cache/`. The renderer isolates
+   * it. Set by the Rust reader, so the trust decision never races an async
+   * lookup. */
+  untrusted?: boolean;
+}
+
+/** Flat recursive file index returned by `list_files_recursive` (⌘P). */
+export interface FileIndex {
+  root: string;
+  /** Paths relative to `root`, BFS (shallow-first) order. */
+  files: string[];
+  truncated: boolean;
+}
+
+export interface RecentEntry {
+  path: string;
+  opened_at: number;
+}
+
+export interface BookmarkEntry {
+  path: string;
+  bookmarked_at: number;
+}
+
+export interface SettingsState {
+  schema_version: number;
+  roots: string[];
+  recents?: RecentEntry[];
+  bookmarks?: BookmarkEntry[];
+  panes?: {
+    sidebar_px?: number;
+    preview_px?: number;
+    sidebar_visible?: boolean;
+    /** The reading session: open tabs, their history and zoom. */
+    tabs?: unknown;
+  };
+  preferences: {
+    ignore_globs: string[];
+    drag_out_mode: "file" | "url";
+    slack_target?: string | null;
+    beam_ttl_hours?: number;
+    /** Accept paired devices at launch (default on). */
+    remote_listen?: boolean;
+  };
+}
+
+/** Anchor rect for the native share popover, from getBoundingClientRect(). */
+export interface ShareAnchor {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** One active Beam offer (this instance is serving the staged blob). */
+export interface BeamOffer {
+  /** Offer id == the blob's BLAKE3 hash (hex). */
+  id: string;
+  path: string;
+  name: string;
+  size: number;
+  ticket: string;
+  /** The shareable `skypie://receive?…` deep link. */
+  link: string;
+  created_at: number;
+  expires_at: number;
+  fetches: number;
+}
+
+/** A completed receive: where the verified blob landed. */
+export interface BeamReceivedFile {
+  path: string;
+  name: string;
+  size: number;
+  hash: string;
+}
+
+/** One past beam in the received/ tree. */
+export interface BeamReceivedEntry {
+  path: string;
+  name: string;
+  size: number;
+  received_at: number;
+}
+
+// ── Paired devices ──────────────────────────────────────────────────────────
+
+/** One trusted, paired peer — one of the user's own devices. */
+export interface RemotePeer {
+  node_id: string;
+  device: string;
+  paired_at: number;
+  last_seen: number;
+}
+
+/** `remote_pair_begin` — the link + fingerprint material for the host face. */
+export interface RemotePairInvite {
+  ticket: string;
+  /** `skypie://pair?ticket=…` */
+  link: string;
+  node_id: string;
+  device: string;
+  expires_at: number;
+}
+
+/** A pairing that reached the fingerprint step, on EITHER side. */
+export interface RemotePendingPair {
+  node_id: string;
+  device: string;
+  /** The six words both screens must show. */
+  fingerprint: string[];
+  role: "host" | "guest";
+  created_at: number;
+}
+
+/** `remote_share_link` — a `skypie://open?path=…&from=<this node>` link for a
+ * local file, which any device paired with this one can open. */
+export interface RemoteShareLink {
+  link: string;
+  node_id: string;
+  device: string;
+  path: string;
+  name: string;
+  size: number;
+}
+
+/** One file a paired device has offered this install. Metadata only: the
+ *  bytes still arrive through `remoteGet` when the reader taps it. */
+export interface SharedEntry {
+  /** Absolute path on the HOST. What `remoteGet` is called with. */
+  path: string;
+  /** Basename, sent by the host so this side never parses a foreign path. */
+  name: string;
+  /** Unix seconds. The list arrives newest-first. */
+  shared_at: number;
+}
+
+/** Why `remote_get` failed — the word the tab switches on. */
+export type RemoteGetCause = "unpaired" | "unreachable" | "refused" | "local" | "denied";
+export interface RemoteGetError {
+  cause: RemoteGetCause;
+  reason: string;
+}
+
+/** The reducer's error kind: a local read, or a pull with its typed cause. */
+export type LoadErrorKind = "Io" | "remote-unknown" | `remote-${RemoteGetCause}`;
+
+/** A verified artifact fetched from a peer, landed in the local
+ * content-addressed cache. `path` is the LOCAL file the render pipeline
+ * reads; `remote_path` is the identity on the host. */
+export interface RemoteArtifact {
+  peer: string;
+  remote_path: string;
+  path: string;
+  hash: string;
+  size: number;
+  mtime: number;
+  warn: boolean;
+}
+
+/** `skypie://remote-presence`. */
+export interface RemotePresenceEvent {
+  peer: string;
+  state: "connecting" | "online" | "offline";
+  device: string | null;
+  reason: string | null;
+}
+
+/** `skypie://remote-event` — tagged on `kind`, fields stay snake_case (the
+ * wire shape the backend emits verbatim). */
+export type RemoteEvent =
+  /** A `skypie://open?…&from=<paired device>` link arrived. The file lives on
+   * `peer`; opening a tab at its remote address pulls it. */
+  | {
+      kind: "open-remote";
+      peer: string;
+      device: string;
+      path: string;
+      line: number | null;
+      intent: "open" | "reveal";
+    }
+  | {
+      kind: "pair-pending";
+      peer: string;
+      device: string;
+      fingerprint: string[];
+      role: "host" | "guest";
+    }
+  | { kind: "pair-link"; peer: string; peer_short: string; device: string; ticket: string }
+  | { kind: "peers-updated" }
+  /** iOS put the app back in front of the user. The backend has already
+   * dropped every session it held, so nothing this side cached about a live
+   * connection is true any more. */
+  | { kind: "resumed" };
+
+/** `platform_info` — the one signal the frontend uses to tell the desktop
+ * and iOS builds apart (PRODUCT.md Operating Context). Optional: older
+ * builds / test doubles without it fall back to macOS (see
+ * `state/platform.tsx`). */
+export interface PlatformInfo {
+  os: "macos" | "ios";
+}
+
+export interface IpcSurface {
+  listProjects(): Promise<ProjectEntry[] | string[]>;
+  listDir(projectPath: string): Promise<TreeEntry[]>;
+  readFile(path: string): Promise<FilePayload>;
+  setWorkspaceRoot?(path: string): void;
+  watchRoot?(path: string): Promise<void>;
+  refreshProject?(projectPath: string): Promise<void>;
+  getState?(): Promise<SettingsState>;
+  setStateField?(key: string, value: unknown): Promise<void>;
+  pickDirectory?(): Promise<string | null>;
+  pickFile?(): Promise<string | null>;
+  listRecents?(): Promise<RecentEntry[]>;
+  pushRecent?(path: string): Promise<void>;
+  listBookmarks?(): Promise<BookmarkEntry[]>;
+  addBookmark?(path: string): Promise<void>;
+  removeBookmark?(path: string): Promise<void>;
+  reorderBookmarks?(paths: string[]): Promise<void>;
+  listFilesRecursive?(root: string): Promise<FileIndex>;
+  /**
+   * Replace the set of individually watched out-of-root files (open external
+   * tabs). Empty array clears the watcher. Changes arrive as
+   * `skypie://file-changed` events.
+   */
+  watchExternalPaths?(paths: string[]): Promise<void>;
+  shareFile?(paths: string[], anchor: ShareAnchor): Promise<void>;
+  /**
+   * Hand a `skypie://` link (a pairing or beam ticket) to the native share
+   * sheet, anchored like `shareFile`. macOS only — the iOS companion shares
+   * links through the WKWebView Web Share API instead, because this build
+   * carries no UIKit bindings.
+   */
+  shareLink?(link: string, anchor: ShareAnchor): Promise<void>;
+  /** Stage a file and mint its beam ticket (boots the endpoint lazily). */
+  beamOffer?(path: string): Promise<BeamOffer>;
+  /** Revoke an active offer — the ticket dies instantly. */
+  beamStop?(offerId: string): Promise<void>;
+  /** Active offers. Never boots the endpoint. */
+  beamListOffers?(): Promise<BeamOffer[]>;
+  /** Post-confirm fetch; progress arrives as `skypie://beam-progress`. */
+  beamReceive?(ticket: string, name?: string): Promise<BeamReceivedFile>;
+  /** Where received artifacts land (badge prefix check). */
+  beamReceivedDir?(): Promise<string>;
+  /** Past beams, newest first. */
+  beamListReceived?(): Promise<BeamReceivedEntry[]>;
+
+  /** Trusted peers, newest pairing first. Never boots the endpoint. */
+  remoteListPeers?(): Promise<RemotePeer[]>;
+  /** Mint a one-time pairing ticket + link. Boots the endpoint. */
+  remotePairBegin?(): Promise<RemotePairInvite>;
+  /** Open a pairing ticket and park at the fingerprint step. */
+  remotePairComplete?(ticket: string): Promise<RemotePendingPair>;
+  /** Resolve a parked pairing after the human compares the six words. */
+  remotePairConfirm?(nodeId: string, accept: boolean): Promise<RemotePeer | null>;
+  /** Revoke a peer. Never boots. */
+  remoteUnpair?(nodeId: string): Promise<void>;
+  /** Dial a paired device so its presence is known. Boots the endpoint. */
+  remoteConnect?(peer: string): Promise<void>;
+  /** Fetch an artifact from a peer into the local cache. */
+  remoteGet?(peer: string, path: string): Promise<RemoteArtifact>;
+  /** What `peer` has offered this device. Empty when it cannot be asked. */
+  remoteListShared?(peer: string): Promise<SharedEntry[]>;
+  /** Reconcile the comments on a pulled tab with the host, both ways.
+   * `source` is the tab's `skypie-remote://` address — the store key the
+   * rail reads, passed through so the backend never rebuilds it. */
+  remoteSyncAnnotations?(peer: string, path: string, source: string): Promise<void>;
+  /** A `skypie://open?…&from=<this node>` link for a local file. Boots. */
+  remoteShareLink?(path: string): Promise<RemoteShareLink>;
+
+  /** Every comment on one file, replies included, oldest first. */
+  annotationsList?(source: string): Promise<Annotation[]>;
+  /** Files that have comments, newest activity first — the sidebar badges. */
+  annotationsIndex?(): Promise<AnnotationIndexEntry[]>;
+  /** Create a root comment. An empty body makes it a bare highlight. */
+  annotationsAdd?(
+    source: string,
+    body: string,
+    selector: Selector[],
+    session?: string | null,
+  ): Promise<Annotation>;
+  /** Reply inside a thread. */
+  annotationsReply?(source: string, parentId: string, body: string): Promise<Annotation>;
+  /** Mark a thread addressed, reopened, or won't-fix. */
+  annotationsSetStatus?(
+    source: string,
+    id: string,
+    status: AnnotationStatus,
+    note?: string | null,
+  ): Promise<Annotation>;
+  /** Write the feedback beside the file, on explicit request only. */
+  annotationsExport?(source: string): Promise<string>;
+
+  /** Which shell this build runs in — macOS desktop or the iOS companion. */
+  platformInfo?(): Promise<PlatformInfo>;
+}
+
+const WORKSPACE_ROOT_KEY = "skypie.workspaceRoot";
+
+function loadWorkspaceRoot(): string | null {
+  try {
+    return globalThis.localStorage?.getItem(WORKSPACE_ROOT_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function saveWorkspaceRoot(path: string): void {
+  try {
+    globalThis.localStorage?.setItem(WORKSPACE_ROOT_KEY, path);
+  } catch {
+    // ignore
+  }
+}
+
+class TauriIpc implements IpcSurface {
+  private workspaceRoot: string | null = loadWorkspaceRoot();
+
+  setWorkspaceRoot(path: string): void {
+    this.workspaceRoot = path;
+    saveWorkspaceRoot(path);
+  }
+
+  async listProjects(): Promise<ProjectEntry[]> {
+    if (!this.workspaceRoot) {
+      throw new Error("NO_WORKSPACE_ROOT");
+    }
+    return await invoke<ProjectEntry[]>("list_workspace_roots", {
+      path: this.workspaceRoot,
+    });
+  }
+
+  async listDir(projectPath: string): Promise<TreeEntry[]> {
+    return await invoke<TreeEntry[]>("list_dir", { path: projectPath });
+  }
+
+  async readFile(path: string): Promise<FilePayload> {
+    // A `skypie-remote://<peer>/abs/path` tab address: fetch the verified
+    // artifact into the local content-addressed cache, then read THAT file
+    // for bytes — `read_file` is deliberately ungated (see reader.rs), and
+    // the cache path is our own app-data file, not attacker-controlled. The
+    // returned payload's `path` is overwritten back to the remote address:
+    // that address, not the hash-addressed cache file, is the stable
+    // identity scroll memory and tab reload key off, and it must survive a
+    // reload landing at a NEW cache path.
+    const remote = parseRemoteAddress(path);
+    if (remote) {
+      const artifact = await this.remoteGet(remote.peer, remote.path);
+      const payload = await invoke<FilePayload>("read_file", { path: artifact.path });
+      return { ...payload, path };
+    }
+    return await invoke<FilePayload>("read_file", { path });
+  }
+
+  async watchRoot(path: string): Promise<void> {
+    await invoke<void>("set_workspace_root", { path });
+  }
+
+  async pickDirectory(): Promise<string | null> {
+    const result = await openDialog({
+      directory: true,
+      multiple: false,
+      title: "Choose workspace folder",
+    });
+    if (typeof result === "string") return result;
+    return null;
+  }
+
+  async pickFile(): Promise<string | null> {
+    const result = await openDialog({
+      directory: false,
+      multiple: false,
+      title: "Open file",
+    });
+    if (typeof result === "string") return result;
+    return null;
+  }
+
+  async getState(): Promise<SettingsState> {
+    return await invoke<SettingsState>("get_state");
+  }
+
+  async setStateField(key: string, value: unknown): Promise<void> {
+    await invoke<void>("set_state_field", { key, value });
+  }
+
+  async listRecents(): Promise<RecentEntry[]> {
+    return await invoke<RecentEntry[]>("list_recents");
+  }
+
+  async pushRecent(path: string): Promise<void> {
+    await invoke<void>("push_recent", { path });
+  }
+
+  async listBookmarks(): Promise<BookmarkEntry[]> {
+    return await invoke<BookmarkEntry[]>("list_bookmarks");
+  }
+
+  async addBookmark(path: string): Promise<void> {
+    await invoke<void>("add_bookmark", { path });
+  }
+
+  async removeBookmark(path: string): Promise<void> {
+    await invoke<void>("remove_bookmark", { path });
+  }
+
+  async reorderBookmarks(paths: string[]): Promise<void> {
+    await invoke<void>("reorder_bookmarks", { paths });
+  }
+
+  async listFilesRecursive(root: string): Promise<FileIndex> {
+    return await invoke<FileIndex>("list_files_recursive", { path: root });
+  }
+
+  async watchExternalPaths(paths: string[]): Promise<void> {
+    await invoke<void>("watch_external_paths", { paths });
+  }
+
+  async shareFile(paths: string[], anchor: ShareAnchor): Promise<void> {
+    await invoke<void>("share_file", { paths, anchor });
+  }
+
+  async shareLink(link: string, anchor: ShareAnchor): Promise<void> {
+    await invoke<void>("share_link", { link, anchor });
+  }
+
+  async beamOffer(path: string): Promise<BeamOffer> {
+    return await invoke<BeamOffer>("beam_offer", { path });
+  }
+
+  async beamStop(offerId: string): Promise<void> {
+    await invoke<void>("beam_stop", { offerId });
+  }
+
+  async beamListOffers(): Promise<BeamOffer[]> {
+    return await invoke<BeamOffer[]>("beam_list_offers");
+  }
+
+  async beamReceive(ticket: string, name?: string): Promise<BeamReceivedFile> {
+    return await invoke<BeamReceivedFile>("beam_receive", { ticket, name });
+  }
+
+  async beamReceivedDir(): Promise<string> {
+    return await invoke<string>("beam_received_dir");
+  }
+
+  async beamListReceived(): Promise<BeamReceivedEntry[]> {
+    return await invoke<BeamReceivedEntry[]>("beam_list_received");
+  }
+
+  async remoteListPeers(): Promise<RemotePeer[]> {
+    return await invoke<RemotePeer[]>("remote_list_peers");
+  }
+
+  async remotePairBegin(): Promise<RemotePairInvite> {
+    return await invoke<RemotePairInvite>("remote_pair_begin");
+  }
+
+  async remotePairComplete(ticket: string): Promise<RemotePendingPair> {
+    return await invoke<RemotePendingPair>("remote_pair_complete", { ticket });
+  }
+
+  async remotePairConfirm(nodeId: string, accept: boolean): Promise<RemotePeer | null> {
+    return await invoke<RemotePeer | null>("remote_pair_confirm", { nodeId, accept });
+  }
+
+  async remoteUnpair(nodeId: string): Promise<void> {
+    await invoke<void>("remote_unpair", { nodeId });
+  }
+
+  async remoteConnect(peer: string): Promise<void> {
+    await invoke<void>("remote_connect", { peer });
+  }
+
+  async remoteListShared(peer: string): Promise<SharedEntry[]> {
+    return await invoke<SharedEntry[]>("remote_list_shared", { peer });
+  }
+
+  async remoteGet(peer: string, path: string): Promise<RemoteArtifact> {
+    return await invoke<RemoteArtifact>("remote_get", { peer, path });
+  }
+
+  async remoteSyncAnnotations(peer: string, path: string, source: string): Promise<void> {
+    await invoke<void>("remote_sync_annotations", { peer, path, source });
+  }
+
+  async remoteShareLink(path: string): Promise<RemoteShareLink> {
+    return await invoke<RemoteShareLink>("remote_share_link", { path });
+  }
+
+  async annotationsList(source: string): Promise<Annotation[]> {
+    return await invoke<Annotation[]>("annotations_list", { source });
+  }
+
+  async annotationsIndex(): Promise<AnnotationIndexEntry[]> {
+    return await invoke<AnnotationIndexEntry[]>("annotations_index");
+  }
+
+  async annotationsAdd(
+    source: string,
+    body: string,
+    selector: Selector[],
+    session?: string | null,
+  ): Promise<Annotation> {
+    return await invoke<Annotation>("annotations_add", {
+      source,
+      body,
+      selector,
+      session: session ?? null,
+    });
+  }
+
+  async annotationsReply(source: string, parentId: string, body: string): Promise<Annotation> {
+    return await invoke<Annotation>("annotations_reply", { source, parentId, body });
+  }
+
+  async annotationsSetStatus(
+    source: string,
+    id: string,
+    status: AnnotationStatus,
+    note?: string | null,
+  ): Promise<Annotation> {
+    return await invoke<Annotation>("annotations_set_status", {
+      source,
+      id,
+      status,
+      note: note ?? null,
+    });
+  }
+
+  async annotationsExport(source: string): Promise<string> {
+    return await invoke<string>("annotations_export", { source });
+  }
+
+  async platformInfo(): Promise<PlatformInfo> {
+    return await invoke<PlatformInfo>("platform_info");
+  }
+}
+
+export const tauriIpc: IpcSurface = new TauriIpc();
+
+export const defaultIpc: IpcSurface = {
+  async listProjects() {
+    throw new Error("ipc.listProjects: not wired");
+  },
+  async listDir(_p) {
+    throw new Error("ipc.listDir: not wired");
+  },
+  async readFile(_p) {
+    throw new Error("ipc.readFile: not wired");
+  },
+};

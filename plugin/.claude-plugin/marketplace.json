@@ -1,0 +1,15 @@
+{
+  "name": "skypie",
+  "owner": { "name": "Alvaro Lillo" },
+  "metadata": {
+    "description": "Read what your agents write, on the device you actually read on — and comment back.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "skypie",
+      "source": "./",
+      "description": "Send artifacts to the user's own devices, and read the comments they leave back."
+    }
+  ]
+}

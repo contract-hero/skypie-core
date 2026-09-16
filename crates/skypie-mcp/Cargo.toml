@@ -1,0 +1,30 @@
+[package]
+name = "skypie-mcp"
+version.workspace = true
+edition.workspace = true
+description = "stdio MCP server that shares files through the Sky Pie app on this Mac"
+
+[lib]
+name = "skypie_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "skypie-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# The local socket contract with the app, and the one `state_dir()` rule
+# both binaries share. No iroh anywhere in this crate: the app is the node.
+skypie-ipc = { path = "../skypie-ipc" }
+# Exact-pinned like the iroh stack next door: the MCP tool macros expand into
+# rmcp's own router types, so a minor bump can change the generated schema.
+rmcp = { version = "=3.1.4", features = ["server", "macros", "schemars", "transport-io"] }
+# Same major as rmcp's own dependency: the derived `JsonSchema` impls must be
+# the ones rmcp's `schema_for_input` consumes.
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "io-std", "io-util", "net"] }
+
+[dev-dependencies]
+tempfile = "3"

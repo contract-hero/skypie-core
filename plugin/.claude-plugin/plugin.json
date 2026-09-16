@@ -1,0 +1,13 @@
+{
+  "name": "skypie",
+  "description": "Send artifacts to the devices the user actually reads them on, and read the comments they leave back.",
+  "version": "0.1.0",
+  "author": { "name": "Alvaro Lillo" },
+  "homepage": "https://skypie.ai",
+  "keywords": ["artifacts", "review", "feedback", "ios", "macos", "peer-to-peer"],
+  "mcpServers": {
+    "skypie": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/skypie-mcp"
+    }
+  }
+}

@@ -1,0 +1,11 @@
+[package]
+name = "skypie-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "skypie"
+path = "src/main.rs"
+
+[dependencies]
+percent-encoding = "2"

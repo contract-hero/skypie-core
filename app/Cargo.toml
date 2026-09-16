@@ -1,0 +1,81 @@
+[package]
+name = "skypie-app"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "skypie_app"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+percent-encoding = "2"
+dirs = "5"
+notify = "6"
+# `macos-private-api` must stay in the cross-platform table: `tauri-build`
+# cross-checks `macOSPrivateApi: true` in tauri.conf.json against the `tauri`
+# entry of `[dependencies]` and does not read target-specific tables. The
+# feature only reaches `wry/transparent` + `wry/fullscreen`, which are inert
+# on iOS, so it costs the iOS build nothing.
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+# In-app purchase. Cross-platform in the table on purpose: the crate
+# compiles everywhere and answers `platform-free` off iOS, so the app has
+# ONE entitlement call rather than a cfg at every gate.
+tauri-plugin-skypie-iap = { path = "../crates/tauri-plugin-skypie-iap" }
+base64 = "0.22"
+# Annotations: the content address stored with every comment (same
+# function iroh-blobs addresses with, so a hash printed by the wire and
+# one printed by the comment store are the same string), and the sortable
+# id every annotation carries.
+blake3 = "1"
+uuid = { version = "1", features = ["v7", "serde"] }
+# The whole networked stack — identity, endpoint, wire protocol, peer store
+# and request gate. Every iroh type stays inside it (pins included), so this
+# crate holds the Tauri layer and nothing else.
+skypie-remote = { path = "../crates/skypie-remote" }
+# The request/reply contract of the local socket `skypie-mcp` talks to, and
+# the one `state_dir()` rule both binaries share.
+skypie-ipc = { path = "../crates/skypie-ipc" }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "fs", "sync", "time", "net", "io-util"] }
+
+# ── macOS-only surface ──────────────────────────────────────────────────────
+# Everything here fails to build for iOS, so it must never be a plain
+# dependency:
+#   * `tauri-plugin-drag`       — the `drag` crate has no iOS platform impl
+#     (`unresolved import platform`), and a drag-out to Finder has no meaning
+#     on a phone.
+#   * `tauri-plugin-window-state` — there are no window geometries to persist.
+#   * `objc2-app-kit`           — AppKit does not exist on iOS (UIKit does).
+# Share sheet (NSSharingServicePicker) bindings are pinned to the same lines
+# wry uses (objc2 0.6 / objc2-* 0.3) so there's only one NSView type universe.
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri-plugin-drag = "2"
+tauri-plugin-window-state = "2.4.1"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = { version = "0.3", features = ["NSSharingService", "NSView", "NSResponder"] }
+
+# UIKit is the only source of a device name on iOS. `gethostname` answers
+# with the HOST Mac's name under the simulator, which is why every paired
+# simulator showed up as "Alvaros-MacBook-Pro" (STATUS.md).
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-ui-kit = { version = "0.3", features = ["UIDevice"] }
+
+[dev-dependencies]
+tempfile = "3"
+# Test-only: the deep-link tests and the two-endpoint integration tests mint
+# real tickets and dial real endpoints. Same exact pins as `skypie-remote`.
+iroh = "=1.0.3"
+iroh-blobs = "=0.103.0"
+
+[features]
+# E2E test hooks (echo log etc.); default OFF — gated to prevent prod abuse.
+e2e-hooks = []
