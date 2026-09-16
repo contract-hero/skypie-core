@@ -33,8 +33,8 @@ export default function CommentComposer({
     setBusy(true);
     try {
       // Clear only on SUCCESS. A refused write — store full, body too long,
-      // disk full, unentitled — keeps the text the error is asking the user
-      // to retry with.
+      // disk full — keeps the text the error is asking the user to retry
+      // with.
       if (await onSubmit(body)) setDraft("");
     } finally {
       setBusy(false);

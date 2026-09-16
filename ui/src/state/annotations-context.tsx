@@ -18,7 +18,6 @@ import * as React from "react";
 import type { AnnotationIndexEntry, IpcSurface } from "../ipc";
 import type { Annotation, Selector, Status } from "../annotations/types";
 import { useTauriEvent } from "../hooks/useTauriEvent";
-import { useEntitlement } from "./entitlement";
 import { messageOf } from "../utils/error-message";
 import { useRemoteCommentSync } from "./remote-comment-sync";
 
@@ -38,16 +37,9 @@ export interface AnnotationsContextValue {
   exportSidecar(): Promise<string | null>;
   /** Open comments on one path, straight from the index (no file read). */
   openCountFor(path: string): number;
-  /** Whether writes are allowed — what the UI renders its affordances from. */
+  /** Whether writes are allowed — what the UI renders its affordances from.
+   * Always true: commenting, replying and resolving are free everywhere. */
   canWrite: boolean;
-  /** True once a write was refused for want of a subscription. The paywall
-   * renders from this, so it appears for ANY blocked write, not only the ones
-   * a component remembered to guard. */
-  blocked: boolean;
-  /** Raise the paywall without attempting a write — what an affordance that
-   * is visibly disabled ("Subscribe to reply") calls when tapped. */
-  requestUpgrade(): void;
-  dismissBlocked(): void;
 }
 
 const EMPTY: AnnotationsContextValue = {
@@ -69,9 +61,6 @@ const EMPTY: AnnotationsContextValue = {
     return 0;
   },
   canWrite: true,
-  blocked: false,
-  requestUpgrade() {},
-  dismissBlocked() {},
 };
 
 const AnnotationsContext = React.createContext<AnnotationsContextValue>(EMPTY);
@@ -153,16 +142,6 @@ export function AnnotationsProvider({
     if (changed === source) refreshList();
   });
 
-  // ── The paywall gate ───────────────────────────────────────────────────
-  // It lives HERE, on the three functions that write, and not on the render
-  // conditions in the rail. Every write in the app funnels through this
-  // provider, so this is the only place that cannot be bypassed by a future
-  // writer — a sheet composer, a keyboard shortcut, a sidebar resolve action
-  // — forgetting to check first. The UI still reads `canWrite` to decide what
-  // to show; it just no longer carries the rule.
-  const { canComment } = useEntitlement();
-  const [blocked, setBlocked] = React.useState(false);
-
   // A pulled tab reconciles with its host: on open, on a timer while
   // visible, and right after each write below so the host sees a comment
   // without waiting for the next tick (a write mid-pass queues one catch-up
@@ -172,10 +151,6 @@ export function AnnotationsProvider({
 
   const addComment = React.useCallback(
     async (body: string, selector: Selector[]): Promise<Annotation | null> => {
-      if (!canComment) {
-        setBlocked(true);
-        return null;
-      }
       if (!ipc.annotationsAdd || !source) return null;
       try {
         const made = await ipc.annotationsAdd(source, body, selector, null);
@@ -191,15 +166,11 @@ export function AnnotationsProvider({
         return null;
       }
     },
-    [ipc, source, canComment, syncNow],
+    [ipc, source, syncNow],
   );
 
   const reply = React.useCallback(
     async (parentId: string, body: string): Promise<Annotation | null> => {
-      if (!canComment) {
-        setBlocked(true);
-        return null;
-      }
       if (!ipc.annotationsReply || !source) return null;
       try {
         const made = await ipc.annotationsReply(source, parentId, body);
@@ -212,15 +183,11 @@ export function AnnotationsProvider({
         return null;
       }
     },
-    [ipc, source, canComment, syncNow],
+    [ipc, source, syncNow],
   );
 
   const setStatus = React.useCallback(
     async (id: string, status: Status, note?: string): Promise<void> => {
-      if (!canComment) {
-        setBlocked(true);
-        return;
-      }
       if (!ipc.annotationsSetStatus || !source) return;
       try {
         await ipc.annotationsSetStatus(source, id, status, note ?? null);
@@ -231,7 +198,7 @@ export function AnnotationsProvider({
         setError(messageOf(e, "the comment could not be saved"));
       }
     },
-    [ipc, source, canComment, syncNow],
+    [ipc, source, syncNow],
   );
 
   const exportSidecar = React.useCallback(async (): Promise<string | null> => {
@@ -251,9 +218,6 @@ export function AnnotationsProvider({
     [index],
   );
 
-  const dismissBlocked = React.useCallback(() => setBlocked(false), []);
-  const requestUpgrade = React.useCallback(() => setBlocked(true), []);
-
   const value = React.useMemo(
     () => ({
       annotations,
@@ -265,26 +229,9 @@ export function AnnotationsProvider({
       setStatus,
       exportSidecar,
       openCountFor,
-      canWrite: canComment,
-      blocked,
-      requestUpgrade,
-      dismissBlocked,
+      canWrite: true,
     }),
-    [
-      annotations,
-      index,
-      loading,
-      error,
-      addComment,
-      reply,
-      setStatus,
-      exportSidecar,
-      openCountFor,
-      canComment,
-      blocked,
-      requestUpgrade,
-      dismissBlocked,
-    ],
+    [annotations, index, loading, error, addComment, reply, setStatus, exportSidecar, openCountFor],
   );
 
   return <AnnotationsContext.Provider value={value}>{children}</AnnotationsContext.Provider>;

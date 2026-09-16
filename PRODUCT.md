@@ -28,9 +28,9 @@ away from the desk on a phone. A browser makes this work feel like tab
 archaeology. A code editor renders the source, not the artifact.
 
 **Scope changed on 13 September 2026.** This was a personal tool with no
-second audience and no marketing surface. It is now a product: the macOS app,
-the MCP server and the Claude Code plugin are free, and the iOS companion
-carries a cheap subscription that buys commenting on artifacts.
+second audience and no marketing surface. It is now a product: open source,
+and free on every platform — the macOS app, the MCP server, the Claude Code
+plugin and the iOS companion.
 
 The primary user is unchanged — an engineer who runs agentic tools all day and
 reads what they produce. The second audience is everyone with that same job,

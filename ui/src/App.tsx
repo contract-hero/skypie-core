@@ -30,7 +30,6 @@ import { RemoteProvider } from "./state/remote";
 import { PlatformProvider, usePlatform } from "./state/platform";
 import { ContextMenuProvider } from "./components/ContextMenu";
 import { AnnotationsProvider } from "./state/annotations-context";
-import { EntitlementProvider } from "./state/entitlement";
 import CommentOverlay from "./components/CommentOverlay";
 import { readBridgeMessage } from "./annotations/bridge";
 import type { PendingSelection } from "./annotations/bridge";
@@ -112,11 +111,9 @@ export default function App({ ipc: injectedIpc }: AppProps = {}): React.ReactEle
 
   return (
     <PlatformProvider ipc={ipc}>
-      <EntitlementProvider>
-        <WorkspaceProvider ipc={ipc}>
-          <ProviderShell ipc={ipc} />
-        </WorkspaceProvider>
-      </EntitlementProvider>
+      <WorkspaceProvider ipc={ipc}>
+        <ProviderShell ipc={ipc} />
+      </WorkspaceProvider>
     </PlatformProvider>
   );
 }

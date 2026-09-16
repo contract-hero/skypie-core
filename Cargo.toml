@@ -3,7 +3,6 @@ members = [
   "crates/skypie-ipc",
   "crates/skypie-mcp",
   "crates/skypie-remote",
-  "crates/tauri-plugin-skypie-iap",
   "app",
   "cli",
 ]

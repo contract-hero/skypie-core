@@ -20,7 +20,6 @@ import type { PendingSelection } from "../annotations/bridge";
 import { useAnnotations } from "../state/annotations-context";
 import CommentThread from "./CommentThread";
 import CommentComposer from "./CommentComposer";
-import Paywall from "./Paywall";
 
 /**
  * Pair each thread with where it landed, in rail order.
@@ -48,28 +47,6 @@ export function railOrder(
     .filter((v): v is { thread: Thread; anchored: Anchored } => v !== null);
 }
 
-/**
- * Whether the paywall stands in front of the comments.
- *
- * Any refused write raises it; the usual one is a target picked while
- * unentitled, because that is the moment the value is obvious.
- *
- * NOT gated on `sellable`. It was, and a failed offerings fetch then left an
- * unentitled user with no paywall, no error and no way to buy — the worst
- * reachable state in the feature, from one network blip at launch. The
- * paywall knows how to say it cannot list products; silence does not.
- *
- * Shared with the desktop overlay: one rule with one recorded reason, rather
- * than a copy in each surface with the reason in only one of them.
- */
-export function paywallVisible(
-  blocked: boolean,
-  hasPending: boolean,
-  canWrite: boolean,
-): boolean {
-  return (blocked || hasPending) && !canWrite;
-}
-
 export default function CommentRail({
   text,
   contentHash,
@@ -86,24 +63,9 @@ export default function CommentRail({
   onClearPending: () => void;
   onSelectAnchor: (anchored: Anchored) => void;
 }): React.ReactElement {
-  const {
-    annotations,
-    loading,
-    error,
-    addComment,
-    reply,
-    setStatus,
-    canWrite,
-    blocked,
-    requestUpgrade,
-    dismissBlocked,
-  } = useAnnotations();
-  // The rule itself lives on the provider's write functions — see the gate
-  // note there. This component only RENDERS from it, so a future writer that
-  // forgets to ask is still refused.
+  const { annotations, loading, error, addComment, reply, setStatus, canWrite } =
+    useAnnotations();
   const [showResolved, setShowResolved] = React.useState(false);
-
-  const paywall = paywallVisible(blocked, pending !== null, canWrite);
 
   const rows = React.useMemo(
     () => railOrder(toThreads(annotations), text, contentHash),
@@ -145,15 +107,6 @@ export default function CommentRail({
 
       {error && <p className="comment-rail-error">{error}</p>}
 
-      {paywall ? (
-        <Paywall
-          onClose={() => {
-            dismissBlocked();
-            onClearPending();
-          }}
-        />
-      ) : null}
-
       {pending && canWrite && (
         <CommentComposer pending={pending} onSubmit={submit} onCancel={onClearPending} />
       )}
@@ -172,8 +125,6 @@ export default function CommentRail({
             anchored={anchored}
             active={false}
             onSelect={() => onSelectAnchor(anchored)}
-            canWrite={canWrite}
-            onRequestUpgrade={requestUpgrade}
             onReply={(body) => void reply(thread.root.id, body)}
             onSetStatus={(status) => void setStatus(thread.root.id, status)}
           />

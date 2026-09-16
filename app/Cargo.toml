@@ -24,10 +24,7 @@ tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
-# In-app purchase. Cross-platform in the table on purpose: the crate
-# compiles everywhere and answers `platform-free` off iOS, so the app has
-# ONE entitlement call rather than a cfg at every gate.
-tauri-plugin-skypie-iap = { path = "../crates/tauri-plugin-skypie-iap" }
+# Raster images are served base64-encoded over IPC (see `reader.rs`).
 base64 = "0.22"
 # Annotations: the content address stored with every comment (same
 # function iroh-blobs addresses with, so a hash printed by the wire and

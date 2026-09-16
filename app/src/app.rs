@@ -237,8 +237,7 @@ pub fn run(context: tauri::Context) {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_skypie_iap::init());
+        .plugin(tauri_plugin_opener::init());
 
     // Desktop-only plugins. `window-state` has no window geometry to persist
     // on iOS and `drag` (drag-out to Finder) has no iOS platform impl at all,

@@ -87,8 +87,6 @@ function CommentThreadImpl({
   thread,
   anchored,
   active,
-  canWrite = true,
-  onRequestUpgrade,
   onSelect,
   onReply,
   onSetStatus,
@@ -97,10 +95,6 @@ function CommentThreadImpl({
   /** Where this thread landed after the last re-anchor pass. */
   anchored?: Anchored;
   active: boolean;
-  /** False without a subscription: reading a thread stays free, answering it
-   * does not. Replying and resolving are both writes. */
-  canWrite?: boolean;
-  onRequestUpgrade?: () => void;
   onSelect: () => void;
   onReply: (body: string) => void;
   onSetStatus: (status: "open" | "addressed" | "wontfix") => void;
@@ -171,15 +165,7 @@ function CommentThreadImpl({
       ))}
 
       <div className="comment-actions">
-        {!canWrite ? (
-          <button
-            type="button"
-            className="comment-action"
-            onClick={() => onRequestUpgrade?.()}
-          >
-            Subscribe to reply
-          </button>
-        ) : resolved ? (
+        {resolved ? (
           <button type="button" className="comment-action" onClick={() => onSetStatus("open")}>
             <RotateCcw size={13} strokeWidth={1.8} aria-hidden />
             Reopen
@@ -194,11 +180,9 @@ function CommentThreadImpl({
             Resolve
           </button>
         )}
-        {canWrite && (
-          <button type="button" className="comment-action" onClick={() => setReplying((v) => !v)}>
-            Reply
-          </button>
-        )}
+        <button type="button" className="comment-action" onClick={() => setReplying((v) => !v)}>
+          Reply
+        </button>
         {resolved && <span className="comment-status">{statusLabel(root.status)}</span>}
       </div>
 

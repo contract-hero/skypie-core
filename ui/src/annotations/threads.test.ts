@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { anchorLabel, authorOf, shortTime } from "../components/CommentThread";
-import { paywallVisible, railOrder } from "../components/CommentRail";
+import { railOrder } from "../components/CommentRail";
 import { lineOf, regionOf, toThreads } from "./types";
 import type { Annotation } from "./types";
 import { selectorsForRange } from "./anchor";
@@ -168,33 +168,6 @@ describe("reading selectors back", () => {
       },
     };
     expect(regionOf(bad.target)).toBeNull();
-  });
-});
-
-describe("paywallVisible", () => {
-  // The rule an earlier version of got wrong, shipping a state with no
-  // paywall, no error and no way to buy. The whole table, so a rewrite of
-  // the expression has to keep every cell.
-  const cases: [boolean, boolean, boolean, boolean][] = [
-    // blocked, hasPending, canWrite, expected
-    [false, false, false, false],
-    [false, false, true, false],
-    [false, true, false, true],
-    [false, true, true, false],
-    [true, false, false, true],
-    [true, false, true, false],
-    [true, true, false, true],
-    [true, true, true, false],
-  ];
-  it.each(cases)(
-    "blocked=%s pending=%s canWrite=%s → %s",
-    (blocked, hasPending, canWrite, expected) => {
-      expect(paywallVisible(blocked, hasPending, canWrite)).toBe(expected);
-    },
-  );
-
-  it("never shows the paywall to someone who can write", () => {
-    expect(paywallVisible(true, true, true)).toBe(false);
   });
 });
 

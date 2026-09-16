@@ -35,9 +35,8 @@ import { isOpen, lineOf, toThreads } from "../annotations/types";
 import type { Thread } from "../annotations/types";
 import { useAnnotations } from "../state/annotations-context";
 import CommentComposer from "./CommentComposer";
-import { paywallVisible, railOrder } from "./CommentRail";
+import { railOrder } from "./CommentRail";
 import CommentThread, { anchorLabel, authorOf, shortTime } from "./CommentThread";
-import Paywall from "./Paywall";
 
 /** The id the pending composer is located under, beside the real threads. */
 const PENDING_ID = "pending";
@@ -166,17 +165,7 @@ export default function CommentOverlay({
   activeId,
   onActivate,
 }: CommentOverlayProps): React.ReactElement {
-  const {
-    annotations,
-    addComment,
-    reply,
-    setStatus,
-    canWrite,
-    blocked,
-    requestUpgrade,
-    dismissBlocked,
-    error,
-  } = useAnnotations();
+  const { annotations, addComment, reply, setStatus, canWrite, error } = useAnnotations();
   const overlayRef = React.useRef<HTMLDivElement | null>(null);
   const [showResolved, setShowResolved] = React.useState(false);
   const [hoverId, setHoverId] = React.useState<string | null>(null);
@@ -363,8 +352,6 @@ export default function CommentOverlay({
   }
   const layout = layoutNotes(boxes, pending ? PENDING_ID : activeId, { gap: 8, minTop: 8 });
 
-  const paywall = paywallVisible(blocked, pending !== null, canWrite);
-
   const submit = async (body: string): Promise<boolean> => {
     if (!pending) return false;
     const made = await addComment(body, pending.selector);
@@ -402,8 +389,6 @@ export default function CommentOverlay({
             anchored={row.anchored}
             active
             onSelect={() => onActivate(null)}
-            canWrite={canWrite}
-            onRequestUpgrade={requestUpgrade}
             onReply={(body) => void reply(id, body)}
             onSetStatus={(status) => void setStatus(id, status)}
           />
@@ -417,17 +402,6 @@ export default function CommentOverlay({
   return (
     <div ref={overlayRef} className="comment-overlay" aria-label="Comments">
       {error ? <p className="comment-overlay-error">{error}</p> : null}
-
-      {paywall ? (
-        <div className="comment-note comment-note-paywall">
-          <Paywall
-            onClose={() => {
-              dismissBlocked();
-              onClearPending();
-            }}
-          />
-        </div>
-      ) : null}
 
       {pending && canWrite ? (
         <div

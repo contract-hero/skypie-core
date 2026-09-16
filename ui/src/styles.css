@@ -2538,75 +2538,6 @@ body.platform-ios .settings-panel .button {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
-   Paywall
-   Shown inside the comment rail / sheet, never as a launch screen: it
-   appears at the moment the user tries to write, and nowhere else.
-   ────────────────────────────────────────────────────────────────────────── */
-
-.paywall {
-  padding: var(--space-4);
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-elevated);
-}
-.paywall-head { color: var(--fg-muted); }
-.paywall-title {
-  margin: var(--space-2) 0 var(--space-1);
-  font-family: var(--font-display);
-  font-size: var(--text-body);
-  font-weight: 600;
-  letter-spacing: var(--track-headline);
-  color: var(--heading-fg);
-}
-.paywall-sub,
-.paywall-renewal,
-.paywall-fine {
-  margin: 0 0 var(--space-2);
-  font-size: var(--text-caption);
-  line-height: 1.5;
-  color: var(--fg-muted);
-}
-.paywall-fine { margin-top: var(--space-3); color: var(--fg-dim); }
-.paywall-error {
-  margin: 0 0 var(--space-2);
-  font-size: var(--text-caption);
-  color: var(--error-fg);
-}
-
-.paywall-products { list-style: none; margin: var(--space-3) 0 0; padding: 0; }
-.paywall-products li + li { margin-top: var(--space-2); }
-.paywall-product {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  width: 100%;
-  min-height: var(--tap-min);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
-  background: var(--bg);
-  color: var(--fg);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.paywall-product:hover { border-color: var(--accent); }
-.paywall-product:disabled { opacity: 0.6; cursor: default; }
-.paywall-product-title { font-size: var(--text-body-sm); font-weight: 600; }
-.paywall-product-price {
-  margin-left: auto;
-  font-size: var(--text-caption);
-  color: var(--fg-muted);
-}
-.paywall-busy { color: var(--accent); }
-
-.paywall-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  margin-top: var(--space-3);
-}
-
-/* ──────────────────────────────────────────────────────────────────────────
    Line numbers
    Code and plain text carry a GitHub-style gutter: one number per `.line`
    span (shiki's shape, which the plain fallback copies), drawn as a
@@ -2731,10 +2662,6 @@ pre[data-fallback] .line::before {
 .comment-note-composer {
   border-color: var(--accent);
   z-index: 2;
-}
-.comment-note-paywall {
-  top: var(--space-2);
-  z-index: 3;
 }
 .comment-note .comment-thread {
   border-bottom: 0;
