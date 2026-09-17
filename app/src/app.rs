@@ -381,15 +381,21 @@ fn canonicalize_path(
 /// `pies::add_to_pie`, so neither a concurrent request for the same new name
 /// nor a concurrent delete can split them.
 ///
-/// Returns the pie as it stands after the insert, the canonical path,
-/// whether the pie was created, and whether the member was newly added.
+/// `source` is a PARAMETER, not a constant folded into this function: the
+/// socket dispatcher passes `Agent`, and a second writer (a hook, a future
+/// verb) states its own provenance at its own call site instead of having to
+/// edit this shared function.
+///
+/// Returns what `pies::add_to_pie` decided (`PieAdd` — the pie as it stands
+/// after the insert, plus `created`/`inserted`) and the canonical path.
 pub(crate) fn add_to_pie_for(
     app: &tauri::AppHandle,
     roots: &crate::security::RootSet,
     pie: &str,
     path: &std::path::Path,
+    source: Option<crate::pies::PieMemberSource>,
     origin: Option<crate::pies::PieMemberOrigin>,
-) -> Result<(crate::pies::Pie, std::path::PathBuf, bool, bool), String> {
+) -> Result<(crate::pies::PieAdd, std::path::PathBuf), String> {
     // The SAME single canonicalisation gate every webview command goes
     // through (`canonicalize_member_path`), not a second `fs::canonicalize`
     // of the socket's own — `security.rs` states there is exactly one gate
@@ -397,16 +403,10 @@ pub(crate) fn add_to_pie_for(
     let canonical = canonicalize_member_path(path, roots)?;
     let kind = member_kind_of(&canonical);
 
-    let (resolved, created, added) = crate::pies::add_to_pie(
-        pie,
-        &canonical,
-        kind,
-        Some(crate::pies::PieMemberSource::Agent),
-        origin,
-    )?;
+    let add = crate::pies::add_to_pie(pie, &canonical, kind, source, origin)?;
 
     emit_pies(app);
-    Ok((resolved, canonical, created, added))
+    Ok((add, canonical))
 }
 
 /// Start (or replace) the filesystem watcher rooted at `path`. Each successful

@@ -15,7 +15,7 @@
 import * as React from "react";
 import { defaultIpc } from "../ipc";
 import type { Pie, PieMemberSource, PiesList } from "../ipc";
-import { subtractPending, withPending, withoutPending } from "../state/pies";
+import { applySeenFloors, subtractPending, withPending, withoutPending } from "../state/pies";
 import { useTauriEvent } from "./useTauriEvent";
 
 const NO_PENDING: ReadonlySet<string> = new Set<string>();
@@ -62,9 +62,15 @@ export function usePies(ipc = defaultIpc, onNotice?: (text: string) => void): Us
   // echoes the whole list (warning included) on every write, so raising it
   // unconditionally would toast on every keystroke-driven op.
   const lastNotified = React.useRef<string | null>(null);
+  // Per-id `seen_at` floors for touches whose IPC call has not settled yet
+  // — see `applySeenFloors`. A ref, not state: it is read inside
+  // `acceptList`, which must stay stable across a touch (it is the
+  // `skypie://pies-updated` subscriber), and a floor never needs to render
+  // anything by itself.
+  const seenFloors = React.useRef<Map<string, number>>(new Map());
   const acceptList = React.useCallback(
     (list: PiesList) => {
-      setPies(list.pies);
+      setPies(applySeenFloors(list.pies, seenFloors.current));
       const next = list.warning ?? null;
       setWarning(next);
       if (next && next !== lastNotified.current) onNotice?.(next);
@@ -182,8 +188,20 @@ export function usePies(ipc = defaultIpc, onNotice?: (text: string) => void): Us
   const touchPieSeen = React.useCallback(
     async (id: string): Promise<void> => {
       const now = Date.now();
+      // Raise the floor BEFORE the optimistic edit, so a `pies-updated` event
+      // that lands anywhere inside this call — the agent socket emits at
+      // arbitrary times — cannot hand back the pie's pre-touch `seen_at` and
+      // re-light the pill on a pie the user has open. Cleared once the write
+      // has settled either way: on success the server document now carries a
+      // `seen_at` of its own, and on failure there is no stamp left to
+      // defend.
+      seenFloors.current.set(id, now);
       setPies((prev) => prev.map((p) => (p.id === id ? { ...p, seen_at: now } : p)));
-      if (ipc.touchPieSeen) await ipc.touchPieSeen(id);
+      try {
+        if (ipc.touchPieSeen) await ipc.touchPieSeen(id);
+      } finally {
+        seenFloors.current.delete(id);
+      }
     },
     [ipc],
   );

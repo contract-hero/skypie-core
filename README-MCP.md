@@ -212,19 +212,21 @@ for, naming the pie for that project.
   name yet? One is created for you — you never need to ask the user to make
   it first. Two existing pies share the name? The call fails and lists their
   ids; call again with one of those. The name is trimmed, must not be empty
-  or carry control characters, and is capped at 200 characters — it is the
+  or carry control characters, and is refused above 200 characters — it is the
   label a person reads on the toolbar.
-- `path` — absolute, or relative to the server's working directory.
+- `path` — absolute, or relative to the server's working directory. A
+  leading `~` expands against the user's home directory.
 - `session_id`, `prompt_id` — optional identifiers for this session/turn,
   stored on the member for the user's own reference. They are provenance
   only and never change what the call does. Each is trimmed, dropped when
-  empty, and capped at 128 characters.
+  empty, and refused above 128 characters.
 
 Returns `pie` (name), `pie_id`, `path` (canonical), `members` (the pie's
 member count after the call), `created` and `added` (`false` when the path
-was already a member — the call is idempotent and writes nothing). The user sees a
-fresh-file pill on that pie the next time they look at the toolbar, and the
-file sits on top of its layer list.
+was already a member — the call is idempotent and writes nothing). When the
+file is newly added AND newer than the last time the user opened that pie,
+the toolbar shows a fresh-file pill on it. A file joins the pie's file
+layer; a folder becomes a layer of its own.
 
 ### `server_status {}`
 

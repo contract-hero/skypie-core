@@ -78,8 +78,9 @@ pub struct AddToPieArgs {
     /// the call fails and lists their ids; call again with one of those ids.
     pub pie: String,
     /// Absolute path of the file or folder to add. A relative path resolves
-    /// against the server's working directory. Use the path you just wrote
-    /// or the folder you just produced output into.
+    /// against the server's working directory, and a leading `~` expands
+    /// against the user's home directory. Use the path you just wrote or the
+    /// folder you just produced output into.
     pub path: String,
     /// Your own identifier for this Claude Code session, if you have one.
     /// Stored on the member for the user's own reference; never used to

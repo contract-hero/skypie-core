@@ -1,5 +1,5 @@
 // `pnpm -C ui e2e:m5` — M5's own acceptance checkpoint: a Claude Code
-// session's own transport, `Req::AddToPie` over `app.sock`, adds a file it
+// session's own transport, `Request::AddToPie` over `app.sock`, adds a file it
 // just wrote to "Pricing" WHILE the plate is open — the pill ticks, the row
 // lands on top, and the write is not lost against a concurrent UI
 // `touch_seen` — driven against the REAL debug macOS app. This harness
@@ -52,8 +52,12 @@ async function main(): Promise<void> {
   console.log(`fixture workspace: ${fixture.dir}`);
   console.log(`scratch state dir: ${stateDir}`);
 
-  let app: LaunchedApp = await launchDesktop({ stateDir, skipBuild: false });
+  // Inside the try, and nullable: launched BEFORE it, a failing
+  // `launchDesktop` — this scenario builds Rust — skips the `finally`
+  // entirely and leaks both temp trees. Same shape m1/m2/m3/m4 use.
+  let app: LaunchedApp | null = null;
   try {
+    app = await launchDesktop({ stateDir, skipBuild: false });
     await waitFor(app, `document.querySelector(".toolbar") !== null`, 60_000);
     await setWorkspaceRoot(app, root);
 
@@ -297,7 +301,7 @@ async function main(): Promise<void> {
     //     and leaves no orphan pie behind — checkpoint 9 above only ever
     //     named an EXISTING pie ("Pricing"), so it could not tell whether
     //     `add_to_pie_for` really stats the path BEFORE touching the pies
-    //     document (app.rs: `canonicalize` runs ahead of `find_or_create`)
+    //     document (app.rs: `canonicalize` runs ahead of `pies::add_to_pie`)
     //     or would leave a pie named "Orphan Pie" behind for a path that
     //     was never written ────────────────────────────────────────────────
     const countBeforeOrphan = await pieCount(app);
@@ -360,9 +364,18 @@ async function main(): Promise<void> {
 
     console.log("PASS");
   } finally {
-    await quit(app);
-    await cleanupFixtureWorkspace(fixture);
-    await fs.promises.rm(stateDir, { recursive: true, force: true });
+    // Each cleanup step guarded on its own: a failing `quit` must not mask
+    // the real error from the body above, nor skip the two removals under
+    // it.
+    if (app) {
+      await quit(app).catch((e: unknown) => console.error("cleanup: quit failed", e));
+    }
+    await cleanupFixtureWorkspace(fixture).catch((e: unknown) =>
+      console.error("cleanup: removing the fixture workspace failed", e),
+    );
+    await fs.promises
+      .rm(stateDir, { recursive: true, force: true })
+      .catch((e: unknown) => console.error("cleanup: removing the scratch state dir failed", e));
   }
 }
 

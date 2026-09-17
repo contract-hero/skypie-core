@@ -158,7 +158,7 @@ static PENDING_WRITE: OnceLock<Arc<Mutex<Option<std::time::Instant>>>> = OnceLoc
 static SCHEDULED_WRITES: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
-pub(crate) fn write_generation_for_test() -> u64 {
+pub(crate) fn scheduled_writes_for_test() -> u64 {
     SCHEDULED_WRITES.load(std::sync::atomic::Ordering::Relaxed)
 }
 

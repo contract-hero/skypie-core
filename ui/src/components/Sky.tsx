@@ -168,11 +168,21 @@ export default function Sky({
   // runs (ref callbacks commit before effects), so the entry equal to the
   // live `document.activeElement` is the right slot. Only when nothing in the
   // band holds focus does this fall back to the clamp.
+  //
+  // Keyed on the band's IDENTITY, not on `tinIndex`: one pie removed and one
+  // added in the same commit leaves `pies.length` — and so `tinIndex` —
+  // unchanged while every slot after the removal now names a different tile,
+  // and the effect would not run at all. The joined id list changes for that
+  // commit, so it does. A string, not the array, because `pies` is rebuilt on
+  // every recents/bookmarks tick and would re-run this on identity alone.
+  const bandIdentity = pies.map((p) => p.id).join("\n");
   React.useEffect(() => {
     const active = document.activeElement;
     const activeIndex = itemRefs.current.findIndex((el) => el !== null && el === active);
     setFocusedIndex((i) => (activeIndex >= 0 ? activeIndex : Math.min(i, tinIndex)));
-  }, [tinIndex]);
+    // `tinIndex` is `pies.length`, which `bandIdentity` already covers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bandIdentity]);
 
   // M4: take a deep-link reveal's armed target (App.tsx) into local state.
   // App drops `revealTarget` in the very next effect pass — it is a

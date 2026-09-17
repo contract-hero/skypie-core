@@ -280,8 +280,10 @@ impl SkyPieMcp {
                        naming the pie they use for that project (e.g. \"Pricing\"). The pie is \
                        matched by name, case-insensitively; if none matches, one is created for \
                        you, so you never need to ask the user to make the pie first — just pick a \
-                       name that describes the project. The user then sees a fresh-file pill on \
-                       that pie in Sky Pie's toolbar, and the file is on top of its layer list. \
+                       name that describes the project. When the file is newly added AND newer \
+                       than the last time the user opened that pie, Sky Pie's toolbar shows a \
+                       fresh-file pill on it; a file joins the pie's file layer, and a folder \
+                       becomes a layer of its own. \
                        Pass session_id/prompt_id if you have them; they are stored on the member \
                        for the user's own reference and never change what this call does."
     )]
@@ -724,6 +726,42 @@ mod tests {
         assert!(text.contains("false — the last boot failed: port in use"), "{text}");
         assert!(text.contains("beam_artifact roots: /w"), "{text}");
         assert!(text.contains("launched by this session: true"), "{text}");
+    }
+
+    /// The three sentences `add_to_pie` can answer with. They are pinned
+    /// because a model acts on this text, not on the booleans behind it —
+    /// and the idempotent case matters most: it must NOT read as a fresh
+    /// add, or a model that already put the file in the pie would be told
+    /// it just landed there again.
+    #[test]
+    fn the_add_to_pie_sentence_distinguishes_a_create_an_add_and_a_no_op() {
+        let reply = |created: bool, added: bool, members: usize| AddedToPie {
+            pie: "Pricing".into(),
+            pie_id: "p1".into(),
+            path: "/w/pricing-v3.html".into(),
+            members,
+            created,
+            added,
+        };
+
+        assert_eq!(
+            added_to_pie_summary(&reply(true, true, 1)),
+            "Created \"Pricing\" and added /w/pricing-v3.html. \"Pricing\" now holds 1 member(s).",
+        );
+        assert_eq!(
+            added_to_pie_summary(&reply(false, true, 2)),
+            "Added /w/pricing-v3.html to \"Pricing\". \"Pricing\" now holds 2 member(s).",
+        );
+
+        let idempotent = added_to_pie_summary(&reply(false, false, 2));
+        assert_eq!(
+            idempotent,
+            "/w/pricing-v3.html was already a member of \"Pricing\" — nothing changed. \"Pricing\" now holds 2 member(s).",
+        );
+        assert!(
+            !idempotent.contains("Added ") && !idempotent.contains("Created "),
+            "the idempotent case must not read as a fresh add: {idempotent}",
+        );
     }
 
     #[test]

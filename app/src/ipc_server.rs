@@ -369,15 +369,24 @@ async fn dispatch(
             // by the app the same way every webview command receives it as
             // a `tauri::State`; the socket reads it from the handle.
             let roots = app.state::<crate::security::RootSet>();
-            let (resolved, path, created, added) =
-                crate::app::add_to_pie_for(&app, &roots, &pie, &path, origin)?;
+            // This verb is the AGENT's reach, so it names `Agent` here —
+            // `add_to_pie_for` takes the source as a parameter so a second
+            // writer can state a different one.
+            let (add, path) = crate::app::add_to_pie_for(
+                &app,
+                &roots,
+                &pie,
+                &path,
+                Some(crate::pies::PieMemberSource::Agent),
+                origin,
+            )?;
             Ok(Reply::AddedToPie {
-                members: resolved.members.len(),
-                pie: resolved.name,
-                pie_id: resolved.id,
+                members: add.pie.members.len(),
+                pie: add.pie.name,
+                pie_id: add.pie.id,
                 path,
-                created,
-                added,
+                created: add.created,
+                added: add.inserted,
             })
         }
 
@@ -600,7 +609,21 @@ mod transport_tests {
             let message = e2e_only_refusal(&req);
             assert!(message.starts_with("this transport serves only e2e verbs (got "), "{message}");
         }
-        for req in [Request::Status, Request::FeedbackIndex] {
+        // `AddToPie` is pinned on the NOT-trusted-only side on purpose: it
+        // writes no bytes to any peer and mints no link — it adds a local
+        // path the caller already named to a local document — so it is the
+        // same kind of verb as `Status`, not the same kind as `ShareLink`.
+        // Recorded here so making it trusted-only later is a deliberate
+        // decision with a failing test, not a quiet edit of the matcher.
+        for req in [
+            Request::Status,
+            Request::FeedbackIndex,
+            Request::AddToPie {
+                pie: "Pricing".into(),
+                path: "/tmp/a".into(),
+                origin: None,
+            },
+        ] {
             assert!(!is_trusted_only(&req), "{req:?}");
         }
     }
