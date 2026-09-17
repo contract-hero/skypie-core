@@ -107,6 +107,30 @@ function usePaneShort(): boolean {
   return short;
 }
 
+/** M4 polish: below a 760px pane the plate's two-column layout is the next
+ *  thing to overflow after the pie/legend themselves (`usePaneShort`
+ *  handles the pie diameter and legend scroll) — the left rail (pie +
+ *  readout) narrows from 240px to 140px so the right column keeps enough
+ *  room to read a filename. Same shape as `usePaneShort`, width instead of
+ *  height; a SEPARATE threshold, since a short-but-wide window and a
+ *  narrow-but-tall one hit different overflow first. */
+const NARROW_PANE_WINDOW_W = 760;
+
+function usePaneNarrow(): boolean {
+  const [narrow, setNarrow] = React.useState(
+    () => typeof window !== "undefined" && window.innerWidth <= NARROW_PANE_WINDOW_W,
+  );
+  React.useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mql = window.matchMedia(`(max-width: ${NARROW_PANE_WINDOW_W}px)`);
+    const onChange = () => setNarrow(mql.matches);
+    onChange();
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+  return narrow;
+}
+
 /** `formatAgo` already returns the complete phrase "just now" for anything
  *  under 60s — appending " ago" unconditionally used to read "just now ago"
  *  for the normal case of a file opened or bookmarked in the last minute
@@ -146,9 +170,23 @@ export interface PiePlateProps {
    *  `Sky.tsx`'s own folder-add failure already uses — optional so a bare
    *  test double for `PiePlateProps` still renders without one. */
   onNotice?: (text: string, action?: AppNoticeAction, durationMs?: number) => void;
+  /** M4: deep-link reveal (App.tsx's `revealRoute === "plate"`) arms this
+   *  with the file the reveal targeted — on mount, that row gets DOM focus
+   *  and the roving-tabindex slot, INSTEAD OF the checked-legend-radio
+   *  mount focus below (spec section 7: "the plate opens on that pie with
+   *  the row focused"). `null`/omitted for every other way the plate opens
+   *  (a band click, Enter on the band). */
+  focusPath?: string | null;
 }
 
-export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: PiePlateProps): React.ReactElement {
+export default function PiePlate({
+  pie,
+  onClose,
+  onOpenFile,
+  ipc,
+  onNotice,
+  focusPath,
+}: PiePlateProps): React.ReactElement {
   const { root } = useWorkspace();
   const contextMenu = useContextMenu();
   const fileMenuFor = useFileMenu(onOpenFile);
@@ -156,6 +194,7 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
   const pieCensusCtx = usePieCensus();
   const { openCountFor } = useAnnotations();
   const short = usePaneShort();
+  const narrow = usePaneNarrow();
   const plateRef = React.useRef<HTMLDivElement | null>(null);
   const layerListRef = React.useRef<HTMLDivElement | null>(null);
   const legendRefs = React.useRef<Partial<Record<FileKind, HTMLButtonElement | null>>>({});
@@ -396,8 +435,38 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
   // radiogroup's own keydown handler is live from the very first keypress.
   // Falls back to the plate container when there is no radio to focus (an
   // empty pie).
+  //
+  // M4: when `focusPath` is armed (App.tsx's deep-link reveal), THIS
+  // effect is the one that runs the reveal's own promise — "the plate
+  // opens on that pie with the row focused" (spec section 7) — instead of
+  // the checked-legend-radio target above, not in a second effect after
+  // it: a second effect would fire in DOM order after this one and win the
+  // race for real focus regardless of which target made more sense, and
+  // there is exactly one thing to focus on any given mount anyway.
   React.useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
+    if (focusPath) {
+      const navIndex = navItems.findIndex((item) => item.type === "file" && item.file.path === focusPath);
+      if (navIndex >= 0) {
+        setFocusedLayer(navIndex);
+        // Same query `onLayerKeyDown`'s own `focusRow` uses — headers and
+        // rows share it, in the SAME DOM order `navItems` was built in, so
+        // this index lines up with `navIndex` exactly.
+        const row = layerListRef.current?.querySelectorAll<HTMLElement>(
+          ".pie-layer-header, .start-row",
+        )[navIndex];
+        row?.focus();
+        return () => {
+          previouslyFocused?.focus?.();
+        };
+      }
+      // `focusPath` named a file that isn't in `navItems` YET — the pie's
+      // census can still be in flight even though `App.tsx`'s own
+      // `revealRoute` already saw it in `pie.files` a moment earlier (a
+      // folder member's census resolving between that check and this
+      // mount). Falls through to the legend-radio target below rather than
+      // focusing nothing.
+    }
     const target = (focusedKind && legendRefs.current[focusedKind]) || plateRef.current;
     target?.focus();
     return () => {
@@ -519,7 +588,9 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
   return (
     <div
       ref={plateRef}
-      className="pie-plate"
+      className={
+        "pie-plate" + (short ? " pie-plate-short" : "") + (narrow ? " pie-plate-narrow" : "")
+      }
       role="dialog"
       aria-label={`${pie.name} pie`}
       aria-modal="false"

@@ -3413,3 +3413,48 @@ pre[data-fallback] .line::before {
   transition: background var(--dur-fast) var(--ease);
 }
 .start-row-missing button:hover { background: var(--bg-row-hover); }
+
+/* ── Sky band — M4 additions (Finder drop, reveal, short/narrow plate) ────
+   The drop-target ring and the passive active-file mark (spec section 6/3),
+   plus the plate's short/narrow-pane polish (this milestone's own 640×400
+   floor check). No new token: the ring reuses --sky-focus (the SAME shade
+   .sky-pie:focus-visible already draws), and the active-file underline
+   spends it on a second job rather than adding a color. */
+
+/* Driven by useFinderDrop's `over` stream (Sky.tsx's `dropTargetId`), never
+   DOM `dragover` (which does not fire for an OS-level drag while Tauri's
+   own drag-drop handling is enabled) — the same rule body as
+   `.sky-pie:focus-visible` above, duplicated rather than shared through a
+   class because a plain data-attribute selector is what this milestone's
+   own e2e checkpoint (ui/e2e/m4.e2e.ts) asserts against directly. Matches
+   the tin too (`.sky-pie.sky-tin` also carries `.sky-pie`) — a Finder drag
+   over the tin gets the same ring as a drag over any other pie. */
+.sky-pie[data-drop-target="true"] {
+  outline: 2px solid var(--sky-focus);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+/* The pie holding the active tab's file (spec section 3, "passive
+   auto-reveal") — a 2px rule UNDER the label, not a box around the tile:
+   this reads as an underline on the name, the same place the focus ring
+   sits one box out. */
+.sky-pie[data-active-file="true"] .sky-pie-label {
+  box-shadow: 0 2px 0 var(--sky-focus);
+}
+
+/* Short-pane polish (M4): once the plate's own pie has already dropped to
+   120px (`usePaneShort`, unchanged since M3), the legend column is the
+   next thing to overflow a very short window — this lets it scroll inside
+   its own flex box instead of pushing the layer list off the bottom of
+   the plate. */
+.pie-plate-short .pie-legend {
+  flex: 0 1 auto;
+  overflow-y: auto;
+}
+/* Narrow-pane polish (M4): below 760px the plate's left rail (pie +
+   readout, normally 240px) is the thing fighting the legend/layer columns
+   for width — narrowing it to 140px gives the right column the room a
+   narrow sidebar-hidden window still needs to read a filename. */
+.pie-plate-narrow .pie-plate-left {
+  flex: 0 0 140px;
+}

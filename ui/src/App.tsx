@@ -9,6 +9,7 @@ import SidebarResizer from "./components/SidebarResizer";
 import TabStrip from "./components/TabStrip";
 import Toolbar from "./components/Toolbar";
 import Sky from "./components/Sky";
+import type { SkyRevealTarget } from "./components/Sky";
 import TabView from "./components/TabView";
 import PhoneShell from "./components/PhoneShell";
 import QuickOpen from "./components/QuickOpen";
@@ -25,8 +26,9 @@ import { WorkspaceProvider, useWorkspace } from "./state/workspace";
 import { WatcherProvider } from "./state/watcher-bus";
 import { BookmarksProvider } from "./state/bookmarks-context";
 import { PiesProvider, usePiesContext } from "./state/pies-context";
+import { bandOrder, pieHoldingPath, revealRoute } from "./state/pies";
 import type { NoticeFn } from "./state/pies-context";
-import { PieCensusProvider } from "./state/pie-census";
+import { PieCensusProvider, usePieCensus } from "./state/pie-census";
 import { RecentsProvider } from "./state/recents-context";
 import { ScrollMemoryProvider } from "./state/scroll-memory";
 import { ExplorerUiProvider, useExplorerUi } from "./state/explorer-ui";
@@ -233,7 +235,13 @@ function AppShell({
   const entry = currentEntry(active);
   const openFile = useOpenFile(ipc, root);
   const { reveal } = useExplorerUi();
-  const { openPicker } = usePiesContext();
+  const piesCtx = usePiesContext();
+  const { openPicker } = piesCtx;
+  // M4 deep-link reveal routing needs the SAME band-ordered, census-backed
+  // pie list Sky.tsx itself renders — `PieCensusProvider` is an ancestor
+  // (ProviderShell), so this is just a second subscription to it, not a
+  // second cache.
+  const pieCensusCtx = usePieCensus();
 
   // Auto-reveal: keep the tree pointing at the active tab's file.
   const activePath = entry?.path ?? null;
@@ -251,6 +259,10 @@ function AppShell({
   // The Sky band — off by default so the installed base sees nothing new
   // (panes.sky_visible, hydrated below).
   const [skyVisible, setSkyVisible] = React.useState<boolean>(false);
+  // M4: armed by a deep-link reveal that routed to the plate (spec section
+  // 7) — passed straight through to <Sky>, which consumes it in an effect
+  // keyed on `nonce`. Never persisted (spec line 148).
+  const [revealTarget, setRevealTarget] = React.useState<SkyRevealTarget | null>(null);
   const [refreshNonce, setRefreshNonce] = React.useState<number>(0);
   const [quickOpenVisible, setQuickOpenVisible] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
@@ -427,13 +439,53 @@ function AppShell({
     ({ path, intent, out_of_root }: OpenFilePayload) => {
       if (intent === "open") {
         dispatch({ type: "FOCUS_OR_OPEN", path, external: Boolean(out_of_root) });
-      } else {
-        // Reveal: expand + scroll to the file in the tree WITHOUT switching
-        // the preview (per the deeplink.rs contract).
-        reveal(path, root);
+        return;
       }
+      // Reveal (M4, spec section 7 / "What happens to the old sidebar" /
+      // "Deep-link reveal"): sidebar visible → the tree reveals, exactly
+      // as before M4; sidebar hidden and the path is a USER pie's member →
+      // the sky opens on that pie's plate, row focused; else the sidebar
+      // itself is shown so the tree can reveal. `revealRoute`/
+      // `pieHoldingPath` (state/pies.ts) are the pure, tested halves of
+      // this branch — the SAME `bandOrder` census-backed pie list Sky.tsx
+      // itself renders, so the two can never disagree about which pie
+      // holds `path`.
+      const bandPies = bandOrder([], piesCtx.pies, pieCensusCtx.censusFor);
+      const route = revealRoute(sidebarVisible, readerMode, bandPies, path);
+      if (route === "tree") {
+        reveal(path, root);
+        return;
+      }
+      if (route === "plate") {
+        const pie = pieHoldingPath(bandPies, path);
+        if (pie) {
+          // NOT persistSkyVisible — a deep link is a one-off routing
+          // decision, not the user setting a posture (spec line 148:
+          // "not persisted").
+          setSkyVisible(true);
+          setRevealTarget({ pieId: pie.id, path, nonce: Date.now() });
+        }
+        return;
+      }
+      // "show-sidebar": also the fallback when `path` really is under a
+      // folder member but that member's census hasn't resolved into
+      // `pie.files` yet (revealRoute/pieHoldingPath's own doc comment) —
+      // acceptable for M4 rather than a hard failure to reveal at all; the
+      // next sky-show/plate-open census picks the file up on its own.
+      setSidebarVisible(true);
+      persistSidebarVisible(true);
+      reveal(path, root);
     },
-    [dispatch, reveal, root],
+    [
+      dispatch,
+      reveal,
+      root,
+      sidebarVisible,
+      readerMode,
+      piesCtx.pies,
+      pieCensusCtx.censusFor,
+      persistSidebarVisible,
+    ],
   );
   const handleDeepLinkError = React.useCallback(
     (payload: DeepLinkErrorPayload) => {
@@ -741,7 +793,7 @@ function AppShell({
               (see the JSX above); the band follows it down for the same
               reason — the artifact stays the protagonist. */}
           {skyVisible && !readerMode ? (
-            <Sky ipc={ipc} onOpenFile={openFile} onNotice={showNotice} />
+            <Sky ipc={ipc} onOpenFile={openFile} onNotice={showNotice} revealTarget={revealTarget} />
           ) : null}
           {notice ? <AppNotice text={notice.text} action={notice.action} onDismiss={dismissNotice} /> : null}
           <div
