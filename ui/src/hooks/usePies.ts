@@ -14,7 +14,7 @@
 // function's own doc comment.
 import * as React from "react";
 import { defaultIpc } from "../ipc";
-import type { Pie, PieMemberSource, PiesList } from "../ipc";
+import type { Pie, PieMemberKind, PieMemberSource, PiesList } from "../ipc";
 import { subtractPending, withPending, withoutPending } from "../state/pies";
 import { useTauriEvent } from "./useTauriEvent";
 
@@ -31,7 +31,7 @@ export interface UsePiesResult {
   addPieMember: (
     id: string,
     path: string,
-    kind: "file" | "folder",
+    kind?: PieMemberKind,
     source?: PieMemberSource,
   ) => Promise<void>;
   removePieMember: (id: string, path: string) => Promise<void>;
@@ -130,7 +130,7 @@ export function usePies(ipc = defaultIpc, onNotice?: (text: string) => void): Us
     async (
       id: string,
       path: string,
-      kind: "file" | "folder",
+      kind?: PieMemberKind,
       source?: PieMemberSource,
     ): Promise<void> => {
       if (!ipc.addPieMember) return;

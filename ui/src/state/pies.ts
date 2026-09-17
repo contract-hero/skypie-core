@@ -147,17 +147,34 @@ export function uniqueName(pies: Pie[], wanted: string): string {
   while (taken.has(`${trimmed} ${n}`)) n += 1;
   return `${trimmed} ${n}`;
 }
+/** Whether `pie`'s (census-resolved) files include `path` exactly. The one
+ *  membership test M4's two "which pie holds this file?" call sites share
+ *  — the band's passive active-file mark (Sky.tsx) and deep-link reveal
+ *  routing (`pieHoldingPath` below) — so the ring and the route can never
+ *  disagree about the same file. An EXACT compare: both callers hand it a
+ *  canonicalized path, because stored member paths are always canonical
+ *  (`pies::add_member`).
+ *
+ *  Deliberately NOT `holdsPath` above: that one tests a persisted `Pie`'s
+ *  MEMBERS (what the picker's check mark means), this one tests a
+ *  `DerivedPie`'s resolved FILES, which a folder member expands into. */
+export function holdsFilePath(pie: DerivedPie, path: string): boolean {
+  return pie.files.some((f) => f.path === path);
+}
+
 /** M4, deep-link reveal (spec section 7, "What happens to the old
- *  sidebar" / "Deep-link reveal"): the first USER pie whose `files`
- *  include `path` exactly, or `null`. Built-ins are excluded — only a user
- *  pie has persisted MEMBERS, which is the thing "the path is a pie
- *  member" means; Pinned/Recent are a live view over the bookmarks/
- *  recents stores, not membership. Exported on its own (not inlined into
- *  `revealRoute` below) so `App.tsx` can reuse the SAME lookup to learn
- *  WHICH pie to arm the plate on, instead of computing it a second,
- *  possibly different way. */
+ *  sidebar" / "Deep-link reveal"): the first USER pie holding `path`, or
+ *  `null`. Built-ins are excluded — only a user pie has persisted MEMBERS,
+ *  which is the thing "the path is a pie member" means; Pinned/Recent are
+ *  a live view over the bookmarks/recents stores, not membership. The
+ *  active-file MARK keeps the opposite scope (any pie, built-ins
+ *  included): a mark only says "this file is in here", which is true of
+ *  Pinned and Recent, while a reveal must land somewhere the user can act
+ *  on. Exported on its own (not inlined into `revealRoute` below) so
+ *  `App.tsx` can reuse the SAME lookup to learn WHICH pie to arm the plate
+ *  on, instead of computing it a second, possibly different way. */
 export function pieHoldingPath(pies: DerivedPie[], path: string): DerivedPie | null {
-  return pies.find((p) => isUserPieId(p.id) && p.files.some((f) => f.path === path)) ?? null;
+  return pies.find((p) => isUserPieId(p.id) && holdsFilePath(p, path)) ?? null;
 }
 
 /**

@@ -209,15 +209,31 @@ fn canonicalize_member_path(
     Ok(canonical)
 }
 
+/// `kind` is OPTIONAL. Omitted, it is read off the CANONICAL path this
+/// function has just resolved — `is_dir()`, the only authority on what a
+/// path actually is. A Finder drop sends nothing: a dropped path carries
+/// no promise about its type, and the UI used to spend an extra `list_dir`
+/// round trip per path to probe the very fact already in hand here.
+/// Callers that DO know (the picker adds a file, "Add folder…" adds a
+/// folder) still state it, and their value is stored unchanged.
+///
+/// `pies::add_member`'s own signature stays required-kind: the default is
+/// resolved here, at the command layer, so the store keeps one unambiguous
+/// entry point.
 pub(crate) fn add_pie_member_for(
     app: &tauri::AppHandle,
     roots: &crate::security::RootSet,
     id: &str,
     path: &str,
-    kind: crate::pies::PieMemberKind,
+    kind: Option<crate::pies::PieMemberKind>,
     source: Option<crate::pies::PieMemberSource>,
 ) -> Result<(), String> {
     let canonical = canonicalize_member_path(path, roots)?;
+    let kind = kind.unwrap_or(if canonical.is_dir() {
+        crate::pies::PieMemberKind::Folder
+    } else {
+        crate::pies::PieMemberKind::File
+    });
     crate::pies::add_member(id, &canonical, kind, source)?;
     emit_pies(app);
     Ok(())
@@ -229,7 +245,7 @@ fn add_pie_member(
     roots: tauri::State<'_, crate::security::RootSet>,
     id: String,
     path: String,
-    kind: crate::pies::PieMemberKind,
+    kind: Option<crate::pies::PieMemberKind>,
     source: Option<crate::pies::PieMemberSource>,
 ) -> Result<(), String> {
     add_pie_member_for(&app, &roots, &id, &path, kind, source)

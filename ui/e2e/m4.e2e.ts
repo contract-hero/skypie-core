@@ -39,52 +39,29 @@
 // event bus is the "a synthetic path exists" branch the acceptance
 // checkpoint itself allows for.
 //
-// launchDesktop({ skipBuild: true }): no Rust change in M4 — same binary.
+// launchDesktop({ skipBuild: false }): M4 changed Rust — `add_pie_member`
+// takes an OPTIONAL `kind` and resolves it from the canonical path, which
+// is what step 3 asserts when a Finder drop stores a "folder" member
+// without the UI ever probing for one.
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { SHELL_DIR, UI_DIR, click, evalIn, keys, launchDesktop, quit, text, waitFor } from "./lib/app";
+import {
+  SHELL_DIR,
+  UI_DIR,
+  click,
+  evalIn,
+  keys,
+  launchDesktop,
+  openViaQuickOpen,
+  quit,
+  text,
+  waitFor,
+} from "./lib/app";
 import type { LaunchedApp } from "./lib/app";
 import { cleanupFixtureWorkspace, makeFixtureWorkspace, setWorkspaceRoot } from "./lib/fixtureWorkspace";
-
-// ── Small helpers, repeated from m1/m2/m3.e2e.ts rather than shared — this
-//    directory's own convention (each scenario stays a single,
-//    independently-readable file; ui/e2e/README.md). ──────────────────────
-
-async function openViaQuickOpen(app: LaunchedApp, absPath: string): Promise<void> {
-  await keys(app, "mod+p");
-  await waitFor(app, `document.querySelector('[data-testid="quick-open"]') !== null`, 10_000);
-  const rowSelector = `li[title=${JSON.stringify(absPath)}]`;
-  await waitFor(app, `document.querySelector(${JSON.stringify(rowSelector)}) !== null`, 10_000);
-  await click(app, rowSelector);
-  await waitFor(app, `document.querySelector(".tab.active .tab-label") !== null`, 10_000);
-}
-
-interface OnDiskPies {
-  pies?: {
-    v?: number;
-    pies?: {
-      id: string;
-      name: string;
-      seen_at?: number;
-      members: { path: string; kind: string; source?: string }[];
-    }[];
-  };
-}
-
-function readStateJson(stateDir: string): OnDiskPies | null {
-  const p = path.join(stateDir, "state.json");
-  if (!fs.existsSync(p)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(p, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { sleep } from "./lib/proc";
+import { waitForPersistedPies } from "./lib/state";
 
 /**
  * Step 7's own tiny CSS reader: find `selector`'s block, then `prop`'s
@@ -125,22 +102,6 @@ function extractParenArgs(css: string, selector: string, prop: string, fnOpen: s
   }
   args.push(cur.trim());
   return args;
-}
-
-async function waitForPersistedPies(
-  stateDir: string,
-  predicate: (doc: NonNullable<OnDiskPies["pies"]>) => boolean,
-  timeoutMs = 10_000,
-): Promise<NonNullable<OnDiskPies["pies"]>> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const doc = readStateJson(stateDir)?.pies;
-    if (doc && predicate(doc)) return doc;
-    if (Date.now() > deadline) {
-      throw new Error(`state.json's "pies" key never matched within ${timeoutMs}ms (last: ${JSON.stringify(doc)})`);
-    }
-    await sleep(150);
-  }
 }
 
 /** Emit `tauriEvent` over Tauri's real core event bus — see this file's
@@ -248,7 +209,7 @@ async function main(): Promise<void> {
   const canonicalDroppedDir = fs.realpathSync(droppedDir);
   const canonicalDroppedFile = fs.realpathSync(droppedFile);
 
-  let app: LaunchedApp = await launchDesktop({ stateDir, skipBuild: true });
+  let app: LaunchedApp = await launchDesktop({ stateDir, skipBuild: false });
   try {
     await waitFor(app, `document.querySelector(".toolbar") !== null`, 60_000);
     const root = fs.realpathSync(fixture.dir);
@@ -360,25 +321,29 @@ async function main(): Promise<void> {
     await waitFor(app, `document.querySelector(".pane-sidebar") === null`, 10_000);
     console.log("ok: mod+b hides the sidebar");
 
-    // `handleDeepLinkIntent` reads `sidebarVisible` through a ref, not a
-    // dep, so `mod+b` above does not tear down/re-subscribe `useDeepLink`'s
-    // `skypie://open-file` listener (review fix, App.tsx:485) — this
-    // `emitAndVerify` is just the ordinary startup-registration retry
-    // every other `emitTauriEvent` caller in this file gets for free, and
-    // it stays safe to re-emit here (unlike `tauri://drag-drop` above):
-    // repeating a reveal just re-arms the same, idempotent routing
-    // decision.
+    // `useDeepLink` holds its handlers in refs and subscribes once, so
+    // `mod+b` above cannot tear down/re-subscribe the
+    // `skypie://open-file` listener — this `emitAndVerify` is just the
+    // ordinary startup-registration retry every other `emitTauriEvent`
+    // caller in this file gets for free, and it stays safe to re-emit
+    // here (unlike `tauri://drag-drop` above): repeating a reveal just
+    // re-arms the same, idempotent routing decision.
     await emitAndVerify(
       app,
       "skypie://open-file",
       { path: canonicalDroppedFile, intent: "reveal" },
       `document.querySelector('[data-testid="pie-plate"]') !== null`,
     );
-    const focusedIsStartRow = await evalIn(
-      app,
-      `document.activeElement != null && document.activeElement.classList.contains("start-row")`,
-    );
-    if (!focusedIsStartRow) {
+    // `waitFor`, not a single `evalIn`: the plate appearing and the row
+    // taking DOM focus are two different commits, so sampling the instant
+    // the first one is visible races the second.
+    try {
+      await waitFor(
+        app,
+        `document.activeElement != null && document.activeElement.classList.contains("start-row")`,
+        10_000,
+      );
+    } catch {
       throw new Error(
         `expected document.activeElement to carry .start-row, got ${JSON.stringify(
           (await evalIn(app, `document.activeElement ? document.activeElement.outerHTML.slice(0, 200) : null`)),
@@ -507,7 +472,10 @@ async function main(): Promise<void> {
             try { rules = document.styleSheets[i].cssRules; } catch (e) { continue; }
             for (var j = 0; j < rules.length; j++) {
               var r = rules[j];
-              if (r.selectorText === '.sky-pie[data-drop-target="true"]') return r.style.outline;
+              // The ring is ONE rule with TWO triggers (DESIGN.md), so
+              // its selectorText is a LIST — match on containment, not
+              // equality, or the shared rule reads as missing.
+              if (r.selectorText && r.selectorText.indexOf('.sky-pie[data-drop-target="true"]') !== -1) return r.style.outline;
             }
           }
           return null;

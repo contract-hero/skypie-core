@@ -53,7 +53,16 @@ export async function keyOnActiveElement(app: AppHandle, key: string): Promise<v
 export interface OnDiskPies {
   pies?: {
     v?: number;
-    pies?: { id: string; name: string; seen_at?: number; members: { path: string }[] }[];
+    pies?: {
+      id: string;
+      name: string;
+      seen_at?: number;
+      // `kind`/`source` are optional HERE, not in the document: m2/m3
+      // assert on `path` alone, m4 asserts a Finder drop stored the right
+      // kind and source. One widened shape beats a second near-identical
+      // interface per scenario.
+      members: { path: string; kind?: string; source?: string }[];
+    }[];
   };
 }
 

@@ -805,10 +805,13 @@ plate.** Four additions, none a new departure — every color below is
   (`skypie-remote://…`) never match — a pie's file paths are always local.
 - **Finder drop.** `getCurrentWebview().onDragDropEvent()` — a dropped
   path keeps its exact basename as the new pie's name (via `uniqueName`),
-  a member's kind (file/folder) comes from probing `ipc.listDir` (resolves
-  for a directory, rejects for a file — not gated by the root set, so a
-  folder outside the workspace is a legal drop per spec line 217), and
-  every member is stored with `source: "finder"`. A drop on Pinned/Recent
+  a member's kind (file/folder) is resolved in Rust from the canonical
+  path `add_pie_member` already holds (`is_dir()` — `kind` is OPTIONAL on
+  that command, and only a caller that already knows its answer, the
+  picker or "Add folder…", still sends one), and every member is stored
+  with `source: "finder"`. That canonicalisation gate is not restricted to
+  the root set, so a folder outside the workspace is a legal drop per spec
+  line 217. A drop on Pinned/Recent
   is refused with a notice; a drop with no hit under it is ignored
   silently — both M4 owner decisions, not new visual language.
 - **The plate's short/narrow floor.** `usePaneShort` (M3, pane height

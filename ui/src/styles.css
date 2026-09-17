@@ -3003,7 +3003,13 @@ pre[data-fallback] .line::before {
   font-weight: 500;
   color: var(--sky-ink);
 }
-.sky-pie:focus-visible {
+/* One ring, two triggers (DESIGN.md): keyboard focus, and a live Finder
+   drag over the tile. The drag trigger is `data-drop-target`, set from
+   useFinderDrop's `over` stream (Sky.tsx) — never DOM `dragover`, which
+   does not fire for an OS-level drag while Tauri's own drag-drop handling
+   is enabled. Matches the tin too: `.sky-tin` also carries `.sky-pie`. */
+.sky-pie:focus-visible,
+.sky-pie[data-drop-target="true"] {
   outline: 2px solid var(--sky-focus);
   outline-offset: 2px;
   border-radius: var(--r-sm);
@@ -3433,26 +3439,11 @@ pre[data-fallback] .line::before {
   cursor: default;
 }
 .start-row-missing .start-row-dir { color: var(--fg-dim); }
-/* ── Sky band — M4 additions (Finder drop, reveal, short/narrow plate) ────
-   The drop-target ring and the passive active-file mark (spec section 6/3),
-   plus the plate's short/narrow-pane polish (this milestone's own 640×400
-   floor check). No new token: the ring reuses --sky-focus (the SAME shade
-   .sky-pie:focus-visible already draws), and the active-file underline
-   spends it on a second job rather than adding a color. */
+/* ── Sky band — M4 additions (active-file mark, short/narrow plate) ───────
+   The drop-target ring lives with `.sky-pie:focus-visible` above, which it
+   shares a rule with. No new token here either: the active-file underline
+   spends --sky-focus on a second job rather than adding a color. */
 
-/* Driven by useFinderDrop's `over` stream (Sky.tsx's `dropTargetId`), never
-   DOM `dragover` (which does not fire for an OS-level drag while Tauri's
-   own drag-drop handling is enabled) — the same rule body as
-   `.sky-pie:focus-visible` above, duplicated rather than shared through a
-   class because a plain data-attribute selector is what this milestone's
-   own e2e checkpoint (ui/e2e/m4.e2e.ts) asserts against directly. Matches
-   the tin too (`.sky-pie.sky-tin` also carries `.sky-pie`) — a Finder drag
-   over the tin gets the same ring as a drag over any other pie. */
-.sky-pie[data-drop-target="true"] {
-  outline: 2px solid var(--sky-focus);
-  outline-offset: 2px;
-  border-radius: var(--r-sm);
-}
 /* The pie holding the active tab's file (spec section 3, "passive
    auto-reveal") — a 2px rule UNDER the label, not a box around the tile:
    this reads as an underline on the name, the same place the focus ring

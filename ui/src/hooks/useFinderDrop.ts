@@ -68,12 +68,6 @@ export function dropPieName(paths: string[]): string {
 // ── React ────────────────────────────────────────────────────────────────
 
 export interface UseFinderDropOptions {
-  /** Sky.tsx always passes `true` (its own mount condition,
-   *  `skyVisible && !readerMode`, already gates the listener for free —
-   *  App.tsx) — kept as an explicit option anyway so this hook matches
-   *  `useTauriEvent`'s own shape and stays usable by a future caller that
-   *  needs to pause the subscription without unmounting. */
-  enabled: boolean;
   /** Fired on every `over`, with the hit-tested id (a pie's own id,
    *  `TIN_DROP_ID`, or `null` for no hit), AND on `leave` (always `null`,
    *  since a `leave` payload carries no position to hit-test) — Sky.tsx's
@@ -96,17 +90,26 @@ export interface UseFinderDropOptions {
  * promise resolves — a naive `unlisten = fn` assignment would then leak
  * the subscription instead of tearing it down.
  */
-export function useFinderDrop({ enabled, onOver, onDrop }: UseFinderDropOptions): void {
+export function useFinderDrop({ onOver, onDrop }: UseFinderDropOptions): void {
   // Refs, not deps, for the same reason `useTauriEvent` keeps its handler
-  // in a ref: the subscription only needs to know `enabled`, not
-  // re-identify on every render a caller passes a fresh inline callback.
+  // in a ref: the subscription must not re-identify on every render a
+  // caller passes a fresh inline callback.
   const onOverRef = React.useRef(onOver);
   onOverRef.current = onOver;
   const onDropRef = React.useRef(onDrop);
   onDropRef.current = onDrop;
+  // The last physical position an `over` was hit-tested at. macOS delivers
+  // `over` continuously while a drag hovers, including while the pointer
+  // is completely still, and `elementFromPoint` forces a layout flush —
+  // so a motionless drag over the band used to pay for one flush per
+  // event. Skipping the repeats is exact, not an approximation: the same
+  // point under the same layout resolves to the same tile. (The
+  // alternative, coalescing into one rAF, was not taken: it delays the
+  // ring by a frame and still flushes layout for a pointer that never
+  // moved.)
+  const lastOverRef = React.useRef<{ x: number; y: number } | null>(null);
 
   React.useEffect(() => {
-    if (!enabled) return;
     let unlisten: (() => void) | null = null;
     let cancelled = false;
     // `Promise.resolve().then(...)`, not a bare `getCurrentWebview()` call —
@@ -129,15 +132,22 @@ export function useFinderDrop({ enabled, onOver, onDrop }: UseFinderDropOptions)
             case "enter":
             case "over": {
               const { x, y } = e.payload.position;
+              const last = lastOverRef.current;
+              if (last && last.x === x && last.y === y) break;
+              lastOverRef.current = { x, y };
               onOverRef.current(hitTestPieId(document, x, y, dpr));
               break;
             }
             case "drop": {
               const { x, y } = e.payload.position;
+              lastOverRef.current = null;
               onDropRef.current(hitTestPieId(document, x, y, dpr), e.payload.paths);
               break;
             }
             case "leave":
+              // The ring is cleared, so the next `over` must hit-test
+              // again even if the pointer is back at the same point.
+              lastOverRef.current = null;
               onOverRef.current(null);
               break;
             default:
@@ -157,5 +167,5 @@ export function useFinderDrop({ enabled, onOver, onDrop }: UseFinderDropOptions)
       cancelled = true;
       if (unlisten) unlisten();
     };
-  }, [enabled]);
+  }, []);
 }

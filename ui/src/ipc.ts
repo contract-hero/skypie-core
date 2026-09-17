@@ -71,6 +71,10 @@ export interface BookmarkEntry {
  *  ever sends "picker" or "menu". */
 export type PieMemberSource = "picker" | "menu" | "finder" | "agent";
 
+/** What a pie member IS on disk. Named rather than inlined because
+ *  `addPieMember` takes it as an OPTIONAL argument — see there. */
+export type PieMemberKind = "file" | "folder";
+
 export interface PieMemberOrigin {
   session_id?: string;
   prompt_id?: string;
@@ -78,7 +82,7 @@ export interface PieMemberOrigin {
 }
 
 export interface PieMember {
-  kind: "file" | "folder";
+  kind: PieMemberKind;
   /** Absolute, canonical — `pies::add_member` runs `fs::canonicalize`
    *  before storing, so this always matches the watcher's own paths. */
   path: string;
@@ -377,8 +381,15 @@ export interface IpcSurface {
   removePie?(id: string): Promise<void>;
   /** Adds `path` to pie `id`. Rejects if `path` cannot be canonicalized
    *  (i.e. does not exist), and also when `id` names no pie — a file added
-   *  to a pie another window just deleted is an error, not a silent drop. */
-  addPieMember?(id: string, path: string, kind: "file" | "folder", source?: PieMemberSource): Promise<void>;
+   *  to a pie another window just deleted is an error, not a silent drop.
+   *
+   *  `kind` is OPTIONAL: omit it and the backend reads it off the
+   *  canonical path it has just resolved (`is_dir()`). Callers that
+   *  already know pass it through unchanged — the picker only ever adds a
+   *  file, the "Add folder…" menu item only ever a folder. A Finder drop
+   *  omits it: the drop carries no such promise, and probing for one from
+   *  the UI cost an extra IPC round trip per dropped path. */
+  addPieMember?(id: string, path: string, kind?: PieMemberKind, source?: PieMemberSource): Promise<void>;
   removePieMember?(id: string, path: string): Promise<void>;
   relocatePieMember?(id: string, oldPath: string, newPath: string): Promise<void>;
   /** Stamp `seen_at` to now — called on every plate open for a user pie. */
@@ -605,7 +616,7 @@ class TauriIpc implements IpcSurface {
   async addPieMember(
     id: string,
     path: string,
-    kind: "file" | "folder",
+    kind?: PieMemberKind,
     source?: PieMemberSource,
   ): Promise<void> {
     await invoke<void>("add_pie_member", { id, path, kind, source });
