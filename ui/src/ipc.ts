@@ -67,6 +67,10 @@ export interface SettingsState {
     sidebar_px?: number;
     preview_px?: number;
     sidebar_visible?: boolean;
+    /** The Sky band (⌘⇧B), default false. No Rust field required: the
+     *  in-memory state document is a raw serde_json::Value and PaneSizes has
+     *  no deny_unknown_fields, so this nested key round-trips unchanged. */
+    sky_visible?: boolean;
     /** The reading session: open tabs, their history and zoom. */
     tabs?: unknown;
   };

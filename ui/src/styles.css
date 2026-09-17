@@ -91,6 +91,9 @@
   --dur-fast: 80ms;
   --dur: 160ms;
   --ease: cubic-bezier(0.2, 0, 0.2, 1);
+  /* The one motion curve the Sky band adds — the plate's scale-in
+     (DESIGN.md, "Sky band"). Everything else in the band reuses --ease. */
+  --ease-emphasis: cubic-bezier(0.2, 0.8, 0.2, 1);
 
   /* elevation — Linear carries depth with the surface ladder and hairlines,
      and resists drop shadows on dark almost entirely. Shadows survive here
@@ -165,6 +168,17 @@
   --star-active: var(--accent);
   --star-idle: var(--border-tertiary);
   --overlay-scrim: rgba(0, 0, 0, 0.6);
+
+  /* Sky band — dusk. The blue --sky field is a SURFACE, not the accent (the
+     one-lavender rule is unaffected); --sky-focus is its own per-theme
+     shade because the lavender accent fails contrast on the day sky
+     (DESIGN.md, "Sky band"). This block also doubles as the pre-hydration
+     fallback, like the rest of :root[data-theme="dark"]. */
+  --sky: #16212f;
+  --sky-ink: #e6edf5;
+  --sky-ink-dim: #8c9bad;
+  --sky-cloud: #213040;
+  --sky-focus: #8b93e8;
 }
 
 :root[data-theme="light"] {
@@ -214,6 +228,13 @@
   --input-border: #c5c8d0;
   --input-border-focus: var(--accent-focus);
   --overlay-scrim: rgba(0, 0, 0, 0.25);
+
+  /* Sky band — day (DESIGN.md, "Sky band"). */
+  --sky: #cfe3f6;
+  --sky-ink: #1d2a3a;
+  --sky-ink-dim: #5b6b7d;
+  --sky-cloud: #eef5fb;
+  --sky-focus: #3b45b8;
 }
 
 * { box-sizing: border-box; }
@@ -2825,4 +2846,182 @@ pre[data-fallback] .line::before {
   font: inherit;
   font-size: var(--text-ui);
   cursor: pointer;
+}
+
+/* ── Sky band (M1) ────────────────────────────────────────────────────────
+   In layout between the toolbar and the tab view, height locked to
+   3×--band-h = 120px, never elastic (DESIGN.md, "Sky band"). --sky is a
+   SURFACE, not the accent — the one-lavender rule counts --sky-focus as its
+   own per-theme shade of the same job, not a second color. */
+.sky-band {
+  position: relative;
+  flex: 0 0 calc(var(--band-h) * 3);
+  height: calc(var(--band-h) * 3);
+  background: var(--sky);
+  border-bottom: 1px solid var(--border);
+}
+/* The glaze: allowed only in the top 32px (DESIGN.md's departure #1) — the
+   rest of the band is flat, opaque --sky. */
+.sky-glaze {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  background: linear-gradient(to bottom, var(--bg-chrome), var(--sky));
+  pointer-events: none;
+}
+/* Two static cumulus, three ellipses each, clipped to a flat base — no
+   drift, no shadow (spec section 2). Low contrast against --sky on purpose:
+   the shapes say "sky", they never compete with a pie. */
+.sky-clouds {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.sky-clouds ellipse { fill: var(--sky-cloud); }
+.sky-pies {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  height: 100%;
+  padding: 0 16px 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.sky-pies::-webkit-scrollbar { height: 0; }
+.sky-pie {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 72px;
+  width: 72px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  padding: 4px 0 0;
+  transition: transform var(--dur-fast) var(--ease), opacity var(--dur) var(--ease);
+}
+.sky-pie:hover { transform: translateY(-2px); }
+.sky-pie:active { transform: scale(0.97); }
+/* Other pies dim to 60% while one plate is open (spec section 4). */
+.sky-pies:has(.sky-pie.selected) .sky-pie:not(.selected) { opacity: 0.6; }
+.sky-pie-label {
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--sky-ink);
+}
+.sky-pie:focus-visible {
+  outline: 2px solid var(--sky-focus);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* ── Pie plate ────────────────────────────────────────────────────────── */
+.pie-plate {
+  position: absolute;
+  /* Drops from the band's bottom hairline. */
+  top: 100%;
+  left: 16px;
+  z-index: var(--z-sheet);
+  display: flex;
+  gap: var(--space-5);
+  width: min(720px, calc(100% - 32px));
+  /* pane height ≈ 100vh − 2×--band-h (tab strip + toolbar) — see
+     PiePlate.tsx's usePaneShort, which uses the same arithmetic for the
+     120px pie-disc floor. */
+  height: clamp(280px, calc(100vh - 232px), 440px);
+  padding: var(--space-4);
+  background: var(--bg-chrome);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-overlay);
+  animation: pie-plate-in var(--dur) var(--ease);
+}
+@keyframes pie-plate-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.pie-plate-left {
+  flex: 0 0 240px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+}
+.pie-plate-readout {
+  font-family: var(--font-mono);
+  font-size: var(--text-body-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  text-align: center;
+}
+.pie-plate-last-opened {
+  font-size: var(--text-caption);
+  color: var(--fg-dim);
+}
+.pie-plate-right {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  overflow: hidden;
+}
+.pie-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+.pie-legend-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--fg-strong);
+  font: inherit;
+  font-size: var(--text-body-sm);
+  text-align: left;
+  padding: 6px var(--space-2);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.pie-legend-row:hover { background: var(--bg-row-hover); }
+.pie-legend-row.active { background: var(--bg-row-selected); color: var(--fg); }
+.pie-legend-kind { flex: 1 1 auto; }
+.pie-legend-count,
+.pie-legend-share,
+.pie-legend-mtime {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.pie-legend-empty,
+.pie-layers-empty {
+  color: var(--empty-fg);
+  font-size: var(--text-body-sm);
+  padding: var(--space-2);
+}
+.pie-layers {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
 }

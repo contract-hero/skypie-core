@@ -8,6 +8,7 @@ import Sidebar from "./components/Sidebar";
 import SidebarResizer from "./components/SidebarResizer";
 import TabStrip from "./components/TabStrip";
 import Toolbar from "./components/Toolbar";
+import Sky from "./components/Sky";
 import TabView from "./components/TabView";
 import PhoneShell from "./components/PhoneShell";
 import QuickOpen from "./components/QuickOpen";
@@ -71,7 +72,7 @@ const IFRAME_FORWARDABLE = new Set([
   "mod+shift+bracketright", "mod+shift+bracketleft",
   "mod+bracketleft", "mod+bracketright", "mod+r",
   "mod+equal", "mod+shift+equal", "mod+minus",
-  "mod+b", "mod+shift+f", "escape",
+  "mod+b", "mod+shift+f", "mod+shift+b", "escape",
   ...Array.from({ length: 10 }, (_, i) => `mod+digit${i}`),
 ]);
 
@@ -183,6 +184,9 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
   // Reader mode: chrome down to tabs + document. Deliberately transient —
   // a reading posture, not a workspace setting, so it never persists.
   const [readerMode, setReaderMode] = React.useState<boolean>(false);
+  // The Sky band — off by default so the installed base sees nothing new
+  // (panes.sky_visible, hydrated below).
+  const [skyVisible, setSkyVisible] = React.useState<boolean>(false);
   const [refreshNonce, setRefreshNonce] = React.useState<number>(0);
   const [quickOpenVisible, setQuickOpenVisible] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
@@ -253,6 +257,11 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
       if (!userToggledSidebar.current && s?.panes?.sidebar_visible === false) {
         setSidebarVisible(false);
       }
+      // Same race, same guard: a ⌘⇧B pressed before this snapshot resolves
+      // must win over the persisted value.
+      if (!userToggledSky.current && s?.panes?.sky_visible === true) {
+        setSkyVisible(true);
+      }
     }).catch(() => {
       // Backend not wired or state.json missing — keep the default width
       // and visibility.
@@ -270,10 +279,18 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
   // Set true on the first ⌘B so the async getState() hydration can't clobber
   // a toggle that raced it.
   const userToggledSidebar = React.useRef(false);
+  // Same race, same fix, for ⌘⇧B.
+  const userToggledSky = React.useRef(false);
 
   const persistSidebarVisible = React.useCallback((visible: boolean) => {
     ipc.setStateField?.("panes.sidebar_visible", visible).catch((e: unknown) => {
       console.error("skypie: failed to persist sidebar visibility", e);
+    });
+  }, [ipc]);
+
+  const persistSkyVisible = React.useCallback((visible: boolean) => {
+    ipc.setStateField?.("panes.sky_visible", visible).catch((e: unknown) => {
+      console.error("skypie: failed to persist sky visibility", e);
     });
   }, [ipc]);
 
@@ -297,6 +314,19 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
   const toggleReaderMode = React.useCallback(() => {
     setReaderMode((v) => !v);
   }, []);
+
+  // ⌘⇧B. Reader mode already unmounts the Toolbar and gates the band on
+  // !readerMode, so toggling Sky from inside reader mode only flips the
+  // persisted posture — the band itself reappears once the user leaves.
+  // No functional setState here, for the same reason as toggleSidebar: the
+  // updater must stay pure (StrictMode double-invokes it), and the IPC
+  // write is a side effect.
+  const toggleSky = React.useCallback(() => {
+    userToggledSky.current = true;
+    const next = !skyVisible;
+    setSkyVisible(next);
+    persistSkyVisible(next);
+  }, [persistSkyVisible, skyVisible]);
 
   // ── Pickers ────────────────────────────────────────────────────────────
   const handlePickFile = React.useCallback(() => {
@@ -408,6 +438,7 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
         ]
       : []),
     { combo: "mod+b", allowInInput: true, handler: toggleSidebar },
+    { combo: "mod+shift+b", allowInInput: true, handler: toggleSky },
     { combo: "mod+shift+f", allowInInput: true, handler: toggleReaderMode },
     { combo: "mod+shift+m", allowInInput: true, handler: () => setCommentsVisible((v) => !v) },
     { combo: "mod+shift+k", allowInInput: true, handler: toggleCommentTool },
@@ -613,6 +644,8 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
               onSubmitPath={(p) => openFile(p)}
               sidebarVisible={sidebarVisible}
               onToggleSidebar={toggleSidebar}
+              skyVisible={skyVisible}
+              onToggleSky={toggleSky}
               onEnterReaderMode={toggleReaderMode}
               commentsVisible={commentsVisible}
               onToggleComments={() => setCommentsVisible((v) => !v)}
@@ -621,6 +654,10 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
               openComments={entry ? openCountFor(entry.path) : 0}
             />
           )}
+          {/* Reader mode already unmounts the Toolbar on the same condition
+              (see the JSX above); the band follows it down for the same
+              reason — the artifact stays the protagonist. */}
+          {skyVisible && !readerMode ? <Sky onOpenFile={openFile} /> : null}
           {notice ? <AppNotice text={notice} onDismiss={dismissNotice} /> : null}
           <div
             ref={tabViewRef}

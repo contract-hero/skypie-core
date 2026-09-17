@@ -39,6 +39,9 @@ export interface ToolbarProps {
    */
   sidebarVisible: boolean;
   onToggleSidebar: () => void;
+  /** Whether the Sky band is shown. */
+  skyVisible: boolean;
+  onToggleSky: () => void;
   onEnterReaderMode: () => void;
   /** Whether the margin notes are shown (⇧⌘M). */
   commentsVisible: boolean;
@@ -75,6 +78,20 @@ function IconButton({
   );
 }
 
+/** A hairline circle with one wedge lifted 1px along its bisector — the
+ *  tile's own glyph, not from lucide (spec section 2). No fill on the
+ *  circle: the wedge is the only filled shape, currentColor throughout so
+ *  it follows the button's own hover/pressed color like every other
+ *  toolbar glyph. */
+function SkyGlyph(): React.ReactElement {
+  return (
+    <svg width={16} height={16} viewBox="0 0 16 16" aria-hidden focusable="false">
+      <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M 8 8 L 8 2 A 6 6 0 0 1 14 8 Z" fill="currentColor" transform="translate(0.7 -0.7)" />
+    </svg>
+  );
+}
+
 function CopyPathButton({ path }: { path: string }): React.ReactElement {
   const { copied, copy } = useCopyFeedback();
   return (
@@ -96,6 +113,8 @@ export default function Toolbar({
   onSubmitPath,
   sidebarVisible,
   onToggleSidebar,
+  skyVisible,
+  onToggleSky,
   onEnterReaderMode,
   commentsVisible,
   onToggleComments,
@@ -157,6 +176,21 @@ export default function Toolbar({
       >
         <PanelLeft size={14.5} strokeWidth={2} />
       </IconButton>
+
+      {/* Plain <button>, not IconButton: this tile needs aria-pressed and
+          the pressed-state class, which IconButton doesn't carry. No
+          right-click menu in M1 ("Add current file to pie…" is M2). */}
+      <button
+        type="button"
+        className={`toolbar-button${skyVisible ? " toolbar-button-pressed" : ""}`}
+        data-testid="toolbar-sky-toggle"
+        title="Sky (⌘⇧B)"
+        aria-label={skyVisible ? "Hide sky" : "Show sky"}
+        aria-pressed={skyVisible}
+        onClick={onToggleSky}
+      >
+        <SkyGlyph />
+      </button>
 
       <span className="toolbar-sep" aria-hidden />
 
