@@ -3,12 +3,15 @@
 // M1 shipped the two derived built-ins, Pinned and Recent. M2 adds the
 // persisted user pies, the tin (create), inline rename, delete with a
 // 5-second undo, and each user pie's own right-click menu (DESIGN.md, "Sky
-// band"). Finder drop and folder census are M3/M4.
+// band"). M3 adds the freshness pill (+N, one-click-open-newest, ⌘Enter)
+// and folder census refresh-on-show — see PieCensusProvider (pie-census.ts)
+// and PiePlate.tsx for the folder layers themselves. Finder drop is M4.
 import * as React from "react";
 import { FolderPlus, Pencil, Trash2 } from "lucide-react";
 import { useBookmarksContext } from "../state/bookmarks-context";
 import { useRecentsContext } from "../state/recents-context";
 import { usePiesContext } from "../state/pies-context";
+import { usePieCensus, newestPath } from "../state/pie-census";
 import { labelOfWedges, pinnedPie, recentPie, wedgesOf } from "../state/derived-pies";
 import type { DerivedPie } from "../state/derived-pies";
 import { bandOrder, isUserPieId, uniqueName } from "../state/pies";
@@ -19,6 +22,7 @@ import Tooltip from "./Tooltip";
 import { useContextMenu } from "./ContextMenu";
 import type { IpcSurface } from "../ipc";
 import type { AppNoticeAction } from "../App";
+import { openOptsFromClick } from "../state/TabsProvider";
 import type { OpenFileOptions } from "../state/TabsProvider";
 
 /** How long a deleted user pie stays undoable before the removal actually
@@ -79,11 +83,13 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
   const { bookmarks } = useBookmarksContext();
   const { recents } = useRecentsContext();
   const piesCtx = usePiesContext();
+  const pieCensusCtx = usePieCensus();
   const contextMenu = useContextMenu();
 
   const pies = React.useMemo<DerivedPie[]>(
-    () => bandOrder([pinnedPie(bookmarks), recentPie(recents)], piesCtx.pies),
-    [bookmarks, recents, piesCtx.pies],
+    () =>
+      bandOrder([pinnedPie(bookmarks), recentPie(recents)], piesCtx.pies, pieCensusCtx.derive),
+    [bookmarks, recents, piesCtx.pies, pieCensusCtx.derive],
   );
   // One tooltip label per tile, keyed on the band list — building it in the
   // map below grouped every pie's files afresh on every band render (one
@@ -95,6 +101,20 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
   // Slots: every pie, then the tin — the tin's own roving-tabindex slot is
   // `pies.length`.
   const tinIndex = pies.length;
+
+  // "sky show" (spec section 6) — refresh every user pie's census the
+  // moment the band mounts. Sky.tsx only mounts when `skyVisible &&
+  // !readerMode` (App.tsx), so a plain mount effect IS the "on show"
+  // trigger; `pieCensusCtx.refreshAll` is intentionally left out of the
+  // deps array below (PiePlate.tsx's own seen_at effect follows the same
+  // "mount-only, not on every identity change" shape) — re-running it on
+  // every identity change would re-walk every folder of every pie for a
+  // callback that merely re-identified. A pie whose MEMBERS change is
+  // refetched on its own, per pie, by `pie-census.ts`'s members effect.
+  React.useEffect(() => {
+    pieCensusCtx.refreshAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [focusedIndex, setFocusedIndex] = React.useState(0);
   const [openPieId, setOpenPieId] = React.useState<string | null>(null);
@@ -187,7 +207,26 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
           break;
         }
         const pie = pies[focusedIndex];
-        if (pie) setOpenPieId(pie.id);
+        if (!pie) break;
+        // ⌘Enter opens the newest file directly (spec section 2's
+        // keyboard model: "Enter zooms, ⌘Enter opens the newest file" — no
+        // freshness condition) — bare Enter zooms into the plate, unchanged
+        // from M1/M2. `openOptsFromClick(e)` reads the SAME modifier set a
+        // mouse click on the pill would (see Pie.tsx/onOpenNewest below),
+        // so ⌘Enter and a plain pill click agree on how the tab opens.
+        // Deliberately keyed off `pie.files`, never off freshness: the
+        // pill only exists when `fresh > 0`, which is never true for
+        // Pinned/Recent and often false for a user pie, so gating ⌘Enter on
+        // it used to make the chord silently zoom instead of open in the
+        // common case. Only an EMPTY pie falls through to the zoom below.
+        if (e.metaKey) {
+          const path = newestPath(pie.files);
+          if (path) {
+            onOpenFile(path, openOptsFromClick(e));
+            break;
+          }
+        }
+        setOpenPieId(pie.id);
         break;
       }
       // Delete only — NOT Backspace. Backspace already means something else
@@ -234,16 +273,27 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
           icon: <FolderPlus size={13} strokeWidth={2} />,
           onSelect: () => {
             if (!ipc.pickDirectory) return;
-            void ipc.pickDirectory().then((picked) => {
-              if (!picked) return;
-              // A bare `void` here used to swallow `add_member`'s own
-              // rejection (a folder that stops resolving between the
-              // native picker and this call)
-              // with no feedback at all.
-              piesCtx.addPieMember(pie.id, picked, "folder", "menu").catch((err: unknown) => {
-                onNotice(`Couldn't add that folder — ${messageOf(err, "the folder could not be added")}`);
+            void ipc
+              .pickDirectory()
+              .then((picked) => {
+                if (!picked) return;
+                // A bare `void` here used to swallow `add_member`'s own
+                // rejection (a folder that stops resolving between the
+                // native picker and this call)
+                // with no feedback at all.
+                piesCtx.addPieMember(pie.id, picked, "folder", "menu").catch((err: unknown) => {
+                  onNotice(`Couldn't add that folder — ${messageOf(err, "the folder could not be added")}`);
+                });
+              })
+              // The OUTER rejection, which had no handler at all:
+              // `pickDirectory` itself can fail (the dialog plugin missing
+              // from this build, a permission denied). The menu item then
+              // did nothing — no dialog, and nothing said why.
+              .catch((err: unknown) => {
+                onNotice(
+                  `Couldn't open the folder picker — ${messageOf(err, "the dialog could not be shown")}`,
+                );
               });
-            });
           },
         },
       ],
@@ -383,6 +433,19 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
                 onFocus={handlers[i]?.onFocus}
                 onOpen={handlers[i]?.onOpen}
                 onContextMenu={isUser ? (e) => openPieContextMenu(e, pie) : undefined}
+                onOpenNewest={(e) => {
+                  // The SAME `newestPath(pie.files)` the ⌘Enter case above
+                  // opens — the pill and the chord must never disagree about
+                  // which file "the newest" is. And the same FALLBACK: a
+                  // root change flushes the census cache, so the pill can
+                  // still be on screen with `pie.files` back to its
+                  // pre-census shape and no newest path to open. Clicking
+                  // it then did nothing at all; it zooms instead, exactly
+                  // as ⌘Enter does for an empty pie.
+                  const path = newestPath(pie.files);
+                  if (path) onOpenFile(path, openOptsFromClick(e));
+                  else setOpenPieId(pie.id);
+                }}
               />
             );
             // Tooltip.tsx clones its child, so this wrap costs the band's

@@ -11,7 +11,7 @@ import {
   withPending,
   withoutPending,
 } from "./pies";
-import type { Pie } from "../ipc";
+import type { Pie, PieCensus } from "../ipc";
 import type { DerivedPie } from "./derived-pies";
 
 function pie(overrides: Partial<Pie> = {}): Pie {
@@ -52,6 +52,98 @@ describe("pieFiles / toDerivedPie", () => {
       files: [{ path: "/w/a.md", kind: "md", mtime: 5 }],
     });
   });
+
+  it("toDerivedPie's census branch replaces the added_at fallback files with the census's real files", () => {
+    const p = pie({
+      id: "abc",
+      name: "Pricing",
+      seen_at: 0,
+      members: [{ kind: "file", path: "/w/a.md", added_at: 5 }],
+    });
+    const c: PieCensus = {
+      files: [{ path: "/w/a.md", mtime: 999, size: 10 }],
+      missing: [],
+      outside_root: [],
+      skipped: 0,
+      truncated: false,
+    };
+    const derived = toDerivedPie(p, c);
+    expect(derived.files).toEqual([{ path: "/w/a.md", kind: "md", mtime: 999, folder: undefined }]);
+    expect(derived.census).toBe(c);
+  });
+
+  it("toDerivedPie's fresh follows the pie's seen_at", () => {
+    const p = pie({
+      id: "abc",
+      name: "Pricing",
+      seen_at: 500,
+      members: [{ kind: "file", path: "/w/a.md", added_at: 0 }],
+    });
+    const c: PieCensus = {
+      files: [
+        { path: "/w/old.md", mtime: 100, size: 1 },
+        { path: "/w/new.md", mtime: 900, size: 1 },
+      ],
+      missing: [],
+      outside_root: [],
+      skipped: 0,
+      truncated: false,
+    };
+    const derived = toDerivedPie(p, c);
+    expect(derived.fresh).toBe(1);
+  });
+
+  it("toDerivedPie: seen_at === 0 (never opened) yields fresh 0", () => {
+    const p = pie({ id: "abc", name: "Pricing", seen_at: 0, members: [] });
+    const c: PieCensus = {
+      files: [{ path: "/w/a.md", mtime: 1_700_000_000_000, size: 1 }],
+      missing: [],
+      outside_root: [],
+      skipped: 0,
+      truncated: false,
+    };
+    const derived = toDerivedPie(p, c);
+    expect(derived.fresh).toBe(0);
+  });
+});
+
+describe("bandOrder with a census", () => {
+  it("applies the census per id and leaves built-ins without a census-derived fresh", () => {
+    const derived: DerivedPie[] = [
+      { id: "builtin:pinned", name: "Pinned", files: [] },
+      { id: "builtin:recent", name: "Recent", files: [] },
+    ];
+    const userPies = [pie({ id: "u1", name: "Pricing", seen_at: 0 })];
+    const c: PieCensus = {
+      files: [{ path: "/w/a.md", mtime: 1, size: 1 }],
+      missing: [],
+      outside_root: [],
+      skipped: 0,
+      truncated: false,
+    };
+    const order = bandOrder(derived, userPies, (p) => toDerivedPie(p, p.id === "u1" ? c : undefined));
+    expect(order[0].fresh).toBeUndefined();
+    expect(order[1].fresh).toBeUndefined();
+    expect(order.find((p) => p.id === "u1")?.census).toBe(c);
+  });
+
+  it("calls `derive` exactly once per USER pie, and never for a built-in", () => {
+    // `derive` is the memoized door onto the census cache
+    // (`usePieCensus().derive`). Calling it twice for one pie would derive
+    // the same pie twice per band render; calling it for a built-in would
+    // try to census a pie that is not persisted at all.
+    const derived: DerivedPie[] = [
+      { id: "builtin:pinned", name: "Pinned", files: [] },
+      { id: "builtin:recent", name: "Recent", files: [] },
+    ];
+    const userPies = [pie({ id: "u1", name: "Pricing" }), pie({ id: "u2", name: "Roadmap" })];
+    const seen: string[] = [];
+    bandOrder(derived, userPies, (p) => {
+      seen.push(p.id);
+      return toDerivedPie(p);
+    });
+    expect(seen).toEqual(["u1", "u2"]);
+  });
 });
 
 describe("bandOrder", () => {
@@ -61,13 +153,13 @@ describe("bandOrder", () => {
       { id: "builtin:recent", name: "Recent", files: [] },
     ];
     const userPies = [pie({ id: "u1", name: "Pricing" }), pie({ id: "u2", name: "Roadmap" })];
-    const order = bandOrder(derived, userPies).map((p) => p.id);
+    const order = bandOrder(derived, userPies, (p) => toDerivedPie(p)).map((p) => p.id);
     expect(order).toEqual(["builtin:pinned", "builtin:recent", "u1", "u2"]);
   });
 
   it("is a plain concatenation — it does not re-sort user pies", () => {
     const userPies = [pie({ id: "z" }), pie({ id: "a" })];
-    const order = bandOrder([], userPies).map((p) => p.id);
+    const order = bandOrder([], userPies, (p) => toDerivedPie(p)).map((p) => p.id);
     expect(order).toEqual(["z", "a"]);
   });
 });

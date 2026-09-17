@@ -97,6 +97,57 @@ export interface Pie {
   members: PieMember[];
 }
 
+// ── Folder census (M3, spec sections 6/9) ───────────────────────────────────
+// Mirrors `app/src/workspace.rs`'s `CensusFile`/`PieCensus` field for field
+// (snake_case throughout, matching every other Rust-shaped interface in this
+// file). Deliberately no `kind` here — `kindOf` (render/kind.ts) stays the
+// single kind table; `pie-census.ts`'s `censusToFiles` adds `kind` when it
+// adapts this into a `DerivedPieFile`.
+
+export interface CensusFile {
+  path: string;
+  /** ms epoch — `metadata.modified()` converted in Rust, same clock as
+   *  every other pies timestamp. */
+  mtime: number;
+  size: number;
+  /** The folder MEMBER this file was found under (always that member's own
+   *  canonical path, never an intermediate subdirectory) — absent for a
+   *  direct FILE member. */
+  folder?: string;
+}
+
+export interface PieCensus {
+  files: CensusFile[];
+  /** Member paths that no longer resolve — a `NotFound` error, or a path
+   *  that is now the wrong kind of thing. Any OTHER I/O failure lands in
+   *  `unreadable`, not here. */
+  missing: string[];
+  /** Member paths that exist (or may exist) but could not be read —
+   *  captioned "can't read this folder" in the plate. Omitted on the wire
+   *  when empty, which is the normal case. */
+  unreadable?: string[];
+  /** Member paths not under the canonical workspace root — captioned "not
+   *  live" in the plate; these only refresh on sky show / plate open. */
+  outside_root: string[];
+  /** Files the walk found but could not `stat`: they are in none of the
+   *  lists above, so this count is the only thing that says the pie is
+   *  short by that many. */
+  skipped: number;
+  truncated: boolean;
+  /** The canonical PATH of the member cut by the 20,000 cap — a path, not
+   *  an index, because the receiver's own member list is read at a
+   *  different moment and an index into it can name the wrong member.
+   *  `missing`/`unreadable`/`outside_root` stay COMPLETE on a truncated
+   *  census; only `files` is partial. */
+  truncated_at?: string;
+  // No `fresh`: spec section 9 lists one, but the server cannot compute it
+  // correctly. `touchPieSeen` moves `seen_at` OPTIMISTICALLY on the client
+  // the instant a plate opens, so a count measured against the server's
+  // `seen_at` is already stale when it arrives — `pie-census.ts`'s
+  // `freshCount` derives it from `files` instead. See `PieCensus` in
+  // app/src/workspace.rs.
+}
+
 /** The persisted `pies` document (`state.json`'s `"pies"` key). An unknown
  *  `v` means an older build is reading a newer build's document: `list()`
  *  then returns no pies and no write ever replaces the key (app/src/pies.rs). */
@@ -332,6 +383,14 @@ export interface IpcSurface {
   relocatePieMember?(id: string, oldPath: string, newPath: string): Promise<void>;
   /** Stamp `seen_at` to now — called on every plate open for a user pie. */
   touchPieSeen?(id: string): Promise<void>;
+  /** M3: walk pie `id`'s members and report every file they hold, plus
+   *  each member's state (`missing`/`unreadable`/`outside_root`).
+   *  Freshness is NOT reported — `pie-census.ts`'s `freshCount` derives it
+   *  client-side, see `PieCensus`. `root` is the
+   *  current workspace root (or `null` with none open) — used only to
+   *  classify `outside_root`. An unknown id resolves to an empty census,
+   *  never a rejection (`pie_census_for`'s own contract). */
+  pieCensus?(id: string, root: string | null): Promise<PieCensus>;
   /** Resolves `path` to its canonical form (`std::fs::canonicalize`) —
    *  called before comparing a caller-supplied path (a tab entry, a tree
    *  row) against a pie's stored (always-canonical) members, e.g.
@@ -562,6 +621,10 @@ class TauriIpc implements IpcSurface {
 
   async touchPieSeen(id: string): Promise<void> {
     await invoke<void>("touch_pie_seen", { id });
+  }
+
+  async pieCensus(id: string, root: string | null): Promise<PieCensus> {
+    return await invoke<PieCensus>("pie_census", { id, root });
   }
 
   async canonicalizePath(path: string): Promise<string> {

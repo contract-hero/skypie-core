@@ -281,6 +281,49 @@ fn touch_pie_seen(app: tauri::AppHandle, id: String) -> Result<(), String> {
     touch_pie_seen_for(&app, &id)
 }
 
+/// M3: walk pie `id`'s members and report what is in it (spec sections
+/// 6/9). An unknown id — a derived built-in pie's own id, or a user pie deleted
+/// mid-flight (the plate closed but the last census request was already in
+/// flight) — returns an EMPTY census rather than an `Err`: a census is
+/// derived and never persisted, so there is nothing wrong to surface as a
+/// toast, and `PiePlate`/`pie-census.ts` should just render as if the pie
+/// held no files. Emits nothing — unlike every other op in this block, the
+/// census is never written to `pies-updated`; `pie-census.ts` owns its own
+/// cache and refresh triggers.
+///
+/// `_app` is unused, and stays for the same reason `list_pies_for`'s does:
+/// the IPC-socket and MCP twins (M5's `add_to_pie` and its neighbours)
+/// dispatch every op in this block through one `*_for(&app, …)` shape, and
+/// an op that broke that shape would have to be special-cased there.
+pub(crate) fn pie_census_for(
+    _app: &tauri::AppHandle,
+    id: &str,
+    root: Option<&str>,
+) -> Result<crate::workspace::PieCensus, String> {
+    let root_path = root.map(std::path::Path::new);
+    match crate::pies::find(id) {
+        Some(pie) => Ok(crate::workspace::pie_census(&pie.members, root_path)),
+        None => Ok(crate::workspace::PieCensus {
+            files: Vec::new(),
+            missing: Vec::new(),
+            unreadable: Vec::new(),
+            outside_root: Vec::new(),
+            skipped: 0,
+            truncated: false,
+            truncated_at: None,
+        }),
+    }
+}
+
+#[tauri::command]
+fn pie_census(
+    app: tauri::AppHandle,
+    id: String,
+    root: Option<String>,
+) -> Result<crate::workspace::PieCensus, String> {
+    pie_census_for(&app, &id, root.as_deref())
+}
+
 /// Resolve `path` to its canonical form for the UI — used before comparing
 /// a caller-supplied path (a tab entry, a tree row, a deep link — none
 /// guaranteed canonical) against a pie's stored members, which the add path
@@ -474,6 +517,7 @@ pub fn run(context: tauri::Context) {
             remove_pie_member,
             relocate_pie_member,
             touch_pie_seen,
+            pie_census,
             canonicalize_path,
             crate::share::share_file,
             crate::share::share_link,

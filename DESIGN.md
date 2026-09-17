@@ -766,6 +766,24 @@ secondary timestamps beside the name they qualify, never the only text in
 their row, and the exception stops there — no other Sky band text takes
 `fg-dim`.
 
+**M3 — the layer list becomes a tree.** When a pie has any folder member,
+the layer list (spec section 5) switches from a flat `role="listbox"` to
+`role="tree"`: one folder-member header per layer at `role="treeitem"
+aria-level="1"`, its files at `aria-level="2"`, in the SAME stored member
+order the band itself uses. A pie with no folder members keeps the flat
+listbox unchanged — the tree is additive, not a replacement shape. This is
+an accessibility floor, not a new visual language: the header is set in
+`{typography.mono}` on `--sky-ink-dim`, the same ink-ladder rule
+every other Sky band label already follows, and the captions next to it are
+plain text. "folder not found" adds two small buttons (Locate…, Forget)
+styled like every other secondary control in the product; "can't read this
+folder" adds Forget alone, since a folder that has not moved has nothing to
+be re-pointed at; "not live" adds no button at all — it states a refresh
+policy, and there is nothing for the reader to act on. No new departure is
+introduced. The one exception already
+covered above stays the limit: no gradient, no fill, no per-kind hue
+anywhere in the tree either.
+
 ## Known Gaps
 
 - Success green is recorded above but not declared. Nothing in the product

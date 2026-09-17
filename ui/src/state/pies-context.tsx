@@ -21,6 +21,17 @@ export type NoticeFn = (text: string, action?: AppNoticeAction, durationMs?: num
 
 export interface PiesContextValue extends UsePiesResult {
   openPicker: (path: string) => void;
+  /** "Locate…" on a pie member that no longer resolves: pick a replacement
+   *  folder, re-point the member at it, and report a refusal. Lives here,
+   *  beside `openPicker`, for the same reason `openPicker` does — it needs
+   *  `ipc.pickDirectory` AND the notice channel AND a pie write, and
+   *  `PiePlate` (its only caller today) would otherwise take `ipc` and
+   *  `onNotice` as props purely to hand them straight back down into one.
+   *  Resolves when the flow ends, whichever way it ends — including a
+   *  cancelled picker, and including an IPC surface with no
+   *  `pickDirectory` at all (a test double), where there is nothing to
+   *  pick with and nothing to report. */
+  locateMember: (pieId: string, oldPath: string) => Promise<void>;
   /** The provider's own notice channel, re-exposed so a consumer deep in the
    *  tree can report a refused pie op without prop-drilling `onNotice` down
    *  to it (`PiePlate`'s "Remove from pie" is the first such caller).
@@ -95,9 +106,39 @@ export function PiesProvider({
   );
   const closePicker = React.useCallback(() => setPickerPath(null), []);
 
+  const relocatePieMember = pies.relocatePieMember;
+  const locateMember = React.useCallback(
+    async (pieId: string, oldPath: string) => {
+      if (!ipc.pickDirectory) return;
+      // The picker itself can reject (the dialog plugin missing from this
+      // build, a permission denied). Outside a try, that rejection escaped
+      // this function, and the only caller `void`s the promise: the user
+      // clicked Locate…, no dialog opened, and nothing was said.
+      let picked: string | null;
+      try {
+        picked = await ipc.pickDirectory();
+      } catch (err: unknown) {
+        onNotice?.(
+          `Couldn't open the folder picker — ${messageOf(err, "the dialog could not be shown")}`,
+        );
+        return;
+      }
+      // The user cancelled the native picker — not a refusal, nothing to say.
+      if (!picked) return;
+      try {
+        await relocatePieMember(pieId, oldPath, picked);
+      } catch (err: unknown) {
+        onNotice?.(
+          `Couldn't use that folder — ${messageOf(err, "the member could not be re-pointed")}`,
+        );
+      }
+    },
+    [ipc, relocatePieMember, onNotice],
+  );
+
   const value = React.useMemo<PiesContextValue>(
-    () => ({ ...pies, openPicker, notice: onNotice }),
-    [pies, openPicker, onNotice],
+    () => ({ ...pies, openPicker, locateMember, notice: onNotice }),
+    [pies, openPicker, locateMember, onNotice],
   );
 
   return (

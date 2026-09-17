@@ -44,11 +44,23 @@ workspace root, which lives in React context — is published as
 `window.__skypieE2e.setWorkspaceRoot` by `App.tsx`'s `E2eSeam`, which
 renders only after the bridge reported ready. Production renders nothing.
 
+## Shared helpers
+
+Anything more than one scenario needs lives under `lib/`, not copied per
+file: `lib/app.ts` (launch, `evalIn`, `click`, `waitFor`, `quit`),
+`lib/proc.ts` (`sleep`, `run`), `lib/fixtureWorkspace.ts`, and
+`lib/state.ts` — the DOM-input primitives (`typeIntoInput`,
+`keyOnActiveElement`) and the on-disk `pies` poller (`readStateJson`,
+`waitForPersistedPies`) the pies scenarios share. A helper only one
+scenario uses stays in that scenario.
+
 ## Running
 
 ```bash
 pnpm -C ui e2e:smoke        # macOS: launch, set a fixture workspace, ⌘P, open a file
 pnpm -C ui e2e:m1           # macOS: the M1 Sky checkpoint — ⌘⇧B, the Recent plate, a slice, a relaunch
+pnpm -C ui e2e:m2           # macOS: the M2 checkpoint — the tin, ⌘D through the picker, the radiogroup, a relaunch
+pnpm -C ui e2e:m3           # macOS: the M3 checkpoint — a folder member, the +N pill, the layer tree, Locate…/Forget
 pnpm -C ui e2e:ios-smoke    # simulator: build, install, launch, read document.title, screenshot
 ```
 

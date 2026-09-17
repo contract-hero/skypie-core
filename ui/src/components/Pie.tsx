@@ -75,6 +75,12 @@ export interface PieProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElem
   /** M2: the band tile's own right-click menu (Rename / Add folder… /
    *  Delete pie — `Sky.tsx`). Only meaningful with `interactive`. */
   onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  /** M3: the freshness pill's click handler — opens the pie's newest file
+   *  in one click, no zoom. Only rendered (and only meaningful) when
+   *  `interactive && pie.fresh > 0` — a built-in pie's `fresh` is always
+   *  `undefined`, so it never gets a pill regardless of whether this is
+   *  passed. */
+  onOpenNewest?: (e: React.MouseEvent) => void;
   /** Wedges the caller has ALREADY grouped for this exact file list —
    *  `PiePlate` needs the groups for its legend and layer filter anyway, so
    *  handing them down keeps the portrait from grouping the same files a
@@ -94,6 +100,7 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
     cutKind,
     onWedgeClick,
     onContextMenu,
+    onOpenNewest,
     wedges: wedgesProp,
     ...rest
   }: PieProps,
@@ -106,6 +113,26 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
   // The label reads off the SAME wedges the disc draws — deriving it from
   // `pie.files` again grouped every file a second time on every render.
   const label = labelOfWedges(wedges);
+  const fresh = pie.fresh ?? 0;
+
+  // A 160ms BRIGHTNESS pulse on the disc (`.sky-pie-flash`, a `filter:
+  // brightness` keyframe in styles.css — no tone, hue or fill changes at
+  // all, so it introduces no new colour departure) when `fresh` RISES (a new file
+  // landed) — not on every render, and not on a drop back to 0 (opening the
+  // pill/plate clears the pill instantly; flashing on the way out would
+  // read as a second, contradictory event). `prevFresh` starts at the
+  // CURRENT value so mounting a pie that already has a pill never flashes.
+  const prevFreshRef = React.useRef(fresh);
+  const [flash, setFlash] = React.useState(false);
+  React.useEffect(() => {
+    if (fresh > prevFreshRef.current) {
+      setFlash(true);
+      const t = window.setTimeout(() => setFlash(false), 160);
+      prevFreshRef.current = fresh;
+      return () => window.clearTimeout(t);
+    }
+    prevFreshRef.current = fresh;
+  }, [fresh]);
 
   let angle = 0;
   const paths = wedges.map((w) => {
@@ -147,7 +174,7 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
 
   const disc = (
     <svg
-      className="sky-pie-disc"
+      className={"sky-pie-disc" + (flash ? " sky-pie-flash" : "")}
       viewBox="0 0 200 200"
       width={size}
       height={size}
@@ -197,14 +224,41 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
       data-pie-id={pie.id}
       // The visible label span must stay part of the accessible name (WCAG
       // 2.5.3 Label in Name) — aria-label alone as just the shares string
-      // used to replace it, so VoiceOver never said which pie this was.
-      aria-label={`${pie.name} — ${label}`}
+      // used to replace it, so VoiceOver never said which pie this was. The
+      // freshness count is folded in here too (rather than living on the
+      // pill span's own aria-label below): `role="option"` is an ARIA
+      // "presentational children" role, so a nested `role="button"` and its
+      // aria-label are stripped from the accessibility tree and a
+      // screen-reader user was never told a pie had new files.
+      aria-label={`${pie.name} — ${label}${fresh > 0 ? ` — ${fresh} new file${fresh === 1 ? "" : "s"}` : ""}`}
       tabIndex={tabIndex}
       onFocus={onFocus}
       onClick={onOpen}
       onContextMenu={onContextMenu}
     >
       {disc}
+      {fresh > 0 ? (
+        // A nested <button> is invalid HTML and its click would bubble
+        // into the tile's own onOpen (zoom) — a plain <span> instead,
+        // stopPropagation before calling onOpenNewest so a pill click never
+        // also opens the plate. No `role`/`aria-label` here: the tile's own
+        // `aria-label` above already announces the count once — a second
+        // one on this span would either be silently dropped (role="option"
+        // hides presentational children) or, if it weren't, announced
+        // twice. `aria-hidden`: pointer-only affordance, ⌘Enter already
+        // reaches the same action from the keyboard (Sky.tsx).
+        <span
+          data-testid="pie-fresh-pill"
+          className="sky-pie-fresh"
+          aria-hidden="true"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenNewest?.(e);
+          }}
+        >
+          +{fresh}
+        </span>
+      ) : null}
       <span className="sky-pie-label">{pie.name}</span>
     </button>
   );
