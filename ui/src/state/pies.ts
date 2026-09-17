@@ -5,7 +5,21 @@
 import type { Pie, PieCensus } from "../ipc";
 import type { DerivedPie, DerivedPieFile } from "./derived-pies";
 import { kindOf } from "../render/kind";
-import { censusToFiles, freshCount, newestPath } from "./pie-census";
+import { censusToFiles, freshCount, isUserPieId } from "./derived-pies";
+// `DropTarget` is what the hit test produces and `dropPieName` is the name
+// rule for a tin drop; both belong beside the hook that owns the drag
+// stream, so `dropPlan` below imports them rather than restating either.
+// `finder-drop.test.ts` already imports that module under the same
+// jsdom-free vitest run, so this costs this file's own tests nothing.
+import { dropPieName } from "../hooks/useFinderDrop";
+import type { DropTarget } from "../hooks/useFinderDrop";
+
+/** Re-exported from `derived-pies.ts`, where it lives beside the two
+ *  built-in ids it tests against. Every import in this module now points
+ *  ONE way — at `derived-pies.ts`, which imports nothing from here — so
+ *  `pie-census.ts` can import `toDerivedPie` below without the two modules
+ *  forming a cycle. */
+export { isUserPieId } from "./derived-pies";
 
 /** A user pie's FILE members, adapted to the same shape a derived pie's
  *  `files` already has, so `wedgesOf`/`groupByWedge` (derived-pies.ts) and
@@ -23,21 +37,19 @@ export function pieFiles(pie: Pie): DerivedPieFile[] {
 /** Adapts a persisted `Pie` to `DerivedPie`'s shape — the one interface
  *  `Pie.tsx`/`PiePlate.tsx` already render against. `census`, when given
  *  (M3), REPLACES `pieFiles`'s pre-census fallback with real files (folder
- *  contents plus real mtimes) and adds `fresh`/`newestFreshPath`/`census`;
- *  omitted (or before the pie's first census resolves), this is exactly
- *  M2's behavior — `added_at`-keyed direct-file members only, no pill. */
+ *  contents plus real mtimes) and adds `fresh`/`census`; omitted (or before
+ *  the pie's first census resolves), this is exactly M2's behavior —
+ *  `added_at`-keyed direct-file members only, no pill. */
 export function toDerivedPie(pie: Pie, census?: PieCensus): DerivedPie {
   if (!census) {
     return { id: pie.id, name: pie.name, files: pieFiles(pie) };
   }
   const files = censusToFiles(census, pie.members);
-  const fresh = freshCount(files, pie.seen_at);
   return {
     id: pie.id,
     name: pie.name,
     files,
-    fresh,
-    newestFreshPath: fresh > 0 ? newestPath(files) ?? undefined : undefined,
+    fresh: freshCount(files, pie.seen_at),
     census,
   };
 }
@@ -46,38 +58,84 @@ export function toDerivedPie(pie: Pie, census?: PieCensus): DerivedPie {
  *  pies in their stored order — `userPies` arrives already in that order
  *  (`pies::list()` never sorts), so this is a plain concatenation, not a
  *  sort. The tin is NOT part of this list; Sky.tsx appends it as its own
- *  trailing element. `censusFor` (M3, `usePieCensus().censusFor`) is
- *  optional — omitted, every user pie falls back to `toDerivedPie`'s own
- *  pre-census behavior, which is what lets a bare `IpcSurface` test double
- *  or an older `bandOrder(derived, userPies)` call site keep compiling. */
+ *  trailing element.
+ *
+ *  `derive` is REQUIRED, and is normally `usePieCensus().derive`: that one
+ *  memoizes per pie id, so a census landing for ONE pie re-derives only
+ *  that pie instead of the whole band. It used to be an optional
+ *  `censusFor`, which silently fell back to the pre-census shape — a
+ *  caller that forgot to pass it got a band with no freshness pills and no
+ *  folder layers, and nothing said so. A caller with no census at all
+ *  passes `toDerivedPie` itself. */
 export function bandOrder(
   derived: DerivedPie[],
   userPies: Pie[],
-  censusFor?: (id: string) => PieCensus | undefined,
+  derive: (pie: Pie) => DerivedPie,
 ): DerivedPie[] {
-  return [...derived, ...userPies.map((p) => toDerivedPie(p, censusFor?.(p.id)))];
+  return [...derived, ...userPies.map(derive)];
 }
 
-/** Pairs with `insertPieAt` for the 5-second delete undo (Sky.tsx):
- *  removing a pie from local state is optimistic and does NOT itself call
- *  `removePie` — the caller defers that IPC call until the undo window
- *  closes, so undoing never has to reconstruct a pie the backend already
- *  forgot. */
-export function withoutPie(pies: Pie[], id: string): Pie[] {
-  return pies.filter((p) => p.id !== id);
-}
-
-/** The undo half of `withoutPie`: re-insert `pie` at `index` (clamped into
- *  range), restoring the exact array shape a delete removed it from. */
-export function insertPieAt(pies: Pie[], pie: Pie, index: number): Pie[] {
-  const next = pies.slice();
-  const at = Math.max(0, Math.min(next.length, index));
-  next.splice(at, 0, pie);
+/** Adds `id` to a pending-delete set, returning a NEW set (React state must
+ *  not be mutated in place). Paired with `withoutPending` so the two
+ *  overlapping-delete transitions are one testable pair rather than two
+ *  inline `new Set(prev)` closures inside `usePies`. */
+export function withPending(pending: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(pending);
+  next.add(id);
   return next;
 }
 
+/** Removes `id` from a pending-delete set. Returns a new set, and leaves the
+ *  OTHER ids alone — two deletes whose undo windows overlap must not clear
+ *  each other, which is what a plain `setPendingDeletes(NO_PENDING)` did. */
+export function withoutPending(pending: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(pending);
+  next.delete(id);
+  return next;
+}
+
+/** What `PiesProvider.openPicker` should do with a caller-supplied path,
+ *  decided without touching React or the IPC surface so all three outcomes
+ *  are testable directly.
+ *
+ *  - `refuse`: a `skypie-remote://` address — M2 has no remote pie members.
+ *  - `canonicalize`: the normal path, resolved before the picker renders so
+ *    `holdsPath`'s exact-string compare lines up with the stored members.
+ *  - `open`: no `canonicalizePath` on this IPC surface (a test double, an
+ *    older build) — open uncanonicalized rather than hang on a promise that
+ *    will never resolve. */
+export type PickerPathPlan =
+  | { action: "refuse"; reason: string }
+  | { action: "canonicalize"; path: string }
+  | { action: "open"; path: string };
+
+export function pickerPathPlan(
+  path: string,
+  canCanonicalize: boolean,
+  isRemote: (p: string) => boolean,
+): PickerPathPlan {
+  if (isRemote(path)) return { action: "refuse", reason: "Can't add a pulled file to a pie yet" };
+  return canCanonicalize ? { action: "canonicalize", path } : { action: "open", path };
+}
+
+/** Hides every pie whose delete is still inside its undo window
+ *  (`usePies`'s `pendingDeletes`). The hook applies this to EVERY list it
+ *  reconciles, including one that arrives on a `skypie://pies-updated`
+ *  event from an unrelated write (another window's `touch_seen`, or M5's
+ *  agent socket). Without it such an event replaced the local list with the
+ *  server's still-has-it document and the deleted pie reappeared mid-undo.
+ *  Returns the SAME array when nothing is pending, so the common case adds
+ *  no new identity for React to re-render on. */
+export function subtractPending(pies: Pie[], pending: ReadonlySet<string>): Pie[] {
+  if (pending.size === 0) return pies;
+  return pies.filter((p) => !pending.has(p.id));
+}
+
 /** Whether `pie` already holds `path` as a member — the picker's check
- *  mark (spec section 6). */
+ *  mark (spec section 6). An EXACT string compare against the stored
+ *  (always canonical) member paths, which is why `openPicker` canonicalizes
+ *  before the picker renders: a non-canonical form of the very same file
+ *  answers false here. */
 export function holdsPath(pie: Pie, path: string): boolean {
   return pie.members.some((m) => m.path === path);
 }
@@ -96,25 +154,34 @@ export function uniqueName(pies: Pie[], wanted: string): string {
   while (taken.has(`${trimmed} ${n}`)) n += 1;
   return `${trimmed} ${n}`;
 }
-
-/** True for a user pie's id — every built-in pie's id is a fixed
- *  `"builtin:…"` literal (`derived-pies.ts`), and no user pie can ever be
- *  minted with that prefix (`uuid::Uuid::now_v7()` never produces one). */
-export function isUserPieId(id: string): boolean {
-  return !id.startsWith("builtin:");
+/** Whether `pie`'s (census-resolved) files include `path` exactly. The one
+ *  membership test M4's two "which pie holds this file?" call sites share
+ *  — the band's passive active-file mark (Sky.tsx) and deep-link reveal
+ *  routing (`pieHoldingPath` below) — so the ring and the route can never
+ *  disagree about the same file. An EXACT compare: both callers hand it a
+ *  canonicalized path, because stored member paths are always canonical
+ *  (`pies::add_member`).
+ *
+ *  Deliberately NOT `holdsPath` above: that one tests a persisted `Pie`'s
+ *  MEMBERS (what the picker's check mark means), this one tests a
+ *  `DerivedPie`'s resolved FILES, which a folder member expands into. */
+export function holdsFilePath(pie: DerivedPie, path: string): boolean {
+  return pie.files.some((f) => f.path === path);
 }
 
 /** M4, deep-link reveal (spec section 7, "What happens to the old
- *  sidebar" / "Deep-link reveal"): the first USER pie whose `files`
- *  include `path` exactly, or `null`. Built-ins are excluded — only a user
- *  pie has persisted MEMBERS, which is the thing "the path is a pie
- *  member" means; Pinned/Recent are a live view over the bookmarks/
- *  recents stores, not membership. Exported on its own (not inlined into
- *  `revealRoute` below) so `App.tsx` can reuse the SAME lookup to learn
- *  WHICH pie to arm the plate on, instead of computing it a second,
- *  possibly different way. */
+ *  sidebar" / "Deep-link reveal"): the first USER pie holding `path`, or
+ *  `null`. Built-ins are excluded — only a user pie has persisted MEMBERS,
+ *  which is the thing "the path is a pie member" means; Pinned/Recent are
+ *  a live view over the bookmarks/recents stores, not membership. The
+ *  active-file MARK keeps the opposite scope (any pie, built-ins
+ *  included): a mark only says "this file is in here", which is true of
+ *  Pinned and Recent, while a reveal must land somewhere the user can act
+ *  on. Exported on its own (not inlined into `revealRoute` below) so
+ *  `App.tsx` can reuse the SAME lookup to learn WHICH pie to arm the plate
+ *  on, instead of computing it a second, possibly different way. */
 export function pieHoldingPath(pies: DerivedPie[], path: string): DerivedPie | null {
-  return pies.find((p) => isUserPieId(p.id) && p.files.some((f) => f.path === path)) ?? null;
+  return pies.find((p) => isUserPieId(p.id) && holdsFilePath(p, path)) ?? null;
 }
 
 /**
@@ -136,15 +203,54 @@ export function pieHoldingPath(pies: DerivedPie[], path: string): DerivedPie | n
  * is the one that makes this route VISIBLE: it leaves reader mode
  * (`setReaderMode(false)`) in the "plate" branch, since Sky only mounts
  * when `!readerMode` — without that, a reveal received mid-read was a
- * silent no-op until the user left reader mode by hand (review fix,
- * App.tsx:454).
+ * silent no-op until the user left reader mode by hand (review fix on
+ * `handleDeepLinkIntent`).
+ *
+ * The two booleans arrive as ONE named posture object, not as two adjacent
+ * positional flags: `revealRoute(true, false, …)` and `revealRoute(false,
+ * true, …)` are both type-correct and mean opposite things, and nothing at
+ * the call site said which was which.
  */
+export interface RevealPosture {
+  sidebarVisible: boolean;
+  readerMode: boolean;
+}
+
 export function revealRoute(
-  sidebarVisible: boolean,
-  readerMode: boolean,
+  posture: RevealPosture,
   pies: DerivedPie[],
   path: string,
 ): "tree" | "plate" | "show-sidebar" {
-  if (sidebarVisible && !readerMode) return "tree";
+  if (posture.sidebarVisible && !posture.readerMode) return "tree";
   return pieHoldingPath(pies, path) ? "plate" : "show-sidebar";
+}
+
+/** What a Finder drop on `target` MEANS (M4, spec section 6), decided
+ *  without React, IPC or a DOM so all five outcomes are testable directly.
+ *  `Sky.tsx`'s `handleFinderDrop` is the effects half: it executes one of
+ *  these and holds no target branching of its own.
+ *
+ *  - `ignore`: nothing under the drop point. Silent by decision — no ring
+ *    was showing over anything either, so there is nothing to explain.
+ *  - `create`: the tin. `name` still needs `uniqueName` from the caller,
+ *    which is the one holding the current pie list.
+ *  - `refuse`: Pinned or Recent — derived views, they hold no members.
+ *  - `vanished`: a pie id no longer in the band (another window deleted it
+ *    between the ring and the release). The user saw a ring and let go, so
+ *    this is REPORTED, not dropped silently.
+ *  - `add`: the ordinary case. */
+export type DropPlan =
+  | { action: "ignore" }
+  | { action: "create"; name: string }
+  | { action: "refuse"; reason: string }
+  | { action: "vanished"; reason: string }
+  | { action: "add"; pieId: string };
+
+export function dropPlan(target: DropTarget | null, pies: DerivedPie[], paths: string[]): DropPlan {
+  if (!target) return { action: "ignore" };
+  if (target.kind === "tin") return { action: "create", name: dropPieName(paths) };
+  const pie = pies.find((p) => p.id === target.id);
+  if (!pie) return { action: "vanished", reason: "That pie is gone — nothing was added" };
+  if (!isUserPieId(pie.id)) return { action: "refuse", reason: "Pinned and Recent are built for you" };
+  return { action: "add", pieId: pie.id };
 }

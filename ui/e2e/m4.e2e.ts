@@ -13,9 +13,15 @@
 // `<html data-theme>` and reading the live computed styles). See
 // ui/e2e/README.md.
 //
-// The harness only evaluates JS INSIDE the webview (`evalIn`) — there is
-// no OS-level drag to synthesize from Node, and no real `skypie://` URL
-// dispatch to trigger from outside the app either. Both are synthesized by
+// The harness drives the app in two ways. Almost everything is JS
+// evaluated INSIDE the webview (`evalIn`) — there is no OS-level drag to
+// synthesize from Node, and no real `skypie://` URL dispatch to trigger
+// from outside the app either. Step 7 is the exception: it also reads
+// SHIPPED SOURCE FILES straight off disk from Node (`ui/src/styles.css`
+// for the plate's `clamp()`, the shell's `capabilities/desktop.json`,
+// `PiePlate.tsx` for the short-pane threshold), so a formula or threshold
+// edited in the source fails this check loudly instead of being retyped
+// here and going stale. Both are synthesized by
 // emitting the SAME event payload the real plugin would deliver, over
 // Tauri's own core event bus — `window.__TAURI_INTERNALS__.invoke
 // ("plugin:event|emit", { event, payload })`, the exact call
@@ -39,52 +45,29 @@
 // event bus is the "a synthetic path exists" branch the acceptance
 // checkpoint itself allows for.
 //
-// launchDesktop({ skipBuild: true }): no Rust change in M4 — same binary.
+// launchDesktop({ skipBuild: false }): M4 changed Rust — `add_pie_member`
+// takes an OPTIONAL `kind` and resolves it from the canonical path, which
+// is what step 3 asserts when a Finder drop stores a "folder" member
+// without the UI ever probing for one.
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { SHELL_DIR, UI_DIR, click, evalIn, keys, launchDesktop, quit, text, waitFor } from "./lib/app";
+import {
+  SHELL_DIR,
+  UI_DIR,
+  click,
+  evalIn,
+  keys,
+  launchDesktop,
+  openViaQuickOpen,
+  quit,
+  text,
+  waitFor,
+} from "./lib/app";
 import type { LaunchedApp } from "./lib/app";
 import { cleanupFixtureWorkspace, makeFixtureWorkspace, setWorkspaceRoot } from "./lib/fixtureWorkspace";
-
-// ── Small helpers, repeated from m1/m2/m3.e2e.ts rather than shared — this
-//    directory's own convention (each scenario stays a single,
-//    independently-readable file; ui/e2e/README.md). ──────────────────────
-
-async function openViaQuickOpen(app: LaunchedApp, absPath: string): Promise<void> {
-  await keys(app, "mod+p");
-  await waitFor(app, `document.querySelector('[data-testid="quick-open"]') !== null`, 10_000);
-  const rowSelector = `li[title=${JSON.stringify(absPath)}]`;
-  await waitFor(app, `document.querySelector(${JSON.stringify(rowSelector)}) !== null`, 10_000);
-  await click(app, rowSelector);
-  await waitFor(app, `document.querySelector(".tab.active .tab-label") !== null`, 10_000);
-}
-
-interface OnDiskPies {
-  pies?: {
-    v?: number;
-    pies?: {
-      id: string;
-      name: string;
-      seen_at?: number;
-      members: { path: string; kind: string; source?: string }[];
-    }[];
-  };
-}
-
-function readStateJson(stateDir: string): OnDiskPies | null {
-  const p = path.join(stateDir, "state.json");
-  if (!fs.existsSync(p)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(p, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { sleep } from "./lib/proc";
+import { waitForPersistedPies } from "./lib/state";
 
 /**
  * Step 7's own tiny CSS reader: find `selector`'s block, then `prop`'s
@@ -127,20 +110,18 @@ function extractParenArgs(css: string, selector: string, prop: string, fnOpen: s
   return args;
 }
 
-async function waitForPersistedPies(
-  stateDir: string,
-  predicate: (doc: NonNullable<OnDiskPies["pies"]>) => boolean,
-  timeoutMs = 10_000,
-): Promise<NonNullable<OnDiskPies["pies"]>> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const doc = readStateJson(stateDir)?.pies;
-    if (doc && predicate(doc)) return doc;
-    if (Date.now() > deadline) {
-      throw new Error(`state.json's "pies" key never matched within ${timeoutMs}ms (last: ${JSON.stringify(doc)})`);
-    }
-    await sleep(150);
-  }
+/**
+ * `SHORT_PANE_WINDOW_H` read out of the SHIPPED `PiePlate.tsx`, not retyped
+ * here. `usePaneShort` is `(max-height: SHORT_PANE_WINDOW_H - 1)`, so the
+ * plate is "short" strictly BELOW that number — 712 today (480 + 232), not
+ * the 560 this step used to assert. For any window between 560 and 711 tall
+ * that assertion failed against correct behaviour.
+ */
+function shortPaneWindowHeight(): number {
+  const src = fs.readFileSync(path.join(UI_DIR, "src", "components", "PiePlate.tsx"), "utf8");
+  const m = /const SHORT_PANE_WINDOW_H = ([0-9]+) \+ ([0-9]+);/.exec(src);
+  if (!m) throw new Error("SHORT_PANE_WINDOW_H not found in PiePlate.tsx — its shape changed");
+  return Number(m[1]) + Number(m[2]);
 }
 
 /** Emit `tauriEvent` over Tauri's real core event bus — see this file's
@@ -220,7 +201,7 @@ async function dragLeave(app: LaunchedApp, verifyJs: string): Promise<void> {
  * (Sky.tsx's `handleFinderDrop`) runs `listDir` → `upsertPie` →
  * `addPieMember`, several awaited IPC round trips, and a re-emit that
  * lands before the first one finishes creates a SECOND pie ("dropped 2")
- * with its own member (review: m4.e2e.ts:151/169). By the time this is
+ * with its own member (review finding on this step). By the time this is
  * called in the checkpoint, a prior `dragOver`/`dragLeave` pair has
  * already proven the `tauri://drag-*` listener is live, so there is no
  * registration race left that re-emitting would be protecting against.
@@ -248,8 +229,12 @@ async function main(): Promise<void> {
   const canonicalDroppedDir = fs.realpathSync(droppedDir);
   const canonicalDroppedFile = fs.realpathSync(droppedFile);
 
-  let app: LaunchedApp = await launchDesktop({ stateDir, skipBuild: true });
+  // Inside the try, and nullable: created BEFORE it, a failing
+  // `launchDesktop` skips the `finally` entirely and leaks both temp trees
+  // on every failed build. Same shape m1/m2/m3 already use.
+  let app: LaunchedApp | null = null;
   try {
+    app = await launchDesktop({ stateDir, skipBuild: false });
     await waitFor(app, `document.querySelector(".toolbar") !== null`, 60_000);
     const root = fs.realpathSync(fixture.dir);
     await setWorkspaceRoot(app, root);
@@ -296,7 +281,7 @@ async function main(): Promise<void> {
     // 4th pie asynchronously, AFTER the count-3 check above already passed
     // — this settle delay plus a second count check is what turns that
     // into a loud, immediate failure instead of a silent stray "dropped 2"
-    // surviving into `state.json` (review: m4.e2e.ts:151/169).
+    // surviving into `state.json` (review finding on this step).
     await sleep(500);
     const settledCount = await evalIn(app, `document.querySelectorAll('.sky-pies [data-pie-id]').length`);
     if (settledCount !== 3) {
@@ -360,25 +345,29 @@ async function main(): Promise<void> {
     await waitFor(app, `document.querySelector(".pane-sidebar") === null`, 10_000);
     console.log("ok: mod+b hides the sidebar");
 
-    // `handleDeepLinkIntent` reads `sidebarVisible` through a ref, not a
-    // dep, so `mod+b` above does not tear down/re-subscribe `useDeepLink`'s
-    // `skypie://open-file` listener (review fix, App.tsx:485) — this
-    // `emitAndVerify` is just the ordinary startup-registration retry
-    // every other `emitTauriEvent` caller in this file gets for free, and
-    // it stays safe to re-emit here (unlike `tauri://drag-drop` above):
-    // repeating a reveal just re-arms the same, idempotent routing
-    // decision.
+    // `useDeepLink` holds its handlers in refs and subscribes once, so
+    // `mod+b` above cannot tear down/re-subscribe the
+    // `skypie://open-file` listener — this `emitAndVerify` is just the
+    // ordinary startup-registration retry every other `emitTauriEvent`
+    // caller in this file gets for free, and it stays safe to re-emit
+    // here (unlike `tauri://drag-drop` above): repeating a reveal just
+    // re-arms the same, idempotent routing decision.
     await emitAndVerify(
       app,
       "skypie://open-file",
       { path: canonicalDroppedFile, intent: "reveal" },
       `document.querySelector('[data-testid="pie-plate"]') !== null`,
     );
-    const focusedIsStartRow = await evalIn(
-      app,
-      `document.activeElement != null && document.activeElement.classList.contains("start-row")`,
-    );
-    if (!focusedIsStartRow) {
+    // `waitFor`, not a single `evalIn`: the plate appearing and the row
+    // taking DOM focus are two different commits, so sampling the instant
+    // the first one is visible races the second.
+    try {
+      await waitFor(
+        app,
+        `document.activeElement != null && document.activeElement.classList.contains("start-row")`,
+        10_000,
+      );
+    } catch {
       throw new Error(
         `expected document.activeElement to carry .start-row, got ${JSON.stringify(
           (await evalIn(app, `document.activeElement ? document.activeElement.outerHTML.slice(0, 200) : null`)),
@@ -386,6 +375,49 @@ async function main(): Promise<void> {
       );
     }
     console.log("ok: reveal with the sidebar hidden opened the plate with a .start-row focused");
+
+    // ── Step 6b: the reveal is ONE-SHOT — it must not outlive the plate
+    //     it opened ──────────────────────────────────────────────────────
+    // Two ways a latched reveal used to leak into a later, ordinary open:
+    // closing and re-opening the same pie BY HAND (the latch was cleared
+    // only on close, so re-opening re-armed `focusPath` and stole focus),
+    // and remounting the band (⌘⇧B off and on), which re-applied a
+    // `revealTarget` that was still standing and re-opened the plate on its
+    // own.
+    await keys(app, "escape");
+    await waitFor(app, `document.querySelector('[data-testid="pie-plate"]') === null`, 10_000);
+    await click(app, tileSelector);
+    await waitFor(app, `document.querySelector('[data-testid="pie-plate"]') !== null`, 10_000);
+    // Settle: the row focus the reveal used to steal lands one commit after
+    // the plate mounts, so sampling the instant it appears would pass even
+    // when the bug is present.
+    await sleep(400);
+    const focusedAfterHandOpen = await evalIn(
+      app,
+      `document.activeElement != null && document.activeElement.classList.contains("start-row")`,
+    );
+    if (focusedAfterHandOpen) {
+      throw new Error("a hand-made open re-focused the revealed row: the reveal latch outlived its plate");
+    }
+    console.log("ok: re-opening the pie by hand focuses no row — the reveal ended with its plate");
+
+    await keys(app, "mod+shift+b");
+    await waitFor(app, `document.querySelector(".sky-band") === null`, 10_000);
+    await keys(app, "mod+shift+b");
+    await waitFor(app, `document.querySelector(".sky-band") !== null`, 10_000);
+    await sleep(400);
+    const plateAfterBandToggle = await evalIn(
+      app,
+      `document.querySelector('[data-testid="pie-plate"]') !== null`,
+    );
+    if (plateAfterBandToggle) {
+      throw new Error("toggling the band off and on re-opened the plate: revealTarget was still armed");
+    }
+    console.log("ok: toggling the band off and on leaves the plate closed");
+
+    // Step 7 measures the plate, so put it back on screen.
+    await click(app, tileSelector);
+    await waitFor(app, `document.querySelector('[data-testid="pie-plate"]') !== null`, 10_000);
 
     // ── Step 7: plate floor geometry at 640×400 ─────────────────────────
     // `core:window:allow-set-size` is deliberately not in this app's
@@ -446,12 +478,16 @@ async function main(): Promise<void> {
           `${expectedHeight}px at innerHeight=${geometry.innerHeight}`,
       );
     }
-    const expectedShort = geometry.innerHeight < 560;
+    // Strictly below the threshold — `usePaneShort` queries
+    // `(max-height: SHORT_PANE_WINDOW_H - 1)`.
+    const shortThreshold = shortPaneWindowHeight();
+    const expectedShort = geometry.innerHeight < shortThreshold;
     const expectedNarrow = geometry.innerWidth <= 760;
     if (geometry.short !== expectedShort || geometry.narrow !== expectedNarrow) {
       throw new Error(
         `pie-plate-short/narrow mismatch: got short=${geometry.short} narrow=${geometry.narrow}, expected ` +
-          `short=${expectedShort} narrow=${expectedNarrow} at ${geometry.innerWidth}x${geometry.innerHeight}`,
+          `short=${expectedShort} narrow=${expectedNarrow} at ${geometry.innerWidth}x${geometry.innerHeight} ` +
+          `(short threshold ${shortThreshold})`,
       );
     }
     console.log(
@@ -507,7 +543,10 @@ async function main(): Promise<void> {
             try { rules = document.styleSheets[i].cssRules; } catch (e) { continue; }
             for (var j = 0; j < rules.length; j++) {
               var r = rules[j];
-              if (r.selectorText === '.sky-pie[data-drop-target="true"]') return r.style.outline;
+              // The ring is ONE rule with TWO triggers (DESIGN.md), so
+              // its selectorText is a LIST — match on containment, not
+              // equality, or the shared rule reads as missing.
+              if (r.selectorText && r.selectorText.indexOf('.sky-pie[data-drop-target="true"]') !== -1) return r.style.outline;
             }
           }
           return null;
@@ -530,9 +569,18 @@ async function main(): Promise<void> {
 
     console.log("PASS");
   } finally {
-    await quit(app);
-    await cleanupFixtureWorkspace(fixture);
-    await fs.promises.rm(stateDir, { recursive: true, force: true });
+    // Each cleanup step guarded on its own: a failing `quit` must not mask
+    // the real error from the body above, nor skip the two removals under
+    // it.
+    if (app) {
+      await quit(app).catch((e: unknown) => console.error("cleanup: quit failed", e));
+    }
+    await cleanupFixtureWorkspace(fixture).catch((e: unknown) =>
+      console.error("cleanup: removing the fixture workspace failed", e),
+    );
+    await fs.promises
+      .rm(stateDir, { recursive: true, force: true })
+      .catch((e: unknown) => console.error("cleanup: removing the scratch state dir failed", e));
   }
 }
 

@@ -28,7 +28,7 @@ import {
   Settings,
   type LucideIcon,
 } from "lucide-react";
-import { kindOf } from "../render/kind";
+import { extOf, kindOf } from "../render/kind";
 
 /** `subject` = an artifact this app is built to read. Everything else is `plain`. */
 export type GlyphTone = "subject" | "plain";
@@ -146,20 +146,11 @@ function lower(s: string): string {
   return s.toLowerCase();
 }
 
-// `dot > 0` (not `>= 0`), so a leading-dot basename like ".gitignore" has no
-// extension here — kept as the SHAPE lookup below; kind.ts's own `extOf`
-// uses `lastIndexOf(".") >= 0` for a different job (the Sky band's kind
-// table). The two are NOT behaviour-identical: a basename that IS exactly an
-// extension — ".md", ".markdown", ".html", ".htm" — has no extension here
-// (dot is at index 0) but a real one under `extOf` (dot >= 0 still matches
-// index 0), so `kindOf(".md")` returns "md"/"html" rather than "other".
-// Swapping the TONE source to `kindOf` below therefore turns those four
-// basenames from "plain" into "subject" — a real, if rare, behaviour change
-// the diff that introduced this swap is accepted with, not one this comment
-// used to correctly claim away (review: FileIcon.tsx:149).
+/** The glyph lookup's extension, or `null` when the name has none. Thin
+ *  wrapper over the single parser in kind.ts so the shape table and the
+ *  kind table agree by construction. */
 function extensionOf(name: string): string | null {
-  const dot = name.lastIndexOf(".");
-  return dot > 0 ? lower(name.slice(dot)) : null;
+  return extOf(name) || null;
 }
 
 export function iconForFile(name: string): { Icon: LucideIcon; tone: GlyphTone } {

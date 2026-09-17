@@ -31,6 +31,17 @@ export interface UseDeepLinkDeps {
 }
 
 export function useDeepLink({ onIntent, onError }: UseDeepLinkDeps): void {
+  // Handlers in refs, subscription keyed on `[]` — the same shape
+  // `useTauriEvent`/`useFinderDrop` use. A deep link is a rare, one-shot
+  // event, so tearing the listener down and re-adding it every time a
+  // caller re-identifies its handler is pure risk: an event arriving
+  // during that window reaches no listener at all. Callers therefore do
+  // not have to memoize what they pass.
+  const onIntentRef = React.useRef(onIntent);
+  onIntentRef.current = onIntent;
+  const onErrorRef = React.useRef(onError);
+  onErrorRef.current = onError;
+
   React.useEffect(() => {
     // `cancelled` guards the async `listen()` resolve from racing the
     // cleanup function — under React 18 StrictMode the cleanup runs
@@ -41,7 +52,7 @@ export function useDeepLink({ onIntent, onError }: UseDeepLinkDeps): void {
     let unlistenError: (() => void) | null = null;
     try {
       listen("skypie://open-file", (event) => {
-        onIntent(event.payload as OpenFilePayload);
+        onIntentRef.current(event.payload as OpenFilePayload);
       }).then((fn) => {
         if (cancelled) fn();
         else unlistenOpen = fn;
@@ -50,7 +61,7 @@ export function useDeepLink({ onIntent, onError }: UseDeepLinkDeps): void {
       });
 
       listen("skypie://deep-link-error", (event) => {
-        if (onError) onError(event.payload as DeepLinkErrorPayload);
+        onErrorRef.current?.(event.payload as DeepLinkErrorPayload);
       }).then((fn) => {
         if (cancelled) fn();
         else unlistenError = fn;
@@ -65,5 +76,5 @@ export function useDeepLink({ onIntent, onError }: UseDeepLinkDeps): void {
       if (unlistenOpen) unlistenOpen();
       if (unlistenError) unlistenError();
     };
-  }, [onIntent, onError]);
+  }, []);
 }

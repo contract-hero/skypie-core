@@ -12,33 +12,44 @@ import { usePies } from "../hooks/usePies";
 import type { UsePiesResult } from "../hooks/usePies";
 import PiePicker from "../components/PiePicker";
 import { isRemoteAddress } from "../utils/remote-address";
+import { pickerPathPlan } from "./pies";
 import { basename } from "../utils/path";
+import { messageOf } from "../utils/error-message";
 import type { AppNoticeAction } from "../App";
 
 export type NoticeFn = (text: string, action?: AppNoticeAction, durationMs?: number) => void;
 
 export interface PiesContextValue extends UsePiesResult {
   openPicker: (path: string) => void;
+  /** "Locate…" on a pie member that no longer resolves: pick a replacement
+   *  folder, re-point the member at it, and report a refusal. Lives here,
+   *  beside `openPicker`, for the same reason `openPicker` does — it needs
+   *  `ipc.pickDirectory` AND the notice channel AND a pie write, and
+   *  `PiePlate` (its only caller today) would otherwise take `ipc` and
+   *  `onNotice` as props purely to hand them straight back down into one.
+   *  Resolves when the flow ends, whichever way it ends — including a
+   *  cancelled picker, and including an IPC surface with no
+   *  `pickDirectory` at all (a test double), where there is nothing to
+   *  pick with and nothing to report. */
+  locateMember: (pieId: string, oldPath: string) => Promise<void>;
+  /** The provider's own notice channel, re-exposed so a consumer deep in the
+   *  tree can report a refused pie op without prop-drilling `onNotice` down
+   *  to it (`PiePlate`'s "Remove from pie" is the first such caller).
+   *  Optional for the same reason the prop is: a bare test double renders
+   *  without one. */
+  notice?: NoticeFn;
 }
 
-const noopPies: UsePiesResult = {
-  pies: [],
-  setPies: () => {},
-  upsertPie: async () => null,
-  removePie: async () => {},
-  addPieMember: async () => {},
-  removePieMember: async () => {},
-  relocatePieMember: async () => {},
-  touchPieSeen: async () => {},
-};
-
-const PiesContext = React.createContext<PiesContextValue>({
-  ...noopPies,
-  openPicker: () => {},
-});
+// `null`, not a silent no-op default: with no-op defaults a consumer
+// rendered outside `PiesProvider` looked like an app with zero pies whose
+// every op quietly did nothing, which is a bug that shows up as "the button
+// does nothing" rather than as an error.
+const PiesContext = React.createContext<PiesContextValue | null>(null);
 
 export function usePiesContext(): PiesContextValue {
-  return React.useContext(PiesContext);
+  const ctx = React.useContext(PiesContext);
+  if (!ctx) throw new Error("usePiesContext must be used inside a <PiesProvider>");
+  return ctx;
 }
 
 export function PiesProvider({
@@ -54,7 +65,9 @@ export function PiesProvider({
   onNotice?: NoticeFn;
   children: React.ReactNode;
 }): React.ReactElement {
-  const pies = usePies(ipc);
+  // `usePies` raises the store's own "this document cannot be read"
+  // warning through this same channel — one notice per distinct warning.
+  const pies = usePies(ipc, onNotice);
   const [pickerPath, setPickerPath] = React.useState<string | null>(null);
 
   // Canonicalizes `path` before opening the picker so `holdsPath`'s
@@ -62,38 +75,70 @@ export function PiesProvider({
   // `pies::add_member` stores — a picker path like /tmp/x must resolve to
   // /private/tmp/x BEFORE the picker ever renders a checkmark, or the
   // checkmark (and the toggle's add-vs-remove branch) is wrong for any
-  // non-canonical input (review: pies.ts:57 / pies.rs:206). A path that
+  // non-canonical input (`holdsPath`). A path that
   // can't be resolved (missing file, or a `skypie-remote://` address — M2
   // has no remote pie members) is refused with a notice instead of opening
-  // a picker with nothing usable in it (spec section 6; review:
-  // PiePicker.tsx:75). Centralized here rather than at each of ⌘D / the
+  // a picker with nothing usable in it (spec section 6). Centralized here rather than at each of ⌘D / the
   // tile's right-click / useFileMenu / the plate's "Add to another pie…" —
   // every one of them already calls this same `openPicker`.
   const openPicker = React.useCallback(
     (path: string) => {
-      if (isRemoteAddress(path)) {
-        onNotice?.("Can't add a pulled file to a pie yet");
+      const plan = pickerPathPlan(path, Boolean(ipc.canonicalizePath), isRemoteAddress);
+      if (plan.action === "refuse") {
+        onNotice?.(plan.reason);
         return;
       }
-      if (!ipc.canonicalizePath) {
-        // No-op test double — keep the old, uncanonicalized behaviour
-        // rather than hanging the picker open forever on a promise that
-        // will never resolve.
-        setPickerPath(path);
+      if (plan.action === "open") {
+        setPickerPath(plan.path);
         return;
       }
+      // `plan.action === "canonicalize"` only when the method exists.
       ipc
-        .canonicalizePath(path)
+        .canonicalizePath?.(plan.path)
         .then(setPickerPath)
-        .catch(() => onNotice?.(`Can't add "${basename(path)}" — the file is missing`));
+        // Show the io error the command actually returned: EACCES, ELOOP,
+        // ENOTDIR and a transport failure are not "the file is missing",
+        // and reporting them all that way sent the user looking for a file
+        // that is there.
+        .catch((err: unknown) => onNotice?.(`Can't add "${basename(path)}" — ${messageOf(err, "the path could not be resolved")}`));
     },
     [ipc, onNotice],
   );
   const closePicker = React.useCallback(() => setPickerPath(null), []);
 
+  const relocatePieMember = pies.relocatePieMember;
+  const locateMember = React.useCallback(
+    async (pieId: string, oldPath: string) => {
+      if (!ipc.pickDirectory) return;
+      // The picker itself can reject (the dialog plugin missing from this
+      // build, a permission denied). Outside a try, that rejection escaped
+      // this function, and the only caller `void`s the promise: the user
+      // clicked Locate…, no dialog opened, and nothing was said.
+      let picked: string | null;
+      try {
+        picked = await ipc.pickDirectory();
+      } catch (err: unknown) {
+        onNotice?.(
+          `Couldn't open the folder picker — ${messageOf(err, "the dialog could not be shown")}`,
+        );
+        return;
+      }
+      // The user cancelled the native picker — not a refusal, nothing to say.
+      if (!picked) return;
+      try {
+        await relocatePieMember(pieId, oldPath, picked);
+      } catch (err: unknown) {
+        onNotice?.(
+          `Couldn't use that folder — ${messageOf(err, "the member could not be re-pointed")}`,
+        );
+      }
+    },
+    [ipc, relocatePieMember, onNotice],
+  );
+
   const value = React.useMemo<PiesContextValue>(
-    () => ({ ...pies, openPicker }),
-    [pies, openPicker],
+    () => ({ ...pies, openPicker, locateMember, notice: onNotice }),
+    [pies, openPicker, locateMember, onNotice],
   );
 
   return (
