@@ -11,7 +11,7 @@
 // Layout:
 //   * `args`   — the tool schemas and the pure argument validation;
 //   * `core`   — the socket client, the launch-and-retry, the roots gate;
-//   * `server` — the rmcp handler that wraps `core` in eleven tools;
+//   * `server` — the rmcp handler that wraps `core` in twelve tools;
 //   * `hook`   — the `skypie-mcp hook <event>` subcommand the Claude Code
 //                plugin runs, which reuses the same socket client.
 

@@ -347,6 +347,61 @@ async fn the_hook_path_never_launches_the_app_and_says_nothing_when_it_is_down()
     assert!(c.feedback_index_if_running().await.is_none());
 }
 
+// ── Agent reach (M5) ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn add_to_pie_sends_a_resolved_path_and_a_trustworthy_origin() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = sock(&dir);
+    let listener = UnixListener::bind(&path).unwrap();
+    let c = client(path, vec![], Box::new(|| panic!("the app is running; no launch")));
+
+    // A relative path resolves against the client's own cwd (/work, see
+    // `client()` above); a blank session_id is dropped to `None` by
+    // `validate_origin_field`, prompt_id is carried through, and `origin.cwd`
+    // is the MCP process's own trusted cwd — never something the model sent.
+    let server = serve_one(&listener, |req| {
+        assert_eq!(
+            req,
+            &Request::AddToPie {
+                pie: "Pricing".into(),
+                path: "/work/pricing-v3.html".into(),
+                origin: Some(skypie_ipc::MemberOrigin {
+                    session_id: None,
+                    prompt_id: Some("prompt-1".into()),
+                    cwd: Some("/work".into()),
+                }),
+            }
+        );
+        Response::ok(Reply::AddedToPie {
+            pie: "Pricing".into(),
+            pie_id: "p1".into(),
+            path: "/work/pricing-v3.html".into(),
+            members: 1,
+            created: false,
+            added: true,
+        })
+    });
+    let (_, got) = tokio::join!(
+        server,
+        c.add_to_pie("Pricing", "pricing-v3.html", Some("   ".into()), Some("prompt-1".into()))
+    );
+    let got = got.unwrap();
+    assert_eq!(got.pie_id, "p1");
+    assert!(got.added);
+    assert!(!got.created);
+}
+
+#[tokio::test]
+async fn add_to_pie_refuses_an_empty_pie_before_touching_the_socket() {
+    let dir = tempfile::TempDir::new().unwrap();
+    // No listener: an empty `pie` must be refused before a connection is
+    // even attempted.
+    let c = client(sock(&dir), vec![], Box::new(|| panic!("must not launch")));
+    let err = c.add_to_pie("   ", "a.html", None, None).await.unwrap_err();
+    assert!(err.contains("pie"), "{err}");
+}
+
 #[tokio::test]
 async fn the_hook_path_reads_feedback_when_the_app_is_running() {
     let dir = tempfile::TempDir::new().unwrap();

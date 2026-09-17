@@ -1,4 +1,4 @@
-// The MCP surface: eleven tools over `AppClient`, described for a language
+// The MCP surface: twelve tools over `AppClient`, described for a language
 // model rather than for a person reading a manual.
 //
 // Every handler is the same three steps — validate, ask the app, render —
@@ -22,12 +22,12 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler};
 use serde::Serialize;
 
 use crate::args::{
-    BeamArtifactArgs, ConfirmPairingArgs, ForgetDeviceArgs, ListDevicesArgs, ListFeedbackArgs,
-    ResolveFeedbackArgs, ShareLinkArgs, StopBeamArgs,
+    AddToPieArgs, BeamArtifactArgs, ConfirmPairingArgs, ForgetDeviceArgs, ListDevicesArgs,
+    ListFeedbackArgs, ResolveFeedbackArgs, ShareLinkArgs, StopBeamArgs,
 };
 use skypie_ipc::{human_bytes, now_unix};
 
-use crate::core::{AppClient, Feedback, Forgotten, Resolved, ServerStatus};
+use crate::core::{AddedToPie, AppClient, Feedback, Forgotten, Resolved, ServerStatus};
 
 /// The rmcp handler. Holds the client behind an `Arc` because rmcp clones
 /// the service per connection.
@@ -274,6 +274,28 @@ impl SkyPieMcp {
     }
 
     #[tool(
+        name = "add_to_pie",
+        description = "Add a file or folder you just produced to one of the user's Sky Pie \"pies\" — \
+                       call this right after you finish writing an artifact the user asked for, \
+                       naming the pie they use for that project (e.g. \"Pricing\"). The pie is \
+                       matched by name, case-insensitively; if none matches, one is created for \
+                       you, so you never need to ask the user to make the pie first — just pick a \
+                       name that describes the project. The user then sees a fresh-file pill on \
+                       that pie in Sky Pie's toolbar, and the file is on top of its layer list. \
+                       Pass session_id/prompt_id if you have them; they are stored on the member \
+                       for the user's own reference and never change what this call does."
+    )]
+    async fn add_to_pie(
+        &self,
+        Parameters(args): Parameters<AddToPieArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        render(
+            self.app.add_to_pie(&args.pie, &args.path, args.session_id, args.prompt_id).await,
+            added_to_pie_summary,
+        )
+    }
+
+    #[tool(
         name = "server_status",
         description = "Report the running Sky Pie app's identity and state: its node id, \
                        where its identity and peer list live on disk, whether it has opened its \
@@ -346,6 +368,18 @@ fn feedback_summary(feedback: &Feedback) -> String {
     feedback.context.clone()
 }
 
+/// The sentence `add_to_pie` returns.
+fn added_to_pie_summary(added: &AddedToPie) -> String {
+    let action = if added.created {
+        format!("Created \"{}\" and added {}", added.pie, added.path.display())
+    } else if added.added {
+        format!("Added {} to \"{}\"", added.path.display(), added.pie)
+    } else {
+        format!("{} was already a member of \"{}\" — nothing changed", added.path.display(), added.pie)
+    };
+    format!("{action}. \"{}\" now holds {} member(s).", added.pie, added.members)
+}
+
 /// The sentence `resolve_feedback` returns.
 fn resolved_summary(resolved: &Resolved) -> String {
     let tail = if resolved.remaining == 0 {
@@ -416,6 +450,9 @@ impl ServerHandler for SkyPieMcp {
                  - a new device -> pair_device, then pair_status, then confirm_pairing;\n\
                  - a device that is no longer theirs, or that list_devices reports as \
                  \"unpaired\" -> forget_device.\n\n\
+                 Just finished writing a file the user asked for? Call add_to_pie yourself, \
+                 naming the pie for that project — never wait to be asked, and never make the \
+                 user create the pie first.\n\n\
                  Two facts that need a human:\n\
                  1. pairing is only safe when the person compares the six fingerprint words on \
                  both screens — always show them and wait;\n\
@@ -513,6 +550,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "add_to_pie",
                 "beam_artifact",
                 "confirm_pairing",
                 "forget_device",
@@ -560,6 +598,8 @@ mod tests {
         // mark the user's comment "wontfix": they would watch their own note
         // turn into "declined" while the agent reported it did the work.
         assert_eq!(required("resolve_feedback"), ["path", "id"]);
+        // session_id/prompt_id are provenance only, both optional.
+        assert_eq!(required("add_to_pie"), ["pie", "path"]);
         for name in [
             "list_devices",
             "pair_device",
@@ -609,6 +649,7 @@ mod tests {
         assert_eq!(props("stop_beam"), ["hash"]);
         assert_eq!(props("list_feedback"), ["path"]);
         assert_eq!(props("resolve_feedback"), ["addressed", "id", "note", "path"]);
+        assert_eq!(props("add_to_pie"), ["path", "pie", "prompt_id", "session_id"]);
     }
 
     #[test]
@@ -625,6 +666,7 @@ mod tests {
         );
         assert!(instructions.contains("list_feedback"), "{instructions}");
         assert!(instructions.contains("resolve_feedback"), "{instructions}");
+        assert!(instructions.contains("add_to_pie"), "{instructions}");
         assert_eq!(info.server_info.name, "skypie-mcp");
         assert!(info.capabilities.tools.is_some(), "the server must advertise tools");
     }

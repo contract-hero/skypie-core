@@ -84,7 +84,7 @@ Check it:
 claude mcp list
 ```
 
-Inside Claude Code, `/mcp` shows the server and its nine tools.
+Inside Claude Code, `/mcp` shows the server and its twelve tools.
 
 ### Optional environment
 
@@ -200,6 +200,27 @@ Links no longer open on that device and it can no longer reach this Mac.
 Pairing again restores it. Use it when a device is no longer the user's, or
 when `list_devices` reports it as `"unpaired"`. Do **not** reach for it on a
 device reported `"refused"`.
+
+### `add_to_pie { pie, path, session_id?, prompt_id? }`
+
+Adds a file (or folder) to one of the user's Sky Pie "pies" — the band of
+small pies in the app's toolbar that collect the files a project cares
+about. Call it right after you finish writing an artifact the user asked
+for, naming the pie for that project.
+
+- `pie` — a name (matched case-insensitively) or a pie id. No pie with this
+  name yet? One is created for you — you never need to ask the user to make
+  it first. Two existing pies share the name? The call fails and lists their
+  ids; call again with one of those.
+- `path` — absolute, or relative to the server's working directory.
+- `session_id`, `prompt_id` — optional identifiers for this session/turn,
+  stored on the member for the user's own reference. They are provenance
+  only and never change what the call does.
+
+Returns `pie` (name), `pie_id`, `path` (canonical), `members` (the pie's
+member count after the call), `created` and `added`. The user sees a
+fresh-file pill on that pie the next time they look at the toolbar, and the
+file sits on top of its layer list.
 
 ### `server_status {}`
 
