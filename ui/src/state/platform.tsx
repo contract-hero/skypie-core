@@ -39,6 +39,31 @@ export function guessPlatformOs(): PlatformOs {
   return /iPhone|iPad|iPod/.test(ua) ? "ios" : DEFAULT_PLATFORM_OS;
 }
 
+/** The key this override reads — follows the `skypie.workspaceRoot`
+ *  convention (`ui/e2e/lib/fixtureWorkspace.ts`'s own `setWorkspaceRoot`). */
+const PLATFORM_OVERRIDE_KEY = "skypie.platformOverride";
+
+/**
+ * The e2e seam (M6): the desktop harness (`ui/e2e/`) drives the REAL app,
+ * but has no other lever to reach the phone tree — there is no
+ * `platform_info` override on a debug build, and the harness does not run
+ * on an actual iPhone (`e2e:ios-smoke` only reads `document.title` and
+ * takes a screenshot). `localStorage` is the one channel `evalIn` can
+ * reach before a reload re-mounts `PlatformProvider`.
+ *
+ * Returns a value ONLY under `import.meta.env.DEV`: a release build
+ * (`vite build`'s default, production mode) reads nothing here, so a stray
+ * key left in a shipped app's `localStorage` — or a hostile page setting
+ * one — can never flip which tree renders. The harness always runs a
+ * dev-profile binary against the Vite dev server (`ui/e2e/README.md`),
+ * where `DEV` is true, so the seam works exactly where it needs to.
+ */
+export function platformOverride(): PlatformOs | null {
+  if (!import.meta.env.DEV) return null;
+  const raw = globalThis.localStorage?.getItem(PLATFORM_OVERRIDE_KEY);
+  return raw === "ios" || raw === "macos" ? raw : null;
+}
+
 /** Resolve the platform once, swallowing every failure mode: the command
  * doesn't exist on this build (`ipc.platformInfo` absent), it rejects, or it
  * resolves to something unexpected. */
@@ -83,12 +108,15 @@ export function PlatformProvider({
 }): React.ReactElement {
   // The UA guess covers the first paint; the probe below is authoritative.
   // Without it every consumer renders the macOS tree once on the phone.
-  const [os, setOs] = React.useState<PlatformOs>(guessPlatformOs);
+  // `platformOverride()` (M6, dev-only) wins over BOTH: the e2e harness has
+  // no iPhone UA and no `platform_info` override to lean on, so it flips
+  // this via `localStorage` and reloads instead.
+  const [os, setOs] = React.useState<PlatformOs>(() => platformOverride() ?? guessPlatformOs());
 
   React.useEffect(() => {
     let cancelled = false;
     resolvePlatformOs(ipc).then((resolved) => {
-      if (!cancelled) setOs(resolved);
+      if (!cancelled) setOs(platformOverride() ?? resolved);
     });
     return () => {
       cancelled = true;

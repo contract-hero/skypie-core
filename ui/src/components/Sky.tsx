@@ -20,6 +20,7 @@ import { bandOrder, insertPieAt, isUserPieId, uniqueName, withoutPie } from "../
 import { newestPath } from "../state/pie-census";
 import Pie from "./Pie";
 import PiePlate from "./PiePlate";
+import SkyClouds from "./SkyClouds";
 import Tooltip from "./Tooltip";
 import { useContextMenu } from "./ContextMenu";
 import type { IpcSurface } from "../ipc";
@@ -494,44 +495,13 @@ export default function Sky({
         onKeyDown={onKeyDown}
       >
         <div className="sky-glaze" aria-hidden />
-        {/* Two separate fixed-size SVGs, positioned by CSS `left` percentage
-            (22% / 71% of the band width — DESIGN.md, "Sky band"). A single
-            SVG spanning the whole band with `preserveAspectRatio="none"`
-            used to stretch every ellipse horizontally by paneWidth/100
-            while its vertical scale stayed 1, turning each cumulus into a
-            flat smear at any pane wider than the 100-unit viewBox (review:
-            Sky.tsx:104). Only the CENTRE tracks the band width now; the
-            shapes themselves stay a fixed size at every pane width. */}
-        <svg
-          className="sky-cloud sky-cloud-1"
-          viewBox="0 0 37 22"
-          aria-hidden
-          focusable="false"
-        >
-          <clipPath id="sky-cloud-base-1">
-            <rect x="0" y="0" width="37" height="22" />
-          </clipPath>
-          <g clipPath="url(#sky-cloud-base-1)">
-            <ellipse cx="10" cy="16" rx="10" ry="7" />
-            <ellipse cx="19" cy="9" rx="13" ry="9" />
-            <ellipse cx="28" cy="17" rx="9" ry="6" />
-          </g>
-        </svg>
-        <svg
-          className="sky-cloud sky-cloud-2"
-          viewBox="0 0 35 21"
-          aria-hidden
-          focusable="false"
-        >
-          <clipPath id="sky-cloud-base-2">
-            <rect x="0" y="0" width="35" height="21" />
-          </clipPath>
-          <g clipPath="url(#sky-cloud-base-2)">
-            <ellipse cx="9" cy="15" rx="9" ry="6" />
-            <ellipse cx="18" cy="8" rx="12" ry="8" />
-            <ellipse cx="27" cy="16" rx="8" ry="5" />
-          </g>
-        </svg>
+        {/* SkyClouds.tsx: two separate fixed-size SVGs, positioned by CSS
+            `left` percentage (22% / 71% of the band width — DESIGN.md,
+            "Sky band") — see that file's own comment for why each cloud is
+            a fixed-size SVG rather than one spanning the whole band
+            (review: Sky.tsx:104, before the M6 extraction). Shared verbatim
+            with the phone band (IosStartPage.tsx, M6). */}
+        <SkyClouds />
         {/* role="presentation": the listbox's real options are this div's
             CHILDREN in the DOM, but an ARIA listbox only owns options that
             are its own accessible children — nesting them one div deeper
