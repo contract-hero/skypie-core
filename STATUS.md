@@ -152,3 +152,6 @@ has been rewritten to match.
 ## History
 
 Earlier development lost most of the repo to an `rsync --delete` incident (see git history); this codebase is the consolidated recovery, since rebuilt: rebrand to Sky Pie + tabs/history/live-reload architecture + visual identity (July 2026).
+
+## End-to-end harness (2026-09-17)
+- Debug builds serve `e2e_eval` on the IPC socket (macOS) and on a loopback TCP port under `SKYPIE_E2E_PORT` (iOS simulator). `ui/e2e/` drives the real app through it: `pnpm -C ui e2e:smoke`, `pnpm -C ui e2e:ios-smoke`. See `ui/e2e/README.md`.

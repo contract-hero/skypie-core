@@ -19,6 +19,7 @@ import type { IpcSurface } from "./ipc";
 import { useDeepLink } from "./hooks/useDeepLink";
 import type { OpenFilePayload, DeepLinkErrorPayload } from "./hooks/useDeepLink";
 import { useTheme } from "./hooks/useTheme";
+import { useE2eBridge } from "./hooks/useE2eBridge";
 import { WorkspaceProvider, useWorkspace } from "./state/workspace";
 import { WatcherProvider } from "./state/watcher-bus";
 import { BookmarksProvider } from "./state/bookmarks-context";
@@ -108,6 +109,9 @@ export default function App({ ipc: injectedIpc }: AppProps = {}): React.ReactEle
   const ipc = injectedIpc ?? tauriIpc;
   // Drives <html data-theme="…"> via side-effect; must mount at the root.
   useTheme();
+  // The E2E harness's Rust→JS channel. Inert in every build a person runs —
+  // see the hook's own comment for the runtime gate that keeps it that way.
+  useE2eBridge();
 
   return (
     <PlatformProvider ipc={ipc}>

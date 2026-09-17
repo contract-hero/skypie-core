@@ -248,7 +248,7 @@ pub fn run(context: tauri::Context) {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_drag::init());
 
-    builder
+    let builder = builder
         .manage(AppState {
             scanner: Mutex::new(crate::workspace::Scanner::new()),
             roots: roots.clone(),
@@ -256,7 +256,15 @@ pub fn run(context: tauri::Context) {
             external_watcher: Mutex::new(None),
         })
         .manage(roots)
-        .manage(crate::remote::RemoteState::new())
+        .manage(crate::remote::RemoteState::new());
+    // The E2E harness's rendezvous state (`eval_in_webview` ↔ `e2e_report`).
+    // Managed unconditionally when the module is compiled at all — the
+    // module itself carries the debug/feature gate (lib.rs), so there is
+    // nothing further to gate here.
+    #[cfg(any(feature = "e2e-hooks", debug_assertions))]
+    let builder = builder.manage(crate::e2e::E2eState::new());
+
+    builder
         .invoke_handler(tauri::generate_handler![
             list_dir,
             list_workspace_roots,
@@ -297,6 +305,12 @@ pub fn run(context: tauri::Context) {
             crate::annotations_api::annotations_reply,
             crate::annotations_api::annotations_set_status,
             crate::annotations_api::annotations_export,
+            #[cfg(any(feature = "e2e-hooks", debug_assertions))]
+            crate::e2e::e2e_bridge_enabled,
+            #[cfg(any(feature = "e2e-hooks", debug_assertions))]
+            crate::e2e::e2e_report,
+            #[cfg(any(feature = "e2e-hooks", debug_assertions))]
+            crate::e2e::e2e_ready,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();
@@ -308,6 +322,11 @@ pub fn run(context: tauri::Context) {
             // server runs beside the desktop app.
             #[cfg(target_os = "macos")]
             crate::ipc_server::start(app_handle.clone());
+            // The E2E harness's loopback listener — iOS has no unix socket
+            // to reach this app through, so a driver dials TCP instead when
+            // `SKYPIE_E2E_PORT` is set. A no-op otherwise, on every platform.
+            #[cfg(any(feature = "e2e-hooks", debug_assertions))]
+            crate::e2e::start_tcp_if_configured(app_handle.clone());
             let roots = roots_for_setup;
             app.deep_link().on_open_url(move |event| {
                 // Bring the window to the foreground before dispatching, so a

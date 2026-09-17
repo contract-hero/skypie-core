@@ -30,6 +30,11 @@ pub mod remote;
 // server runs beside the desktop app; the phone has no such neighbour.
 #[cfg(target_os = "macos")]
 pub mod ipc_server;
+// The E2E harness hook: `Request::E2eEval` served over the macOS unix socket
+// above AND, for iOS (which has none), an optional loopback TCP listener.
+// Debug-only — see the module doc comment for the full gate rationale.
+#[cfg(any(feature = "e2e-hooks", debug_assertions))]
+pub mod e2e;
 
 /// Intent kind surfaced to the webview as a lowercase string in JSON
 /// (`"open"` or `"reveal"`).

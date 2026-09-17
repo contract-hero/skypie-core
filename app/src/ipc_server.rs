@@ -233,6 +233,13 @@ async fn dispatch(app: tauri::AppHandle, req: Request) -> Result<Reply, String> 
                 })
                 .collect(),
         }),
+        // ── E2E harness ─────────────────────────────────────────────────
+        #[cfg(any(feature = "e2e-hooks", debug_assertions))]
+        Request::E2eEval { js } => {
+            let value = crate::e2e::eval_in_webview(&app, js).await?;
+            Ok(Reply::E2eResult { value })
+        }
+
         Request::ResolveFeedback { path, id, note, addressed } => {
             let source = path.to_string_lossy().into_owned();
             let status = if addressed {
