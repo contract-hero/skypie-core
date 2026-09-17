@@ -3375,17 +3375,20 @@ pre[data-fallback] .line::before {
 }
 
 /* The per-row "new" dot (spec section 5: "a 'new' dot when mtime >
-   seen_at") — a plain filled circle, no fill-in-ink-only rule to respect
-   here (DESIGN.md's shape-carries-meaning rule is about file-KIND glyphs;
-   this dot carries recency, which the layer list's own sort already
-   orders by, so a single accent-adjacent dot is not a second chromatic
-   accent — it uses --sky-focus, the band's own per-theme accent shade). */
+   seen_at") — a plain filled circle. Painted with --sky-ink (the band's own
+   ink ladder), NOT --sky-focus: the One Lavender Rule (DESIGN.md) lists
+   four accent jobs and the Sky band's own named departures list five
+   already (gradient, warm crust stroke, ink-step wedge tones, persisted
+   posture, --sky-focus for FOCUS); filling a recency badge with the accent
+   would have been an undocumented sixth job, and DESIGN.md's M3 paragraph
+   explicitly claims "no new departure is introduced" for this list (review,
+   minor: styles.css:3383). */
 .start-row-new {
   flex: 0 0 auto;
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--sky-focus);
+  background: var(--sky-ink);
 }
 
 /* A missing FILE member's row (spec section 5) — dimmed, non-interactive

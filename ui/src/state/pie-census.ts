@@ -39,12 +39,29 @@ function isUserPie(id: string): boolean {
  * member that no longer exists, so those rows would silently vanish from
  * every folder layer, but a direct-file row (`folder` absent) needs no such
  * check, since a removed FILE member has nothing else to match against.
+ *
+ * Also dedupes by absolute path, keeping the FIRST occurrence in
+ * `census.files` order. The Rust side (`workspace.rs::census_with_cap`)
+ * already skips a FILE member covered by a FOLDER member of the same pie,
+ * but two overlapping FOLDER members (a pie holding both `/x` and its
+ * subfolder `/x/y`, which `pies::add_member` allows — it dedupes exact
+ * paths only) still walk the same file twice, once per member, with a
+ * different `folder` tag each time. Without this, a duplicate path became
+ * two `DerivedPieFile`s: double-counted in `wedgesOf`/`freshCount`/the
+ * readout, and two DOM rows colliding onto one `navIndexOf` slot in
+ * `PiePlate.tsx` (review: PiePlate.tsx:290).
  */
 export function censusToFiles(census: PieCensus, members: PieMember[]): DerivedPieFile[] {
   const memberPaths = new Set(members.map((m) => m.path));
-  return census.files
-    .filter((f) => f.folder === undefined || memberPaths.has(f.folder))
-    .map((f) => ({ path: f.path, kind: kindOf(f.path), mtime: f.mtime, folder: f.folder }));
+  const seen = new Set<string>();
+  const out: DerivedPieFile[] = [];
+  for (const f of census.files) {
+    if (f.folder !== undefined && !memberPaths.has(f.folder)) continue;
+    if (seen.has(f.path)) continue;
+    seen.add(f.path);
+    out.push({ path: f.path, kind: kindOf(f.path), mtime: f.mtime, folder: f.folder });
+  }
+  return out;
 }
 
 /** `path` is `folder` itself, or inside it, on a SEGMENT boundary — the
@@ -235,13 +252,27 @@ export function PieCensusProvider({ ipc, children }: PieCensusProviderProps): Re
   const cacheRef = React.useRef(cache);
   cacheRef.current = cache;
   const timersRef = React.useRef(new Map<string, number>());
+  // Mirrors the latest `root` for the same reason `cacheRef` mirrors the
+  // latest cache — read inside an already-in-flight `.then` without making
+  // `fetchCensus` depend on (and therefore re-identity on) every root
+  // change.
+  const rootRef = React.useRef(root);
+  rootRef.current = root;
 
   const fetchCensus = React.useCallback(
     (pieId: string) => {
       if (!ipc.pieCensus) return;
+      // Captured at call time: `census.outside_root` was classified against
+      // THIS root. If the workspace root changes while the request is in
+      // flight, the flush effect below already empties the cache for the
+      // new root — writing a response classified against the OLD root back
+      // in would silently reintroduce stale "not live" captions until the
+      // next refresh (review, minor: pie-census.ts:243).
+      const requestRoot = root;
       ipc
         .pieCensus(pieId, root)
         .then((census) => {
+          if (rootRef.current !== requestRoot) return;
           setCache((prev) => {
             const next = new Map(prev);
             next.set(pieId, census);

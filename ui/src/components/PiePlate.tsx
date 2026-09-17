@@ -287,10 +287,15 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
     return items;
   }, [treeMode, layerFiles, layers]);
 
+  // Keyed by LAYER id + path, not path alone — `censusToFiles` now dedupes
+  // a path across the whole pie, but two rows in the same render can still
+  // legitimately share a path across a transient state update; keying by
+  // layer+path means two rows can never collide onto one nav index even if
+  // they did (review: PiePlate.tsx:290/293).
   const navIndexOf = React.useMemo(() => {
     const map = new Map<string, number>();
     navItems.forEach((item, i) => {
-      map.set(item.type === "header" ? `h:${item.layer.id}` : `f:${item.file.path}`, i);
+      map.set(item.type === "header" ? `h:${item.layer.id}` : `f:${item.layer.id}:${item.file.path}`, i);
     });
     return map;
   }, [navItems]);
@@ -313,6 +318,17 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
   React.useEffect(() => {
     setFocusedLayer(0);
   }, [filterKind, pie.id]);
+
+  // Symmetric to the legend's own `wedges`-shrink clamp above: removing a
+  // layer (e.g. "Remove from pie" / Forget on a folder header, the M3 flow
+  // the e2e itself drives) can leave `focusedLayer` pointing past the new
+  // end of `navItems` — no header or row then satisfies `navIndex ===
+  // focusedLayer`, every item keeps `tabIndex={-1}`, and the whole layer
+  // list drops out of the Tab order until the filter or the pie changes
+  // (review, minor: PiePlate.tsx:313).
+  React.useEffect(() => {
+    setFocusedLayer((i) => Math.min(i, Math.max(0, navItems.length - 1)));
+  }, [navItems.length]);
 
   // Close on Esc — capture-phase and self-stopping (useEscape), so this
   // press does not ALSO leave reader mode the way a plain `escape` binding
@@ -529,17 +545,18 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
           onWedgeClick={activateRadio}
         />
         <div className="pie-plate-readout">{readout}</div>
-        <div className="pie-plate-last-opened">{lastOpenedLabel(pie)}</div>
         {pie.census?.truncated ? (
-          // spec section 4: "truncated · 20,000+" under the readout when
-          // the 20,000-file cap cut the census — a plain count would keep
-          // moving as later folders are skipped, so the label names the
-          // CAP instead of a number that would be wrong the moment it's
-          // read.
+          // spec section 4 fixes the left-column order as pie, readout,
+          // "truncated · 20,000+", then "Last opened" — this used to render
+          // AFTER pie-plate-last-opened (review, minor: PiePlate.tsx:539).
+          // A plain count would keep moving as later folders are skipped,
+          // so the label names the CAP instead of a number that would be
+          // wrong the moment it's read.
           <div className="pie-plate-truncated" data-testid="pie-truncated">
             truncated · 20,000+
           </div>
         ) : null}
+        <div className="pie-plate-last-opened">{lastOpenedLabel(pie)}</div>
       </div>
       <div className="pie-plate-right">
         {/* role="radiogroup": the legend rows AND the portrait's wedge
@@ -631,7 +648,9 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
             layers.map((layer) => (
               <React.Fragment key={layer.id}>
                 {renderLayerHeader(layer)}
-                {layer.rows.map((file) => renderFileRow(file, navIndexOf.get(`f:${file.path}`) ?? -1, 2))}
+                {layer.rows.map((file) =>
+                  renderFileRow(file, navIndexOf.get(`f:${layer.id}:${file.path}`) ?? -1, 2),
+                )}
                 {layer.kind === "files" ? missingFileRows.map((m) => renderMissingFileRow(m.path)) : null}
               </React.Fragment>
             ))
@@ -753,12 +772,18 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
           <bdi>{displayDir(file.path, root)}</bdi>
         </span>
         <span className="start-row-mtime">{mtimeAgo(file.mtime)}</span>
-        {file.mtime > seenAtAtOpen ? (
+        {seenAtAtOpen > 0 && file.mtime > seenAtAtOpen ? (
           // spec section 5: "a 'new' dot when mtime > seen_at" — against
           // the FROZEN seenAtAtOpen (see its own doc comment above), not
           // the live value this same open is in the middle of bumping.
-          // 0 for a derived pie (no `seen_at` at all) and for a user pie
-          // that has never been opened, so this never lights up for either.
+          // The `seenAtAtOpen > 0` guard is load-bearing, not decorative:
+          // `seenAtAtOpen` is 0 for a derived pie (no `seen_at` at all) AND
+          // for a user pie that has never been opened, and `file.mtime > 0`
+          // is true for any real timestamp — without the guard, `mtime > 0`
+          // marked EVERY row "new" in both of those cases, the same
+          // `seen_at == 0` rule `workspace.rs::census_with_cap` and
+          // `freshCount` already enforce for the pill (review:
+          // PiePlate.tsx:756/762, blocker).
           <span className="start-row-new" data-testid="pie-row-new" aria-hidden />
         ) : null}
       </button>
@@ -768,10 +793,25 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
   /** A direct FILE member that no longer resolves — dimmed, "not found",
    *  Forget only (no Locate…: there is nothing to re-point a single file
    *  at, unlike a folder). Not part of the roving-tabindex sequence — its
-   *  one action is the Forget button itself, reachable by ordinary Tab. */
+   *  one action is the Forget button itself, reachable by ordinary Tab.
+   *  `role`/`aria-disabled` match the live rows' shape (`option` in flat
+   *  mode, `treeitem` at level 2 in tree mode) so the container's
+   *  `role="tree"`/`role="listbox"` — which only permits `treeitem`/
+   *  `option` children — announces this row as an item rather than
+   *  dropping it from, or breaking, the accessibility tree (review, minor:
+   *  PiePlate.tsx:772/774). It is always the LAST row of the trailing
+   *  "Files" layer (or the flat list), so leaving it out of `navItems`
+   *  does not put it ahead of any row the roving index still has to reach. */
   function renderMissingFileRow(path: string): React.ReactElement {
     return (
-      <div key={path} className="start-row start-row-missing" title={path}>
+      <div
+        key={path}
+        className="start-row start-row-missing"
+        title={path}
+        role={treeMode ? "treeitem" : "option"}
+        aria-level={treeMode ? 2 : undefined}
+        aria-disabled="true"
+      >
         <span className="start-row-icon">
           <FileGlyph name={basename(path)} size={15} />
         </span>

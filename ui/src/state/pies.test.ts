@@ -9,7 +9,7 @@ import {
   uniqueName,
   withoutPie,
 } from "./pies";
-import type { Pie } from "../ipc";
+import type { Pie, PieCensus } from "../ipc";
 import type { DerivedPie } from "./derived-pies";
 
 function pie(overrides: Partial<Pie> = {}): Pie {
@@ -49,6 +49,82 @@ describe("pieFiles / toDerivedPie", () => {
       name: "Pricing",
       files: [{ path: "/w/a.md", kind: "md", mtime: 5 }],
     });
+  });
+
+  it("toDerivedPie's census branch replaces the added_at fallback files with the census's real files", () => {
+    const p = pie({
+      id: "abc",
+      name: "Pricing",
+      seen_at: 0,
+      members: [{ kind: "file", path: "/w/a.md", added_at: 5 }],
+    });
+    const c: PieCensus = {
+      files: [{ path: "/w/a.md", mtime: 999, size: 10 }],
+      missing: [],
+      outside_root: [],
+      truncated: false,
+      fresh: 0,
+    };
+    const derived = toDerivedPie(p, c);
+    expect(derived.files).toEqual([{ path: "/w/a.md", kind: "md", mtime: 999, folder: undefined }]);
+    expect(derived.census).toBe(c);
+  });
+
+  it("toDerivedPie's fresh/newestFreshPath follow the pie's seen_at", () => {
+    const p = pie({
+      id: "abc",
+      name: "Pricing",
+      seen_at: 500,
+      members: [{ kind: "file", path: "/w/a.md", added_at: 0 }],
+    });
+    const c: PieCensus = {
+      files: [
+        { path: "/w/old.md", mtime: 100, size: 1 },
+        { path: "/w/new.md", mtime: 900, size: 1 },
+      ],
+      missing: [],
+      outside_root: [],
+      truncated: false,
+      fresh: 0,
+    };
+    const derived = toDerivedPie(p, c);
+    expect(derived.fresh).toBe(1);
+    expect(derived.newestFreshPath).toBe("/w/new.md");
+  });
+
+  it("toDerivedPie: seen_at === 0 (never opened) yields fresh 0 and no newestFreshPath", () => {
+    const p = pie({ id: "abc", name: "Pricing", seen_at: 0, members: [] });
+    const c: PieCensus = {
+      files: [{ path: "/w/a.md", mtime: 1_700_000_000_000, size: 1 }],
+      missing: [],
+      outside_root: [],
+      truncated: false,
+      fresh: 0,
+    };
+    const derived = toDerivedPie(p, c);
+    expect(derived.fresh).toBe(0);
+    expect(derived.newestFreshPath).toBeUndefined();
+  });
+});
+
+describe("bandOrder with a census", () => {
+  it("applies the census per id and leaves built-ins without a census-derived fresh", () => {
+    const derived: DerivedPie[] = [
+      { id: "builtin:pinned", name: "Pinned", files: [] },
+      { id: "builtin:recent", name: "Recent", files: [] },
+    ];
+    const userPies = [pie({ id: "u1", name: "Pricing", seen_at: 0 })];
+    const c: PieCensus = {
+      files: [{ path: "/w/a.md", mtime: 1, size: 1 }],
+      missing: [],
+      outside_root: [],
+      truncated: false,
+      fresh: 0,
+    };
+    const order = bandOrder(derived, userPies, (id) => (id === "u1" ? c : undefined));
+    expect(order[0].fresh).toBeUndefined();
+    expect(order[1].fresh).toBeUndefined();
+    expect(order.find((p) => p.id === "u1")?.census).toBe(c);
   });
 });
 

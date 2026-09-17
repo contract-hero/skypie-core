@@ -15,6 +15,7 @@ import { usePieCensus } from "../state/pie-census";
 import { pinnedPie, recentPie, shareLabel } from "../state/derived-pies";
 import type { DerivedPie } from "../state/derived-pies";
 import { bandOrder, insertPieAt, isUserPieId, uniqueName, withoutPie } from "../state/pies";
+import { newestPath } from "../state/pie-census";
 import Pie from "./Pie";
 import PiePlate from "./PiePlate";
 import Tooltip from "./Tooltip";
@@ -191,14 +192,23 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
         const pie = pies[focusedIndex];
         if (!pie) break;
         // ⌘Enter opens the newest file directly (spec section 2's
-        // keyboard model) — bare Enter zooms into the plate, unchanged
-        // from M1/M2. `openOptsFromClick(e)` reads the SAME modifier set
-        // a mouse click on the pill would (see Pie.tsx/onOpenNewest
-        // below), so ⌘Enter and a plain pill click agree on how the tab
-        // opens.
-        if (e.metaKey && pie.newestFreshPath) {
-          onOpenFile(pie.newestFreshPath, openOptsFromClick(e));
-          break;
+        // keyboard model: "Enter zooms, ⌘Enter opens the newest file" — no
+        // freshness condition) — bare Enter zooms into the plate, unchanged
+        // from M1/M2. `openOptsFromClick(e)` reads the SAME modifier set a
+        // mouse click on the pill would (see Pie.tsx/onOpenNewest below),
+        // so ⌘Enter and a plain pill click agree on how the tab opens.
+        // Deliberately keyed off `pie.files`, NOT `pie.newestFreshPath` —
+        // the pill (and `newestFreshPath`) only exist when `fresh > 0`,
+        // which is never true for Pinned/Recent and often false for a user
+        // pie, so gating ⌘Enter on it used to make the chord silently zoom
+        // instead of open in the common case (review: Sky.tsx:199, reported
+        // three times). Only an EMPTY pie falls through to the zoom below.
+        if (e.metaKey) {
+          const path = newestPath(pie.files);
+          if (path) {
+            onOpenFile(path, openOptsFromClick(e));
+            break;
+          }
         }
         setOpenPieId(pie.id);
         break;

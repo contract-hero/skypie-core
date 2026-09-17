@@ -423,6 +423,20 @@ fn census_with_cap(
     let mut truncated_at: Option<usize> = None;
     let mut fresh: u32 = 0;
 
+    // Every FOLDER member's path, computed once up front (independent of
+    // member order) — a FILE member whose path falls under any of them is
+    // skipped below rather than walked a second time. Without this, a file
+    // that is both a direct FILE member and inside a FOLDER member of the
+    // same pie was reported twice — once from the folder's own `bfs_walk`,
+    // once from the File-member branch — which double-counted the plate
+    // readout and `fresh`, and collided two rows onto one `navIndexOf` slot
+    // in the UI (review finding, workspace.rs:441).
+    let folder_paths: Vec<&Path> = members
+        .iter()
+        .filter(|m| m.kind == crate::pies::PieMemberKind::Folder)
+        .map(|m| m.path.as_path())
+        .collect();
+
     for (idx, member) in members.iter().enumerate() {
         if !is_under_root(&member.path, canonical_root.as_deref()) {
             outside_root.push(member.path.clone());
@@ -438,21 +452,29 @@ fn census_with_cap(
         }
 
         match member.kind {
-            crate::pies::PieMemberKind::File => match std::fs::metadata(&member.path) {
-                Ok(meta) if meta.is_file() => {
-                    let mtime = mtime_ms(&meta);
-                    if seen_at != 0 && mtime > seen_at {
-                        fresh += 1;
-                    }
-                    files.push(CensusFile {
-                        path: member.path.clone(),
-                        mtime,
-                        size: meta.len(),
-                        folder: None,
-                    });
+            crate::pies::PieMemberKind::File => {
+                if folder_paths.iter().any(|f| is_under_root(&member.path, Some(f))) {
+                    // Already covered by a folder member's own walk above —
+                    // skip entirely (not `missing`, not `files`) so it is
+                    // reported exactly once.
+                    continue;
                 }
-                _ => missing.push(member.path.clone()),
-            },
+                match std::fs::metadata(&member.path) {
+                    Ok(meta) if meta.is_file() => {
+                        let mtime = mtime_ms(&meta);
+                        if seen_at != 0 && mtime > seen_at {
+                            fresh += 1;
+                        }
+                        files.push(CensusFile {
+                            path: member.path.clone(),
+                            mtime,
+                            size: meta.len(),
+                            folder: None,
+                        });
+                    }
+                    _ => missing.push(member.path.clone()),
+                }
+            }
             crate::pies::PieMemberKind::Folder => match std::fs::metadata(&member.path) {
                 Ok(meta) if meta.is_dir() => {
                     // > 0: the cap check above already returned early when
@@ -685,6 +707,38 @@ mod census_tests {
     }
 
     #[test]
+    fn a_file_under_a_folder_member_of_the_same_pie_is_reported_once() {
+        // Review finding (workspace.rs:441): a file that is both a direct
+        // FILE member and inside a FOLDER member of the same pie used to be
+        // reported twice — once from the folder's `bfs_walk`, once from the
+        // File-member branch.
+        let dir = TempDir::new().unwrap();
+        let folder = dir.path().join("docs");
+        let nested = folder.join("readme.md");
+        touch(&nested);
+        let members = vec![
+            member(PieMemberKind::Folder, &folder),
+            member(PieMemberKind::File, &nested),
+        ];
+
+        let census = census_with_cap(&members, 0, None, MAX_INDEX_ENTRIES);
+
+        assert_eq!(
+            census.files.iter().filter(|f| f.path == nested).count(),
+            1,
+            "a file inside a folder member must not also be counted as a direct file member",
+        );
+        // Order of members must not matter — the file listed BEFORE its
+        // folder is deduped the same way.
+        let reordered = vec![
+            member(PieMemberKind::File, &nested),
+            member(PieMemberKind::Folder, &folder),
+        ];
+        let census2 = census_with_cap(&reordered, 0, None, MAX_INDEX_ENTRIES);
+        assert_eq!(census2.files.iter().filter(|f| f.path == nested).count(), 1);
+    }
+
+    #[test]
     fn a_file_member_carries_real_mtime_and_size() {
         let dir = TempDir::new().unwrap();
         let file = dir.path().join("a.md");
@@ -719,6 +773,50 @@ mod census_tests {
         let census = census_with_cap(&members, 1_500_000, None, MAX_INDEX_ENTRIES);
 
         assert_eq!(census.fresh, 1, "only the file newer than seen_at counts");
+    }
+
+    #[test]
+    fn fresh_counts_folder_files_newer_than_seen_at_too() {
+        // The folder-walk `fresh` increment (the `bfs_walk` closure) had no
+        // coverage of its own with a non-zero `seen_at` — only FILE members
+        // were exercised above (review finding, workspace.rs:593).
+        let dir = TempDir::new().unwrap();
+        let folder = dir.path().join("docs");
+        let older = folder.join("old.txt");
+        let newer = folder.join("new.txt");
+        touch(&older);
+        touch(&newer);
+        set_mtime(&older, 1_000_000);
+        set_mtime(&newer, 2_000_000);
+        let members = vec![member(PieMemberKind::Folder, &folder)];
+
+        let census = census_with_cap(&members, 1_500_000, None, MAX_INDEX_ENTRIES);
+
+        assert_eq!(
+            census.fresh, 1,
+            "only the folder-walked file newer than seen_at counts",
+        );
+    }
+
+    #[test]
+    fn a_missing_or_wrong_type_file_member_is_reported_missing() {
+        // A `kind: File` member whose path is gone, or resolves to a
+        // directory, must land in `missing` and never in `files` — only the
+        // missing-FOLDER case had coverage before (review finding,
+        // workspace.rs:593).
+        let dir = TempDir::new().unwrap();
+        let gone = dir.path().join("gone.txt");
+        let a_directory = dir.path().join("actually-a-dir");
+        std::fs::create_dir_all(&a_directory).unwrap();
+        let members = vec![
+            member(PieMemberKind::File, &gone),
+            member(PieMemberKind::File, &a_directory),
+        ];
+
+        let census = census_with_cap(&members, 0, None, MAX_INDEX_ENTRIES);
+
+        assert_eq!(census.missing, vec![gone, a_directory]);
+        assert!(census.files.is_empty());
     }
 
     #[test]

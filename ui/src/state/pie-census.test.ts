@@ -53,6 +53,26 @@ describe("censusToFiles", () => {
     const c = census({ files: [{ path: "/w/a.md", mtime: 1, size: 1 }] });
     expect(censusToFiles(c, [])).toEqual([{ path: "/w/a.md", kind: "md", mtime: 1, folder: undefined }]);
   });
+
+  it("dedupes by path, keeping the first occurrence — two overlapping folder members", () => {
+    // `pies::add_member` dedupes exact paths only, so a pie can hold both
+    // `/w/dir` and its own subfolder `/w/dir/sub`; each walks the same file
+    // independently and tags it with a different `folder` (review:
+    // PiePlate.tsx:290/293).
+    const c = census({
+      files: [
+        { path: "/w/dir/sub/a.html", mtime: 100, size: 1, folder: "/w/dir" },
+        { path: "/w/dir/sub/a.html", mtime: 100, size: 1, folder: "/w/dir/sub" },
+      ],
+    });
+    const members: PieMember[] = [
+      { kind: "folder", path: "/w/dir", added_at: 0 },
+      { kind: "folder", path: "/w/dir/sub", added_at: 0 },
+    ];
+    const files = censusToFiles(c, members);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toEqual({ path: "/w/dir/sub/a.html", kind: "html", mtime: 100, folder: "/w/dir" });
+  });
 });
 
 describe("isUnder", () => {

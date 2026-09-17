@@ -243,8 +243,14 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
       data-pie-id={pie.id}
       // The visible label span must stay part of the accessible name (WCAG
       // 2.5.3 Label in Name) — aria-label alone as just the shares string
-      // used to replace it, so VoiceOver never said which pie this was.
-      aria-label={`${pie.name} — ${label}`}
+      // used to replace it, so VoiceOver never said which pie this was. The
+      // freshness count is folded in here too (rather than living on the
+      // pill span's own aria-label below): `role="option"` is an ARIA
+      // "presentational children" role, so a nested `role="button"` and its
+      // aria-label are stripped from the accessibility tree and a
+      // screen-reader user was never told a pie had new files (review:
+      // Pie.tsx:264).
+      aria-label={`${pie.name} — ${label}${fresh > 0 ? ` — ${fresh} new file${fresh === 1 ? "" : "s"}` : ""}`}
       tabIndex={tabIndex}
       onFocus={onFocus}
       onMouseEnter={onMouseEnter}
@@ -256,17 +262,18 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
       {disc}
       {fresh > 0 ? (
         // A nested <button> is invalid HTML and its click would bubble
-        // into the tile's own onOpen (zoom) — role="button" on a <span>
-        // instead, stopPropagation before calling onOpenNewest so a pill
-        // click never also opens the plate. tabIndex={-1}: the pill is a
-        // pointer-only shortcut for something ⌘Enter already reaches from
-        // the keyboard (Sky.tsx), so it does not need its own Tab stop.
+        // into the tile's own onOpen (zoom) — a plain <span> instead,
+        // stopPropagation before calling onOpenNewest so a pill click never
+        // also opens the plate. No `role`/`aria-label` here: the tile's own
+        // `aria-label` above already announces the count once — a second
+        // one on this span would either be silently dropped (role="option"
+        // hides presentational children) or, if it weren't, announced
+        // twice. `aria-hidden`: pointer-only affordance, ⌘Enter already
+        // reaches the same action from the keyboard (Sky.tsx).
         <span
           data-testid="pie-fresh-pill"
-          role="button"
-          tabIndex={-1}
           className="sky-pie-fresh"
-          aria-label={`${fresh} new file${fresh === 1 ? "" : "s"}`}
+          aria-hidden="true"
           onClick={(e) => {
             e.stopPropagation();
             onOpenNewest?.(e);
