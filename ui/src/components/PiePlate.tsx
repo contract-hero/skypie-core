@@ -216,7 +216,13 @@ export default function PiePlate({
   // so the marker this open exists to SHOW would read false before its
   // first paint. A ref frozen at mount is enough because Sky.tsx keys the
   // plate, so one instance never sees a different pie.
-  const seenAtAtOpen = React.useRef(rawPie?.seen_at ?? 0).current;
+  //
+  // Falls back to `created_at` when `seen_at` is still 0, i.e. a pie's
+  // first-ever open. A 0 baseline paired with the `seenAtAtOpen > 0` guard
+  // below means no row can ever read "new" on that first open. `created_at`
+  // keeps the property that guard protects — a file older than the pie
+  // stays unmarked — while giving the first open a working baseline.
+  const seenAtAtOpen = React.useRef(rawPie?.seen_at || rawPie?.created_at || 0).current;
 
   // Stamp seen_at on open (only meaningful for a persisted pie — a derived
   // Pinned/Recent pie has no such field and `touchPieSeen` on an unknown id
@@ -964,14 +970,27 @@ export default function PiePlate({
           // the FROZEN seenAtAtOpen (see its own doc comment above), not
           // the live value this same open is in the middle of bumping.
           // The `seenAtAtOpen > 0` guard is load-bearing, not decorative:
-          // `seenAtAtOpen` is 0 for a derived pie (no `seen_at` at all) AND
-          // for a user pie that has never been opened, and `file.mtime > 0`
-          // is true for any real timestamp — without the guard, `mtime > 0`
-          // marked EVERY row "new" in both of those cases. It is the same
-          // `seen_at == 0` rule `freshCount` (derived-pies.ts) enforces for
-          // the pill — and `freshCount` is the ONLY place that enforces it:
-          // the census serves no freshness at all.
-          <span className="start-row-new" data-testid="pie-row-new" aria-hidden />
+          // `seenAtAtOpen` is 0 for a derived pie, which has no `seen_at`
+          // and no `created_at` either, and `file.mtime > 0` is true for any
+          // real timestamp — without the guard, `mtime > 0` marked EVERY row
+          // "new" there.
+          //
+          // On a user pie's FIRST open the baseline is `created_at` (see
+          // `seenAtAtOpen` above), so this plate marks the rows added after
+          // the pie was made — while the band's pill shows nothing at all,
+          // because `freshCount` (derived-pies.ts) returns 0 while
+          // `seen_at === 0` and does not take that fallback. The two answers
+          // diverge ON PURPOSE for exactly that one open: the pill is a
+          // "since you last looked" count, and a pie nobody has looked at
+          // yet has no such number, while the plate the user is reading
+          // right now can still say which rows are the recent ones.
+          <>
+            <span className="start-row-new" data-testid="pie-row-new" aria-hidden />
+            {/* The dot is `aria-hidden` and carries no text, so a screen
+                reader would otherwise never announce which row the agent's
+                add just produced. */}
+            <span className="sr-only">{" — new"}</span>
+          </>
         ) : null}
       </button>
     );

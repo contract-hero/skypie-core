@@ -250,6 +250,43 @@ impl AppClient {
         }
     }
 
+    // ── Agent reach (M5) ────────────────────────────────────────────────
+
+    /// Add a file (or folder) this session just produced to `pie` — a NAME
+    /// (case-insensitive; created if none matches — never a reason to ask
+    /// the user to make it first) or an id. `session_id`/`prompt_id` are
+    /// this tool's own optional provenance arguments; `cwd` is NOT one of
+    /// them — it always comes from THIS process's own trusted working
+    /// directory (`self.cwd`), never from a model-supplied argument, the
+    /// same reasoning `args::confine` already applies to `roots`.
+    pub async fn add_to_pie(
+        &self,
+        pie: &str,
+        raw_path: &str,
+        session_id: Option<String>,
+        prompt_id: Option<String>,
+    ) -> Result<AddedToPie, String> {
+        // The same two validators the APP runs on whatever reaches its
+        // socket, applied here so a bad argument is refused before this
+        // process even dials — a model-supplied identifier is free text, not
+        // a value to trust blindly.
+        let pie = skypie_ipc::validate_pie_name(pie)?;
+        let path = args::resolve_arg_path(raw_path, &self.cwd, self.home.as_deref())?;
+        let origin = skypie_ipc::MemberOrigin {
+            session_id,
+            prompt_id,
+            cwd: Some(self.cwd.to_string_lossy().into_owned()),
+        }
+        .validated()?;
+        match self.call(Request::AddToPie { pie, path, origin: Some(origin) }).await?
+        {
+            Reply::AddedToPie { pie, pie_id, path, members, created, added } => {
+                Ok(AddedToPie { pie, pie_id, path, members, created, added })
+            }
+            other => Err(unexpected(other)),
+        }
+    }
+
     pub async fn forget_device(&self, device: &str) -> Result<Forgotten, String> {
         let device = args::validate_device_query(device)?.to_string();
         match self.call(Request::ForgetDevice { device }).await? {
@@ -427,6 +464,19 @@ pub struct Forgotten {
     pub device: String,
     pub node_id: String,
     pub node_id_short: String,
+}
+
+/// The outcome of `add_to_pie`, as the app reported it. `Serialize` — not
+/// optional: `server::ok` refuses a `structuredContent` that isn't a JSON
+/// object, and every tool result in this crate flows through it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct AddedToPie {
+    pub pie: String,
+    pub pie_id: String,
+    pub path: PathBuf,
+    pub members: usize,
+    pub created: bool,
+    pub added: bool,
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

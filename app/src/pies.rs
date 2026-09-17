@@ -2,14 +2,15 @@
 // bookmarks.rs (list/add/remove over one JSON array), but with two
 // differences that matter:
 //
-//   1. Every write goes through `state_store::update_state_field("pies",
-//      ...)`, never `set_state_field`. `bookmarks.rs`'s
+//   1. Every write goes through
+//      `state_store::update_state_field_if_changed("pies", ...)`, never
+//      `set_state_field`. `bookmarks.rs`'s
 //      `list_from_global()` + `set_state_field` pattern is a
 //      read-modify-write across TWO separate lock acquisitions — fine for
 //      bookmarks, which only the UI ever writes, but pies gets a second
 //      writer in M5 (the agent socket) that must not be able to race the UI
 //      (e.g. `touch_seen` on every plate open) and drop a write. Routing
-//      every op below through `update_state_field` keeps the whole
+//      every op below through `update_state_field_if_changed` keeps the whole
 //      read-modify-write inside ONE lock acquisition, which makes that race
 //      structurally impossible rather than merely unlikely.
 //   2. Timestamps are ms epoch (`as_millis`), NOT the seconds
@@ -77,14 +78,71 @@ pub struct Pie {
 /// real type instead of falling back to `String`, which would defeat the
 /// whole reason `PieMemberSource` is a closed set. Every `pies::` call site
 /// keeps reading `crate::pies::PieMemberKind`, so nothing else moves.
-pub use skypie_ipc::{PieMemberKind, PieMemberSource};
+pub use skypie_ipc::{validate_pie_name, PieMemberKind, PieMemberSource};
 
+/// Provenance recorded on a member an agent added: which session, which
+/// prompt, which working directory.
+///
+/// The fields are PRIVATE and there is no public constructor, so the only
+/// way to mint one in this crate is `TryFrom<skypie_ipc::MemberOrigin>`,
+/// which runs `MemberOrigin::validated` first. A public field set let a
+/// caller store an untrimmed, over-long or control-bearing value that the
+/// socket's own trust boundary had already rejected, from the same process.
+/// Readers use the getters below.
+///
+/// `skip_serializing_if` on each field, so a partial origin is stored as the
+/// fields it actually has rather than with explicit `null`s — `ipc.ts`'s
+/// `PieMemberOrigin` types all three as optional, and a `null` is not an
+/// absent field. `rest` is the same forward-compatibility tail `Pie` and
+/// `PieMember` carry (see `UnknownFields`): a build that does not know a
+/// field a NEWER build wrote here must not erase it on the next write.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct PieMemberOrigin {
-    pub session_id: Option<String>,
-    pub prompt_id: Option<String>,
-    pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cwd: Option<String>,
+    /// See `UnknownFields` — a newer build's origin field lands here.
+    #[serde(flatten)]
+    rest: UnknownFields,
+}
+
+impl PieMemberOrigin {
+    /// The agent session this member came from, when one was supplied.
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
+    /// The prompt or turn that produced this member, when one was supplied.
+    pub fn prompt_id(&self) -> Option<&str> {
+        self.prompt_id.as_deref()
+    }
+
+    /// The agent's working directory at the time, when one was supplied.
+    pub fn cwd(&self) -> Option<&str> {
+        self.cwd.as_deref()
+    }
+}
+
+/// The wire origin, cleaned, on its way into the store — and the ONLY
+/// producer of a `PieMemberOrigin` in this crate (see the type's own doc).
+/// The rule itself lives in `skypie-ipc` beside `MemberOrigin`, so the MCP
+/// client and this socket enforce one rule rather than two copies that can
+/// drift.
+impl TryFrom<skypie_ipc::MemberOrigin> for PieMemberOrigin {
+    type Error = String;
+
+    fn try_from(origin: skypie_ipc::MemberOrigin) -> Result<Self, Self::Error> {
+        let origin = origin.validated()?;
+        Ok(Self {
+            session_id: origin.session_id,
+            prompt_id: origin.prompt_id,
+            cwd: origin.cwd,
+            rest: UnknownFields::new(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -135,8 +193,8 @@ impl DocError {
 }
 
 /// Parse the `pies` leaf into a `PiesDoc`, or say why it can't be. A
-/// missing key (`Value::Null`, what `update_state_field` hands a brand new
-/// leaf) is a brand new, empty document, not an error.
+/// missing key (`Value::Null`, what `update_state_field_if_changed` hands a
+/// brand new leaf) is a brand new, empty document, not an error.
 ///
 /// Takes the value BY VALUE so `serde_json::from_value` consumes it rather
 /// than copying it again on the way in. (`list()` clones the `pies` subtree
@@ -226,7 +284,7 @@ pub fn find(id: &str) -> Option<Pie> {
 }
 
 /// Run `f` over the `pies` document under the store's single lock
-/// (`update_state_field`) — and, critically, leave the value COMPLETELY
+/// (`update_state_field_if_changed`) — and, critically, leave the value COMPLETELY
 /// UNTOUCHED whenever `readable_doc` refuses it, both for an unrecognised
 /// `v` and for a document that does not parse at all. That second case used
 /// to fall through `unwrap_or_default()` into an EMPTY document — one
@@ -251,33 +309,100 @@ pub fn find(id: &str) -> Option<Pie> {
 /// Generic over the closure's return so an op can report a decision it can
 /// only make with the document in hand (`add_member` refusing an id that
 /// names no pie). It also removes `upsert`'s fabricated "unreachable" error.
+///
+/// Whether anything CHANGED is decided here, by comparing the re-serialized
+/// document against the value that was on the leaf — not by the closure. An
+/// unchanged document skips the debounced disk write: an op that decided to
+/// do nothing (an idempotent re-add, a remove of something already gone) has
+/// no new bytes to persist, so rewriting `state.json` for it is pure churn.
+/// The closure used to report that flag itself, which meant a closure that
+/// mutated the document and answered `false` silently discarded its own
+/// mutation while still returning `Ok`. One `Value` comparison per mutation,
+/// on a document this function already clones per call, buys back a contract
+/// that cannot be got wrong at a call site.
 fn mutate_doc<R>(f: impl FnOnce(&mut PiesDoc) -> R) -> Result<R, String> {
     let mut refused: Option<String> = None;
     let mut out: Option<R> = None;
-    crate::state_store::update_state_field("pies", |val| match readable_doc(val.clone()) {
-        Ok(mut doc) => {
-            let r = f(&mut doc);
-            match serde_json::to_value(&doc) {
-                Ok(next) => {
-                    *val = next;
-                    out = Some(r);
-                }
-                // Same contract as an unreadable document: touch nothing, report.
-                Err(e) => {
-                    refused = Some(format!(
-                        "pies: the updated pies document could not be encoded ({e}); nothing was changed"
-                    ))
+    crate::state_store::update_state_field_if_changed("pies", |val| {
+        match readable_doc(val.clone()) {
+            Ok(mut doc) => {
+                let r = f(&mut doc);
+                match serde_json::to_value(&doc) {
+                    Ok(next) => {
+                        let changed = next != *val;
+                        if changed {
+                            *val = next;
+                        }
+                        out = Some(r);
+                        changed
+                    }
+                    // Same contract as an unreadable document: touch nothing, report.
+                    Err(e) => {
+                        refused = Some(format!(
+                            "pies: the updated pies document could not be encoded ({e}); nothing was changed"
+                        ));
+                        false
+                    }
                 }
             }
+            Err(e) => {
+                refused = Some(e.message().to_string());
+                false
+            }
         }
-        Err(e) => refused = Some(e.message().to_string()),
     })?;
     match (refused, out) {
         (Some(e), _) => Err(e),
         (None, Some(r)) => Ok(r),
-        // `update_state_field` ran neither arm: the key path could not be
-        // walked, which it already reports through `?` above.
+        // `update_state_field_if_changed` ran neither arm: the key path could
+        // not be walked, which it already reports through `?` above.
         (None, None) => Err(DocError::Unparseable.message().to_string()),
+    }
+}
+
+/// Two names are the same pie name when they fold to the same lowercase
+/// characters. Compares the two lowercase char STREAMS rather than building a
+/// `String` per side, so scanning a band of pies for a name allocates nothing.
+fn eq_ignore_case(a: &str, b: &str) -> bool {
+    a.chars().flat_map(char::to_lowercase).eq(b.chars().flat_map(char::to_lowercase))
+}
+
+/// Resolve `query` to at most one pie: an exact `id` match first, else a
+/// unique case-insensitive NAME match, else `Ok(None)`. Two or more pies
+/// sharing a name is an `Err` listing their ids rather than a silent pick of
+/// the first.
+///
+/// The single lookup rule this module owns. `find_or_create` and `add_to_pie`
+/// both run it against the document they already hold, so the id/name/
+/// ambiguity answer cannot drift between two entry points.
+fn resolve<'a>(pies: &'a [Pie], query: &str) -> Result<Option<&'a Pie>, String> {
+    if let Some(p) = pies.iter().find(|p| p.id == query) {
+        return Ok(Some(p));
+    }
+    let mut named = pies.iter().filter(|p| eq_ignore_case(&p.name, query));
+    let Some(first) = named.next() else { return Ok(None) };
+    if named.next().is_none() {
+        return Ok(Some(first));
+    }
+    let ids: Vec<&str> =
+        pies.iter().filter(|p| eq_ignore_case(&p.name, query)).map(|p| p.id.as_str()).collect();
+    Err(format!(
+        "{} pies are named {query:?} ({}) — use one's id instead",
+        ids.len(),
+        ids.join(", ")
+    ))
+}
+
+/// A brand new pie named `name`. One place mints an id and stamps
+/// `created_at`, so `upsert` and the resolve-or-create path cannot drift.
+fn new_pie(name: &str) -> Pie {
+    Pie {
+        id: uuid::Uuid::now_v7().to_string(),
+        name: name.to_string(),
+        created_at: now_ms(),
+        seen_at: 0,
+        members: Vec::new(),
+        rest: UnknownFields::new(),
     }
 }
 
@@ -295,14 +420,7 @@ pub fn upsert(id: Option<&str>, name: &str) -> Result<Pie, String> {
                 return p.clone();
             }
         }
-        let pie = Pie {
-            id: uuid::Uuid::now_v7().to_string(),
-            name: name.to_string(),
-            created_at: now_ms(),
-            seen_at: 0,
-            members: Vec::new(),
-            rest: UnknownFields::new(),
-        };
+        let pie = new_pie(name);
         doc.pies.push(pie.clone());
         pie
     })
@@ -346,29 +464,152 @@ fn canonicalize_lenient(path: &Path) -> PathBuf {
 /// to a pie another window just deleted (or one inside its delete-undo
 /// window) was dropped while the picker reported success, and M5's socket
 /// writer would inherit that. Idempotent in the one way that is safe:
-/// re-adding a path already a member of the pie is a no-op, not a duplicate.
+/// re-adding a path already a member of the pie is a no-op, not a duplicate
+/// — `insert_member` below states that rule in full.
+///
+/// One function, not two — every UI call site (`app.rs`, tests) passes
+/// `origin: None`, which is exactly what a picker/menu/Finder add means:
+/// "no agent provenance for this one".
+///
+/// Returns whether THIS call inserted a member (`true`) versus found an
+/// existing one and left it alone (`false`), read from INSIDE the same
+/// `mutate_doc` closure that does the insert. A caller reporting `added` must
+/// not derive it from a snapshot taken under an earlier, separate lock
+/// acquisition: a second add for the same path can land in between, and the
+/// call that LOST the idempotency race would then claim it inserted.
+///
+/// Matches `id` exactly, unlike `add_to_pie` below — this is the webview's
+/// entry point, and the webview always holds a real pie id.
+#[must_use = "the return value says whether THIS call inserted the member; \
+              a caller that reports `added` must read it"]
 pub fn add_member(
     id: &str,
     canonical: &Path,
     kind: PieMemberKind,
     source: Option<PieMemberSource>,
-) -> Result<(), String> {
+    origin: Option<PieMemberOrigin>,
+) -> Result<bool, String> {
     mutate_doc(|doc| {
         let Some(p) = doc.pies.iter_mut().find(|p| p.id == id) else {
             return Err(no_such_pie(id));
         };
-        if !p.members.iter().any(|m| m.path == canonical) {
-            p.members.push(PieMember {
-                kind,
-                path: canonical.to_path_buf(),
-                added_at: now_ms(),
-                source,
-                origin: None,
-                rest: UnknownFields::new(),
-            });
-        }
-        Ok(())
+        Ok(insert_member(p, canonical, kind, source, origin))
     })?
+}
+
+/// Push a member onto `pie` unless its path is already there, and say whether
+/// it pushed. Re-adding LEAVES the existing member untouched rather than
+/// overwriting its `origin`/`added_at`/`source`: a second add for a path an
+/// agent (or a person) already added must not erase who added it first, or
+/// silently re-date it to "just now". This is the one statement of that
+/// rule; `add_member` and `add_to_pie` both point here.
+fn insert_member(
+    pie: &mut Pie,
+    canonical: &Path,
+    kind: PieMemberKind,
+    source: Option<PieMemberSource>,
+    origin: Option<PieMemberOrigin>,
+) -> bool {
+    if pie.members.iter().any(|m| m.path == canonical) {
+        return false;
+    }
+    pie.members.push(PieMember {
+        kind,
+        path: canonical.to_path_buf(),
+        added_at: now_ms(),
+        source,
+        origin,
+        rest: UnknownFields::new(),
+    });
+    true
+}
+/// Resolve `query` to exactly one pie, creating a fresh one named `query`
+/// when nothing matches. The lookup, the ambiguity check AND the maybe-create
+/// all run inside ONE `mutate_doc` closure, i.e. one lock acquisition.
+///
+/// That single acquisition is the invariant. Two `add_to_pie` requests naming
+/// the same not-yet-existing pie run on two different tokio tasks, so a
+/// separate lookup followed by a separate create would let both observe "no
+/// match" and both mint a pie with that name — after which the name is
+/// permanently ambiguous.
+///
+/// Returns `(Pie, created)`. Refuses to CREATE a pie whose name parses as a
+/// UUID: the only way `query` reaches the create branch already shaped like
+/// one is a caller holding a `pie_id` for a pie since deleted, and a tile
+/// literally labelled that UUID helps nobody reading the band. An EXISTING
+/// pie may still carry any name at all.
+///
+/// `#[cfg(test)]`, NOT shipped surface: it resolves-or-creates WITHOUT
+/// inserting, which is a weaker transaction than the one this module argues
+/// for, and it is exactly the name a second socket writer would reach for.
+/// A writer that also inserts a member must use `add_to_pie`, which folds
+/// both steps into ONE lock acquisition. Nothing in production calls it; it
+/// stays because its tests pin `resolve_or_create`'s rules — the
+/// id/name/ambiguity answer, the bare-uuid refusal, and two interleaved
+/// callers minting exactly one pie — directly, with no insert in the way.
+#[cfg(test)]
+fn find_or_create(query: &str) -> Result<(Pie, bool), String> {
+    let query = validate_pie_name(query)?;
+    mutate_doc(|doc| resolve_or_create(doc, &query))?
+}
+
+/// `find_or_create`'s body, over a document the caller already holds — so
+/// `add_to_pie` can resolve-or-create AND insert in the same closure.
+fn resolve_or_create(doc: &mut PiesDoc, query: &str) -> Result<(Pie, bool), String> {
+    if let Some(p) = resolve(&doc.pies, query)? {
+        return Ok((p.clone(), false));
+    }
+    if uuid::Uuid::parse_str(query).is_ok() {
+        return Err(format!("no pie with id {query} — pass a NAME to create one"));
+    }
+    let pie = new_pie(query);
+    doc.pies.push(pie.clone());
+    Ok((pie, true))
+}
+
+/// The agent socket's whole write, in ONE lock acquisition: resolve `query`
+/// (id, else unique case-insensitive name) or create a pie with that name,
+/// then insert `canonical` as a member of it.
+///
+/// Folding the two steps together is what lets the caller answer truthfully.
+/// A resolve under one acquisition and an insert under a second can be split
+/// by a concurrent delete of the pie in between, which made the insert a
+/// silent no-op while the caller reported success.
+///
+/// Returns a `PieAdd`: the pie AS IT STANDS after the insert, plus the two
+/// decisions this call made.
+pub fn add_to_pie(
+    query: &str,
+    canonical: &Path,
+    kind: PieMemberKind,
+    source: Option<PieMemberSource>,
+    origin: Option<PieMemberOrigin>,
+) -> Result<PieAdd, String> {
+    let query = validate_pie_name(query)?;
+    mutate_doc(|doc| {
+        let (pie, created) = resolve_or_create(doc, &query)?;
+        let id = pie.id.clone();
+        // `resolve_or_create` just returned this pie out of `doc`, so it is
+        // there by construction.
+        let p = doc.pies.iter_mut().find(|p| p.id == id).ok_or_else(|| no_such_pie(&id))?;
+        let inserted = insert_member(p, canonical, kind, source, origin);
+        Ok(PieAdd { pie: p.clone(), created, inserted })
+    })?
+}
+
+/// What one `add_to_pie` did, named. The three values used to travel as a
+/// `(Pie, bool, bool)` tuple through three layers, and the two adjacent
+/// same-typed booleans mean opposite things to the sentence the MCP tool
+/// renders — swapping them compiles and reads as a plausible summary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PieAdd {
+    /// The resolved pie, as it stands AFTER the insert.
+    pub pie: Pie,
+    /// True when `query` named no existing pie and one was minted for it.
+    pub created: bool,
+    /// True when THIS call pushed the member; false when the path was
+    /// already a member (the idempotent case — see `insert_member`).
+    pub inserted: bool,
 }
 
 /// Remove a member by path. Canonicalizes `path` FIRST — `add_member`
@@ -382,9 +623,8 @@ pub fn add_member(
 pub fn remove_member(id: &str, path: &Path) -> Result<(), String> {
     let canonical = canonicalize_lenient(path);
     mutate_doc(|doc| {
-        if let Some(p) = doc.pies.iter_mut().find(|p| p.id == id) {
-            p.members.retain(|m| m.path != canonical);
-        }
+        let Some(p) = doc.pies.iter_mut().find(|p| p.id == id) else { return };
+        p.members.retain(|m| m.path != canonical);
     })
 }
 
@@ -415,9 +655,8 @@ pub fn relocate_member(id: &str, old: &Path, canonical_new: &Path) -> Result<(),
 /// raise an error at the user.
 pub fn touch_seen(id: &str) -> Result<(), String> {
     mutate_doc(|doc| {
-        if let Some(p) = doc.pies.iter_mut().find(|p| p.id == id) {
-            p.seen_at = now_ms();
-        }
+        let Some(p) = doc.pies.iter_mut().find(|p| p.id == id) else { return };
+        p.seen_at = now_ms();
     })
 }
 
@@ -455,6 +694,21 @@ mod tests {
         std::fs::canonicalize(path).expect("fixture path resolves")
     }
 
+    /// A WIRE origin, the shape a socket client sends. Every test builds one
+    /// of these and converts with `try_into()`, because `TryFrom` is the only
+    /// producer of a `PieMemberOrigin` — see that type's own doc comment.
+    fn wire_origin(
+        session_id: Option<&str>,
+        prompt_id: Option<&str>,
+        cwd: Option<&str>,
+    ) -> skypie_ipc::MemberOrigin {
+        skypie_ipc::MemberOrigin {
+            session_id: session_id.map(str::to_string),
+            prompt_id: prompt_id.map(str::to_string),
+            cwd: cwd.map(str::to_string),
+        }
+    }
+
     #[test]
     fn upsert_none_creates_and_upsert_some_renames() {
         let _g = guard();
@@ -478,8 +732,8 @@ mod tests {
         std::fs::write(&file, "hi").unwrap();
         let pie = upsert(None, "Docs").unwrap();
 
-        add_member(&pie.id, &canonical(&file), PieMemberKind::File, Some(PieMemberSource::Picker)).unwrap();
-        add_member(&pie.id, &canonical(&file), PieMemberKind::File, Some(PieMemberSource::Picker)).unwrap();
+        add_member(&pie.id, &canonical(&file), PieMemberKind::File, Some(PieMemberSource::Picker), None).unwrap();
+        add_member(&pie.id, &canonical(&file), PieMemberKind::File, Some(PieMemberSource::Picker), None).unwrap();
 
         let stored = pies().into_iter().find(|p| p.id == pie.id).unwrap();
         assert_eq!(stored.members.len(), 1, "re-adding the same path must not duplicate it");
@@ -516,7 +770,7 @@ mod tests {
         std::fs::write(&file, "hi").unwrap();
         let pie = upsert(None, "Docs").unwrap();
 
-        let err = add_member("no-such-id", &canonical(&file), PieMemberKind::File, None)
+        let err = add_member("no-such-id", &canonical(&file), PieMemberKind::File, None, None)
             .expect_err("adding to an unknown id must be an error");
         assert!(err.contains("no-such-id"), "the message names the id: {err}");
         let err = relocate_member("no-such-id", &file, &canonical(&file))
@@ -548,7 +802,7 @@ mod tests {
         let file = dir.path().join("a.md");
         std::fs::write(&file, "hi").unwrap();
         let pie = upsert(None, "Docs").unwrap();
-        add_member(&pie.id, &canonical(&file), PieMemberKind::File, None).unwrap();
+        add_member(&pie.id, &canonical(&file), PieMemberKind::File, None, None).unwrap();
         let canonical = std::fs::canonicalize(&file).unwrap();
 
         remove_member(&pie.id, &canonical).unwrap();
@@ -574,7 +828,7 @@ mod tests {
         let file = dir.path().join("a.md");
         std::fs::write(&file, "hi").unwrap();
         let pie = upsert(None, "Docs").unwrap();
-        add_member(&pie.id, &canonical(&file), PieMemberKind::File, None).unwrap();
+        add_member(&pie.id, &canonical(&file), PieMemberKind::File, None, None).unwrap();
 
         // `file` itself — NOT `fs::canonicalize(&file)` — is what a picker
         // row built straight from a tab entry's path would pass.
@@ -597,7 +851,7 @@ mod tests {
         let file = dir.path().join("a.md");
         std::fs::write(&file, "hi").unwrap();
         let pie = upsert(None, "Docs").unwrap();
-        add_member(&pie.id, &canonical(&file), PieMemberKind::File, None).unwrap();
+        add_member(&pie.id, &canonical(&file), PieMemberKind::File, None, None).unwrap();
         let canonical = std::fs::canonicalize(&file).unwrap();
         std::fs::remove_file(&file).unwrap();
 
@@ -679,7 +933,7 @@ mod tests {
     }
 
     /// Two threads each add one member to the SAME pie through the public
-    /// API — the scenario `update_state_field`'s single lock acquisition
+    /// API — the scenario `update_state_field_if_changed`'s single lock acquisition
     /// per call exists to make safe (state_store.rs has the same test at
     /// the primitive level; this is the same property through pies.rs's own
     /// surface, since that's what the UI and, from M5, the agent socket
@@ -701,11 +955,11 @@ mod tests {
         let (barrier_a, barrier_b) = (std::sync::Arc::clone(&barrier), std::sync::Arc::clone(&barrier));
         let ta = std::thread::spawn(move || {
             barrier_a.wait();
-            add_member(&id_a, &canonical(&a), PieMemberKind::File, None).unwrap();
+            add_member(&id_a, &canonical(&a), PieMemberKind::File, None, None).unwrap();
         });
         let tb = std::thread::spawn(move || {
             barrier_b.wait();
-            add_member(&id_b, &canonical(&b), PieMemberKind::File, None).unwrap();
+            add_member(&id_b, &canonical(&b), PieMemberKind::File, None, None).unwrap();
         });
         ta.join().unwrap();
         tb.join().unwrap();
@@ -728,7 +982,7 @@ mod tests {
         std::fs::write(&old, "a").unwrap();
         std::fs::write(&new, "b").unwrap();
         let pie = upsert(None, "Docs").unwrap();
-        add_member(&pie.id, &canonical(&old), PieMemberKind::Folder, Some(PieMemberSource::Finder))
+        add_member(&pie.id, &canonical(&old), PieMemberKind::Folder, Some(PieMemberSource::Finder), None)
             .unwrap();
         let before = pies().into_iter().find(|p| p.id == pie.id).unwrap().members[0].clone();
 
@@ -756,7 +1010,7 @@ mod tests {
         std::fs::write(&held, "a").unwrap();
         std::fs::write(&stranger, "b").unwrap();
         let pie = upsert(None, "Docs").unwrap();
-        add_member(&pie.id, &canonical(&held), PieMemberKind::File, None).unwrap();
+        add_member(&pie.id, &canonical(&held), PieMemberKind::File, None, None).unwrap();
 
         relocate_member(&pie.id, &stranger, &canonical(&stranger)).unwrap();
 
@@ -776,7 +1030,7 @@ mod tests {
         let held = dir.path().join("held.md");
         std::fs::write(&held, "a").unwrap();
         let pie = upsert(None, "Docs").unwrap();
-        add_member(&pie.id, &canonical(&held), PieMemberKind::File, None).unwrap();
+        add_member(&pie.id, &canonical(&held), PieMemberKind::File, None, None).unwrap();
 
         let missing = dir.path().join("never-created.md");
         assert!(crate::security::canonicalize_allow_rootless(
@@ -882,7 +1136,7 @@ mod tests {
 
         // The store is readable and holds the pie right before the attempt.
         let before = crate::state_store::current_state_value()["pies"].clone();
-        let err = add_member(&pie.id, &bad, PieMemberKind::File, None)
+        let err = add_member(&pie.id, &bad, PieMemberKind::File, None, None)
             .expect_err("a non-UTF-8 member path must be refused");
         assert!(err.contains("encoded"), "the refusal says what failed: {err}");
 
@@ -893,5 +1147,481 @@ mod tests {
             0,
             "and the member was not added",
         );
+    }
+
+    // ── M5: resolve(), agent members, socket-vs-UI interleaving ─────────
+
+    #[test]
+    fn resolve_matches_an_id_exactly_and_a_name_case_insensitively() {
+        let _g = guard();
+        reset();
+        let pie = upsert(None, "Pricing").unwrap();
+        let all = pies();
+
+        for query in [pie.id.as_str(), "pricing", "PRICING", "PrIcInG", "Pricing"] {
+            assert_eq!(
+                resolve(&all, query).unwrap().map(|p| p.id.clone()),
+                Some(pie.id.clone()),
+                "{query} must resolve to the one pie",
+            );
+        }
+        assert!(resolve(&all, "Nope").unwrap().is_none(), "no match is Ok(None), not an error");
+        // Case folding is not ASCII-only: a non-ASCII name folds too.
+        let accented = upsert(None, "Précio").unwrap();
+        assert_eq!(
+            resolve(&pies(), "PRÉCIO").unwrap().map(|p| p.id.clone()),
+            Some(accented.id)
+        );
+    }
+
+    #[test]
+    fn resolve_refuses_an_ambiguous_name_and_lists_the_candidates() {
+        let _g = guard();
+        reset();
+        let a = upsert(None, "Pricing").unwrap();
+        let b = upsert(None, "pricing").unwrap();
+        let all = pies();
+
+        let err = resolve(&all, "Pricing").unwrap_err();
+        assert!(err.contains(&a.id), "{err}");
+        assert!(err.contains(&b.id), "{err}");
+        // The message is what a model reads back after a refused
+        // `add_to_pie`, so both halves are pinned: HOW MANY pies share the
+        // name, and what to do next. Without the count "2 pies are named" is
+        // just a list; without the recovery clause the model has no way to
+        // know an id is accepted where the name was not.
+        assert!(err.starts_with("2 pies are named \"Pricing\""), "{err}");
+        assert!(err.ends_with("use one's id instead"), "{err}");
+        // An id is still an EXACT match even while the name is ambiguous:
+        // the fallback order is id, then name.
+        assert_eq!(resolve(&all, &a.id).unwrap().map(|p| p.id.clone()), Some(a.id.clone()));
+    }
+
+    #[test]
+    fn an_agent_member_round_trips_its_source_and_origin() {
+        let _g = guard();
+        reset();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pricing-v3.html");
+        std::fs::write(&file, "hi").unwrap();
+        let pie = upsert(None, "Pricing").unwrap();
+        // Built through `try_into()`, the ONLY producer of a
+        // `PieMemberOrigin` — its fields are private precisely so a stored
+        // origin cannot skip `MemberOrigin::validated`.
+        let origin: PieMemberOrigin = wire_origin(Some("sess-1"), Some("prompt-1"), Some("/work"))
+            .try_into()
+            .unwrap();
+
+        add_member(&pie.id, &canonical(&file), PieMemberKind::File, Some(PieMemberSource::Agent), Some(origin.clone()))
+            .unwrap();
+
+        let member = pies().into_iter().find(|p| p.id == pie.id).unwrap().members.into_iter().next().unwrap();
+        assert_eq!(member.source, Some(PieMemberSource::Agent));
+        assert_eq!(member.origin, Some(origin));
+
+        // Serializing the doc omits every absent origin field and, for a
+        // member with NO origin at all (every other source), omits the
+        // whole `origin` key — the on-disk shape `ui/src/ipc.ts`'s
+        // `PieMemberOrigin` (all-optional fields) expects.
+        let doc = crate::state_store::current_state_value();
+        let stored = &doc["pies"]["pies"][0]["members"][0];
+        assert_eq!(stored["origin"]["session_id"], "sess-1");
+        assert_eq!(stored["origin"]["prompt_id"], "prompt-1");
+        assert_eq!(stored["origin"]["cwd"], "/work");
+    }
+
+    /// An origin carrying only SOME of its fields is stored as the fields it
+    /// has — no explicit `null`s. `ui/src/ipc.ts` types all three as
+    /// optional, and a `null` is not an absent field: it reads back as a
+    /// present value in every consumer that tests for one.
+    #[test]
+    fn an_absent_origin_field_is_omitted_on_disk_rather_than_stored_as_null() {
+        let _g = guard();
+        reset();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.md");
+        std::fs::write(&file, "hi").unwrap();
+        let pie = upsert(None, "Docs").unwrap();
+        let origin: PieMemberOrigin =
+            wire_origin(Some("sess-1"), None, None).try_into().unwrap();
+
+        let _ = add_member(
+            &pie.id,
+            &canonical(&file),
+            PieMemberKind::File,
+            Some(PieMemberSource::Agent),
+            Some(origin),
+        )
+        .unwrap();
+
+        let doc = crate::state_store::current_state_value();
+        let stored = &doc["pies"]["pies"][0]["members"][0]["origin"];
+        assert_eq!(stored["session_id"], "sess-1");
+        assert!(stored.get("prompt_id").is_none(), "an absent prompt_id is omitted: {stored}");
+        assert!(stored.get("cwd").is_none(), "an absent cwd is omitted: {stored}");
+    }
+
+    /// An origin field a NEWER build wrote survives a write by this one —
+    /// the same forward-compatibility rule `Pie`/`PieMember` already have,
+    /// now inside `origin` too (`PieMemberOrigin::rest`).
+    #[test]
+    fn an_unknown_origin_field_survives_a_mutating_op() {
+        let _g = guard();
+        let _ = crate::state_store::set_state_field(
+            "pies",
+            serde_json::json!({
+                "v": 1,
+                "pies": [{
+                    "id": "p1",
+                    "name": "Pricing",
+                    "created_at": 0,
+                    "seen_at": 0,
+                    "members": [{
+                        "kind": "file",
+                        "path": "/x",
+                        "added_at": 0,
+                        "origin": { "session_id": "s1", "model": "a-newer-build-field" }
+                    }]
+                }]
+            }),
+        );
+
+        touch_seen("p1").unwrap();
+
+        let val = crate::state_store::current_state_value();
+        let origin = &val["pies"]["pies"][0]["members"][0]["origin"];
+        assert_eq!(origin["session_id"], "s1");
+        assert_eq!(origin["model"], "a-newer-build-field", "an unknown origin field survives");
+        reset();
+    }
+
+    /// The socket's whole trust boundary: `ipc_server`'s dispatch arm is one
+    /// `.map(TryInto::try_into)`, and THIS is the rule behind it. Nothing
+    /// else in the crate can mint a `PieMemberOrigin`, so every stored origin
+    /// has been through here.
+    #[test]
+    fn try_from_a_wire_origin_trims_drops_empties_and_refuses_control_characters() {
+        let cleaned: PieMemberOrigin =
+            wire_origin(Some("  sess-1  "), Some("   "), None).try_into().unwrap();
+        assert_eq!(cleaned.session_id(), Some("sess-1"), "a value is trimmed");
+        assert_eq!(cleaned.prompt_id(), None, "a whitespace-only value becomes absent");
+        assert_eq!(cleaned.cwd(), None);
+
+        let err = PieMemberOrigin::try_from(wire_origin(Some("a\nb"), None, None))
+            .expect_err("a control character is refused, never silently stripped");
+        assert!(err.contains("control"), "the refusal says what was wrong: {err}");
+
+        let long = "x".repeat(skypie_ipc::MAX_ORIGIN_FIELD_LEN + 1);
+        let err = PieMemberOrigin::try_from(wire_origin(None, Some(&long), None))
+            .expect_err("an over-long value is refused, never truncated");
+        assert!(err.contains("128"), "the refusal names the cap: {err}");
+    }
+
+    /// A second `add_member` for a path already a member (the idempotent
+    /// case) must not rewrite the FIRST member's `origin`/`added_at`/
+    /// `source` — an agent re-adding a file it already put in the pie must
+    /// not erase the provenance a person's earlier add wrote, or vice
+    /// versa.
+    #[test]
+    fn re_adding_an_existing_member_does_not_overwrite_its_origin() {
+        let _g = guard();
+        reset();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.md");
+        std::fs::write(&file, "hi").unwrap();
+        let pie = upsert(None, "Docs").unwrap();
+        let origin: PieMemberOrigin = wire_origin(Some("first"), None, None).try_into().unwrap();
+        let _ = add_member(&pie.id, &canonical(&file), PieMemberKind::File, Some(PieMemberSource::Agent), Some(origin.clone()))
+            .unwrap();
+        let first_added_at =
+            pies().into_iter().find(|p| p.id == pie.id).unwrap().members[0].added_at;
+
+        // A second add, with a DIFFERENT origin, for the same path.
+        let second: PieMemberOrigin = wire_origin(Some("second"), None, None).try_into().unwrap();
+        let _ = add_member(
+            &pie.id,
+            &canonical(&file),
+            PieMemberKind::File,
+            Some(PieMemberSource::Agent),
+            Some(second),
+        )
+        .unwrap();
+
+        let stored = pies().into_iter().find(|p| p.id == pie.id).unwrap();
+        assert_eq!(stored.members.len(), 1, "still one member, not two");
+        assert_eq!(stored.members[0].origin, Some(origin), "the FIRST origin survives");
+        assert_eq!(stored.members[0].added_at, first_added_at, "added_at is not re-stamped");
+    }
+
+    /// The socket thread's `add_member` racing the UI's `touch_seen` on the
+    /// SAME pie — the exact M5 pairing (`add_to_pie_for` vs. every plate
+    /// open) `update_state_field_if_changed`'s single lock acquisition exists to make
+    /// safe. Mirrors `two_interleaved_writers_both_survive` above, but with
+    /// the second writer touching `seen_at` instead of adding its own
+    /// member, since that is the actual race M5 introduces.
+    #[test]
+    fn add_member_and_touch_seen_interleave_without_losing_either_write() {
+        let _g = guard();
+        reset();
+        let pie = upsert(None, "Pricing").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pricing-v3.html");
+        std::fs::write(&file, "hi").unwrap();
+
+        let id_a = pie.id.clone();
+        let id_b = pie.id.clone();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let (barrier_a, barrier_b) = (std::sync::Arc::clone(&barrier), std::sync::Arc::clone(&barrier));
+        let ta = std::thread::spawn(move || {
+            barrier_a.wait();
+            add_member(&id_a, &canonical(&file), PieMemberKind::File, Some(PieMemberSource::Agent), None)
+                .unwrap();
+        });
+        let tb = std::thread::spawn(move || {
+            barrier_b.wait();
+            touch_seen(&id_b).unwrap();
+        });
+        ta.join().unwrap();
+        tb.join().unwrap();
+
+        let stored = pies().into_iter().find(|p| p.id == pie.id).unwrap();
+        assert_eq!(stored.members.len(), 1, "the socket thread's member survives");
+        assert!(stored.seen_at > 0, "the UI's touch_seen survives");
+    }
+
+    // ── find_or_create / add_to_pie ────────────────────────────────────
+
+    #[test]
+    fn find_or_create_resolves_an_existing_id_or_name_without_creating() {
+        let _g = guard();
+        reset();
+        let pie = upsert(None, "Pricing").unwrap();
+
+        let (by_id, created) = find_or_create(&pie.id).unwrap();
+        assert_eq!(by_id.id, pie.id);
+        assert!(!created);
+
+        let (by_name, created) = find_or_create("pricing").unwrap();
+        assert_eq!(by_name.id, pie.id, "case-insensitive name match, same as resolve()");
+        assert!(!created);
+
+        assert_eq!(pies().len(), 1, "no extra pie minted for either resolve");
+    }
+
+    #[test]
+    fn find_or_create_mints_a_pie_for_an_unknown_name() {
+        let _g = guard();
+        reset();
+        let (pie, created) = find_or_create("Fresh Pie").unwrap();
+        assert!(created);
+        assert_eq!(pie.name, "Fresh Pie");
+        assert_eq!(pies().into_iter().find(|p| p.id == pie.id).map(|p| p.name), Some("Fresh Pie".to_string()));
+    }
+
+    #[test]
+    fn find_or_create_refuses_an_ambiguous_name_and_does_not_create() {
+        let _g = guard();
+        reset();
+        let a = upsert(None, "Pricing").unwrap();
+        let b = upsert(None, "pricing").unwrap();
+
+        let err = find_or_create("Pricing").unwrap_err();
+        assert!(err.contains(&a.id), "{err}");
+        assert!(err.contains(&b.id), "{err}");
+        assert_eq!(pies().len(), 2, "an ambiguous name must not mint a third pie");
+    }
+
+    /// Two callers naming the same NOT-YET-EXISTING pie must not each mint
+    /// their own. `find_or_create` folding the lookup and the create into one
+    /// `mutate_doc` acquisition is what makes that impossible, the same
+    /// property `two_interleaved_writers_both_survive` proves for two ADDS to
+    /// an already-existing pie above.
+    #[test]
+    fn find_or_create_interleaved_on_the_same_unknown_name_mints_only_one_pie() {
+        let _g = guard();
+        reset();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let (barrier_a, barrier_b) = (std::sync::Arc::clone(&barrier), std::sync::Arc::clone(&barrier));
+        let ta = std::thread::spawn(move || {
+            barrier_a.wait();
+            find_or_create("Pricing")
+        });
+        let tb = std::thread::spawn(move || {
+            barrier_b.wait();
+            find_or_create("Pricing")
+        });
+        let ra = ta.join().unwrap().unwrap();
+        let rb = tb.join().unwrap().unwrap();
+
+        assert_eq!(ra.0.id, rb.0.id, "both callers must resolve to the SAME pie, not two pies named \"Pricing\"");
+        assert_eq!(pies().len(), 1, "exactly one pie was minted, not two");
+        // Exactly one of the two calls actually created it.
+        assert_eq!(u8::from(ra.1) + u8::from(rb.1), 1, "exactly one caller sees created: true");
+        // And the name is still resolvable afterwards — the ambiguity the
+        // bug caused (`resolve("Pricing")` permanently `Err`) cannot happen.
+        assert!(resolve(&pies(), "Pricing").unwrap().is_some());
+    }
+
+    #[test]
+    fn find_or_create_refuses_to_mint_a_pie_named_a_bare_uuid() {
+        let _g = guard();
+        reset();
+        let id = uuid::Uuid::now_v7().to_string();
+        let err = find_or_create(&id).unwrap_err();
+        assert!(err.contains("pass a NAME"), "{err}");
+        assert_eq!(pies().len(), 0, "no pie labelled a raw uuid was created");
+    }
+
+    /// `mutate_doc`'s unchanged fast path: an op that decides to change
+    /// nothing must not schedule a disk write. The observable proxy is the
+    /// store's own SCHEDULE COUNTER (`scheduled_writes_for_test`, a count of
+    /// how many times a write was scheduled) — an idempotent re-add leaves
+    /// it exactly as it found it.
+    #[test]
+    fn an_idempotent_re_add_does_not_rewrite_the_document() {
+        let _g = guard();
+        reset();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.md");
+        std::fs::write(&file, "hi").unwrap();
+        let pie = upsert(None, "Docs").unwrap();
+        let _ = add_member(&pie.id, &canonical(&file), PieMemberKind::File, None, None).unwrap();
+
+        let before = crate::state_store::scheduled_writes_for_test();
+
+        // A re-add of the same path, a remove of a member that is not there,
+        // and a touch_seen for an id that names no pie all decide to do
+        // nothing — so none of them may schedule a write.
+        assert!(!add_member(&pie.id, &canonical(&file), PieMemberKind::File, None, None).unwrap());
+        remove_member(&pie.id, &dir.path().join("never-added.md")).unwrap();
+        touch_seen("no-such-id").unwrap();
+        assert_eq!(
+            crate::state_store::scheduled_writes_for_test(),
+            before,
+            "an op that changed nothing must not schedule a write",
+        );
+
+        // ...and a real change still does.
+        touch_seen(&pie.id).unwrap();
+        assert_ne!(crate::state_store::scheduled_writes_for_test(), before);
+    }
+
+    /// The other half of the fast path, and the reason `mutate_doc` computes
+    /// `changed` itself rather than trusting the closure: an op that really
+    /// DOES change the document must schedule a write. A hand-computed flag
+    /// made this a per-call-site promise — a closure that mutated and
+    /// reported `false` discarded its own mutation and still returned `Ok`.
+    #[test]
+    fn a_real_change_always_schedules_a_write() {
+        let _g = guard();
+        reset();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.md");
+        std::fs::write(&file, "hi").unwrap();
+        let pie = upsert(None, "Pricing").unwrap();
+
+        // An `add_to_pie` into an EXISTING pie: `created` is false and only
+        // the member insert changed anything.
+        let before = crate::state_store::scheduled_writes_for_test();
+        let add =
+            add_to_pie("Pricing", &canonical(&file), PieMemberKind::File, None, None).unwrap();
+        assert!(!add.created && add.inserted);
+        assert_ne!(
+            crate::state_store::scheduled_writes_for_test(),
+            before,
+            "adding a member to an existing pie must schedule a write",
+        );
+
+        // A rename through `upsert(Some(id), …)`.
+        let before = crate::state_store::scheduled_writes_for_test();
+        upsert(Some(&pie.id), "Pricing v2").unwrap();
+        assert_ne!(
+            crate::state_store::scheduled_writes_for_test(),
+            before,
+            "a rename must schedule a write",
+        );
+
+        // And the idempotent re-add between them still does not.
+        let before = crate::state_store::scheduled_writes_for_test();
+        let again =
+            add_to_pie(&pie.id, &canonical(&file), PieMemberKind::File, None, None).unwrap();
+        assert!(!again.inserted);
+        assert_eq!(
+            crate::state_store::scheduled_writes_for_test(),
+            before,
+            "an idempotent re-add must not schedule a write",
+        );
+    }
+
+    /// The agent socket's own entry point: resolve-or-create AND insert in
+    /// one call, reporting both decisions.
+    #[test]
+    fn add_to_pie_creates_resolves_and_reports_an_idempotent_re_add() {
+        let _g = guard();
+        reset();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.md");
+        std::fs::write(&file, "hi").unwrap();
+
+        let add = add_to_pie(
+            "Pricing",
+            &canonical(&file),
+            PieMemberKind::File,
+            Some(PieMemberSource::Agent),
+            None,
+        )
+        .unwrap();
+        assert!(add.created, "an unknown name mints the pie");
+        assert!(add.inserted);
+        assert_eq!(add.pie.members.len(), 1, "the returned pie already holds the member");
+
+        // The same path again, naming the pie case-insensitively this time.
+        let again = add_to_pie(
+            "pricing",
+            &canonical(&file),
+            PieMemberKind::File,
+            Some(PieMemberSource::Agent),
+            None,
+        )
+        .unwrap();
+        assert_eq!(again.pie.id, add.pie.id, "the name resolved to the same pie");
+        assert!(!again.created);
+        assert!(!again.inserted, "an existing member is reported, not duplicated");
+        assert_eq!(again.pie.members.len(), 1);
+        assert_eq!(pies().len(), 1, "no second pie was minted");
+    }
+
+    /// `add_to_pie` runs the same name rule `find_or_create` does: a bare
+    /// uuid never mints a pie, and an ambiguous name is refused.
+    #[test]
+    fn add_to_pie_refuses_a_bare_uuid_and_an_ambiguous_name() {
+        let _g = guard();
+        reset();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.md");
+        std::fs::write(&file, "hi").unwrap();
+        let path = canonical(&file);
+
+        let id = uuid::Uuid::now_v7().to_string();
+        let err = add_to_pie(&id, &path, PieMemberKind::File, None, None).unwrap_err();
+        assert!(err.contains("pass a NAME"), "{err}");
+        assert_eq!(pies().len(), 0, "no pie labelled a raw uuid was created");
+
+        let a = upsert(None, "Pricing").unwrap();
+        let b = upsert(None, "pricing").unwrap();
+        let err = add_to_pie("Pricing", &path, PieMemberKind::File, None, None).unwrap_err();
+        assert!(err.contains(&a.id) && err.contains(&b.id), "{err}");
+        assert_eq!(pies().len(), 2, "an ambiguous name must not mint a third pie");
+    }
+
+    #[test]
+    fn find_or_create_trims_a_name_before_matching_so_it_does_not_shadow_an_existing_pie() {
+        let _g = guard();
+        reset();
+        let pie = upsert(None, "Pricing").unwrap();
+        let (resolved, created) = find_or_create("  Pricing  ").unwrap();
+        assert_eq!(resolved.id, pie.id, "an untrimmed query must still match the trimmed stored name");
+        assert!(!created);
+        assert_eq!(pies().len(), 1, "no sibling \"Pricing \" pie was minted");
     }
 }

@@ -131,6 +131,37 @@ export function subtractPending(pies: Pie[], pending: ReadonlySet<string>): Pie[
   return pies.filter((p) => !pending.has(p.id));
 }
 
+/** Raises each pie's `seen_at` to its own floor, when it has one — the
+ *  optimistic half of `touchPieSeen` (usePies.ts), applied to EVERY list the
+ *  hook reconciles rather than only to the one the touch itself produced.
+ *
+ *  The floor exists because the two writers are not ordered. `touchPieSeen`
+ *  stamps `seen_at` locally and then awaits the IPC call; a
+ *  `skypie://pies-updated` event from an unrelated writer — M5's agent
+ *  socket, which emits at arbitrary times — can land inside that window
+ *  carrying the pie's OLD `seen_at`. Accepting it verbatim reverted the
+ *  stamp, so the fresh-file pill and the plate's "new" dots fired for the
+ *  very pie the user is looking at. Shaped like `pendingDeletes`: a per-id
+ *  value, applied on the way out, cleared once the write it stands for has
+ *  settled.
+ *
+ *  Only ever RAISES a value (`Math.max` by another name), so a server
+ *  document that is already newer than the floor — a `touch_seen` from
+ *  another window — still wins. Returns the SAME array when no floor
+ *  applies, so the common case adds no new identity for React to
+ *  re-render on. */
+export function applySeenFloors(pies: Pie[], floors: ReadonlyMap<string, number>): Pie[] {
+  if (floors.size === 0) return pies;
+  let raised = false;
+  const next = pies.map((p) => {
+    const floor = floors.get(p.id);
+    if (floor === undefined || p.seen_at >= floor) return p;
+    raised = true;
+    return { ...p, seen_at: floor };
+  });
+  return raised ? next : pies;
+}
+
 /** Whether `pie` already holds `path` as a member — the picker's check
  *  mark (spec section 6). An EXACT string compare against the stored
  *  (always canonical) member paths, which is why `openPicker` canonicalizes

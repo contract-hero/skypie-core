@@ -70,6 +70,30 @@ pub struct ConfirmPairingArgs {
     pub node_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct AddToPieArgs {
+    /// The pie to add the file to, by NAME (case-insensitive) or by id. If no
+    /// pie with this name exists yet, one is created — you never need to ask
+    /// the user to make the pie first. If more than one pie shares this name,
+    /// the call fails and lists their ids; call again with one of those ids.
+    pub pie: String,
+    /// Absolute path of the file or folder to add. A relative path resolves
+    /// against the server's working directory, and a leading `~` expands
+    /// against the user's home directory. Use the path you just wrote or the
+    /// folder you just produced output into.
+    pub path: String,
+    /// Your own identifier for this Claude Code session, if you have one.
+    /// Stored on the member for the user's own reference; never used to
+    /// decide anything.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// Your own identifier for the prompt or turn that produced this file,
+    /// if you have one. Stored on the member for the user's own reference;
+    /// never used to decide anything.
+    #[serde(default)]
+    pub prompt_id: Option<String>,
+}
+
 /// Resolve a caller-supplied path argument. `cwd` and `home` are parameters,
 /// not process lookups, so the rule is testable without touching the
 /// environment.

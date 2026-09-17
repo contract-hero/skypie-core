@@ -150,6 +150,18 @@ static GLOBAL_STATE: OnceLock<Arc<Mutex<serde_json::Value>>> = OnceLock::new();
 static WRITE_COUNTER: OnceLock<Arc<AtomicU64>> = OnceLock::new();
 static PENDING_WRITE: OnceLock<Arc<Mutex<Option<std::time::Instant>>>> = OnceLock::new();
 
+/// How many times a disk write has been SCHEDULED. Test-only, and counted at
+/// the one place that schedules, so a test can assert that an op which
+/// changed nothing also wrote nothing — the observable effect of
+/// `update_state_field_if_changed`'s fast path.
+#[cfg(test)]
+static SCHEDULED_WRITES: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+pub(crate) fn scheduled_writes_for_test() -> u64 {
+    SCHEDULED_WRITES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 const DEBOUNCE_MS: u64 = 250;
 
 pub(crate) fn global_state() -> &'static Arc<Mutex<serde_json::Value>> {
@@ -305,7 +317,25 @@ pub fn update_state_field(
     key: &str,
     f: impl FnOnce(&mut serde_json::Value),
 ) -> Result<(), String> {
-    {
+    update_state_field_if_changed(key, |leaf| {
+        f(leaf);
+        true
+    })
+}
+
+/// `update_state_field`, except the closure reports whether it actually
+/// CHANGED the leaf. A `false` skips `schedule_debounced_write` entirely.
+///
+/// The lock and the walk still run, because the closure needs the real leaf
+/// to decide. Only the disk write is skipped. An op that changed nothing —
+/// an idempotent `add_to_pie` re-adding a path that is already a member — has
+/// no new bytes to persist, so making it rewrite `state.json` is pure churn
+/// on the user's disk.
+pub fn update_state_field_if_changed(
+    key: &str,
+    f: impl FnOnce(&mut serde_json::Value) -> bool,
+) -> Result<(), String> {
+    let changed = {
         let mut global = global_state().lock().unwrap_or_else(|p| p.into_inner());
         if !global.is_object() {
             // Initialize with default state if not yet loaded.
@@ -313,9 +343,11 @@ pub fn update_state_field(
             *global = default_val;
         }
         let leaf = get_or_insert_nested_mut(&mut global, key)?;
-        f(leaf);
+        f(leaf)
+    };
+    if changed {
+        schedule_debounced_write();
     }
-    schedule_debounced_write();
     Ok(())
 }
 
@@ -334,6 +366,8 @@ pub fn set_state_field(key: &str, value: serde_json::Value) -> Result<(), String
 /// the old `set_state_field` body so `update_state_field` and
 /// `set_state_field` both schedule through this one function.
 fn schedule_debounced_write() {
+    #[cfg(test)]
+    SCHEDULED_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut pending = pending_write().lock().unwrap_or_else(|p| p.into_inner());
     let now = std::time::Instant::now();
     let was_none = pending.is_none();

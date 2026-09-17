@@ -84,13 +84,13 @@ Check it:
 claude mcp list
 ```
 
-Inside Claude Code, `/mcp` shows the server and its nine tools.
+Inside Claude Code, `/mcp` shows the server and its twelve tools.
 
 ### Optional environment
 
 | Variable | Effect |
 |---|---|
-| `SKYPIE_MCP_ROOTS` | Colon-separated directories `beam_artifact` may publish files from. **This is a boundary**, not a hint: a path outside every root is refused before the app is asked. Defaults to the working directory Claude Code launched the server in. `share_link` is not gated by it — its links open only on the user's own paired devices. |
+| `SKYPIE_MCP_ROOTS` | Colon-separated directories `beam_artifact` may publish files from. **This is a boundary**, not a hint: a path outside every root is refused before the app is asked. Defaults to the working directory Claude Code launched the server in. `share_link` and `add_to_pie` are not gated by it — `share_link`'s links open only on the user's own paired devices, and `add_to_pie` never publishes bytes to anyone; it only stores a path reference in the user's own app. |
 | `SKYPIE_STATE_DIR` | The Sky Pie state directory, where the app's socket lives. Only for dev builds that run against a separate directory; the default is the app's own. |
 | `SKYPIE_APP_BUNDLE_ID` | The bundle id passed to `open -b` when the app has to be launched. Only for a dev build registered under another id. |
 
@@ -201,6 +201,33 @@ Pairing again restores it. Use it when a device is no longer the user's, or
 when `list_devices` reports it as `"unpaired"`. Do **not** reach for it on a
 device reported `"refused"`.
 
+### `add_to_pie { pie, path, session_id?, prompt_id? }`
+
+Adds a file (or folder) to one of the user's Sky Pie "pies" — the band of
+small pies in the app's toolbar that collect the files a project cares
+about. Call it right after you finish writing an artifact the user asked
+for, naming the pie for that project.
+
+- `pie` — a name (matched case-insensitively) or a pie id. No pie with this
+  name yet? One is created for you — you never need to ask the user to make
+  it first. Two existing pies share the name? The call fails and lists their
+  ids; call again with one of those. The name is trimmed, must not be empty
+  or carry control characters, and is refused above 200 characters — it is the
+  label a person reads on the toolbar.
+- `path` — absolute, or relative to the server's working directory. A
+  leading `~` expands against the user's home directory.
+- `session_id`, `prompt_id` — optional identifiers for this session/turn,
+  stored on the member for the user's own reference. They are provenance
+  only and never change what the call does. Each is trimmed, dropped when
+  empty, and refused above 128 characters.
+
+Returns `pie` (name), `pie_id`, `path` (canonical), `members` (the pie's
+member count after the call), `created` and `added` (`false` when the path
+was already a member — the call is idempotent and writes nothing). When the
+file is newly added AND newer than the last time the user opened that pie,
+the toolbar shows a fresh-file pill on it. A file joins the pie's file
+layer; a folder becomes a layer of its own.
+
 ### `server_status {}`
 
 The app's node id, its state directory, whether it has opened its network,
@@ -278,6 +305,13 @@ file in a dialog. Here the caller is a language model, and its arguments can be
 steered by text it merely read — a repository file, a fetched page, another
 tool's output. Narrowing `SKYPIE_MCP_ROOTS` narrows what such a caller can ever
 publish to a stranger.
+
+**`add_to_pie` is not gated by `SKYPIE_MCP_ROOTS` either, for a different
+reason than `share_link`.** It never sends a byte to anyone — it only writes
+a path reference into a pie the user already sees in their own toolbar, the
+same app-local record a Finder drag onto that pie would produce. There is no
+stranger it could publish to, so the roots gate (which exists to bound what
+a model-steered caller can offer to a THIRD PARTY) does not apply.
 
 **A link is revocable, not just expiring.** `stop_beam` drops the offer from
 the registry the request gate consults, so revocation takes effect on the next

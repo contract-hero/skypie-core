@@ -8,7 +8,27 @@ import type { Socket } from "node:net";
 /** The verbs the harness sends. Spelled out rather than `{ op: string }`,
  *  so a typo is a compile error here instead of a "malformed message" reply
  *  from the app. Mirrors `skypie_ipc::Request`. */
-export type Request = { op: "e2e_eval"; js: string } | { op: "status" };
+export type Request =
+  | { op: "e2e_eval"; js: string }
+  | { op: "status" }
+  /** M5 (agent reach): what an agent client sends. `pie` is a name or an id;
+   *  an unmatched NAME creates the pie. Mirrors `Request::AddToPie`. */
+  | {
+      op: "add_to_pie";
+      pie: string;
+      path: string;
+      origin?: { session_id?: string; prompt_id?: string; cwd?: string };
+    };
+
+/** The `Reply::AddedToPie` fields, flattened into their own ok arm below. */
+export interface AddedToPie {
+  pie: string;
+  pie_id: string;
+  path: string;
+  members: number;
+  created: boolean;
+  added: boolean;
+}
 
 /** Mirrors `skypie_ipc::Response`: tagged by `status`, with `Reply`
  *  flattened into the ok arm (hence `kind` and the reply's own fields).
@@ -16,7 +36,15 @@ export type Request = { op: "e2e_eval"; js: string } | { op: "status" };
  *  a reply with no `status` at all pass the cast, and `evalIn` would then
  *  return `undefined` as a success. */
 export type Response =
-  | { status: "ok"; kind: string; value?: unknown }
+  /** The `added_to_pie` reply, as its own arm with a LITERAL `kind`, placed
+   *  before the general one. `status === "ok" && kind === "added_to_pie"`
+   *  then narrows to the real fields, so a caller reads `created`/`added`
+   *  directly instead of as `| undefined`. The general arm's `kind` must
+   *  exclude that literal for the narrowing to eliminate it, which is why it
+   *  names the two reply kinds this harness actually receives rather than
+   *  an open `string`. */
+  | ({ status: "ok"; kind: "added_to_pie" } & AddedToPie)
+  | { status: "ok"; kind: "e2e_result" | "status"; value?: unknown }
   | { status: "err"; message: string };
 
 /** Accept only the two shapes above. A reply that is neither is the app

@@ -243,6 +243,12 @@ export async function evalIn(app: AppHandle, js: string): Promise<unknown> {
   if (res.status === "err") {
     throw new Error(`evalIn failed: ${res.message}\n  js: ${js}`);
   }
+  // `Response`'s ok side is discriminated by `kind`, so the reply to an
+  // `e2e_eval` must say so before its `value` can be read. Any other kind
+  // here is the app answering a question it was not asked.
+  if (res.kind !== "e2e_result") {
+    throw new Error(`evalIn: expected an e2e_result reply, got ${res.kind}\n  js: ${js}`);
+  }
   return res.value;
 }
 

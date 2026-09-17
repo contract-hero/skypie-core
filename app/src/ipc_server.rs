@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use skypie_ipc::{read_line, write_line, Reply, Request, Response};
+use tauri::Manager;
 
 #[cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
@@ -352,6 +353,43 @@ async fn dispatch(
         }
         Request::Status => Ok(Reply::Status(crate::remote::status_for(&app).await)),
 
+        // ── Agent reach (M5) ────────────────────────────────────────────
+        // Called SYNCHRONOUSLY, like `pair_confirm_for` above — the
+        // filesystem I/O inside `add_to_pie_for` runs outside the state
+        // lock, so nothing here needs `spawn_blocking`.
+        Request::AddToPie { pie, path, origin } => {
+            // The socket, not the MCP crate, is the trust boundary this
+            // process owns: EVERY client of `app.sock` gets the origin
+            // hygiene, not just `skypie-mcp`. The rule itself lives in
+            // `skypie-ipc` (`MemberOrigin::validated`), behind this
+            // conversion. `pie` is validated further down, inside
+            // `pies::add_to_pie`.
+            let origin = origin.map(TryInto::try_into).transpose()?;
+            // The RootSet is the one canonicalisation gate's state, held
+            // by the app the same way every webview command receives it as
+            // a `tauri::State`; the socket reads it from the handle.
+            let roots = app.state::<crate::security::RootSet>();
+            // This verb is the AGENT's reach, so it names `Agent` here —
+            // `add_to_pie_for` takes the source as a parameter so a second
+            // writer can state a different one.
+            let (add, path) = crate::app::add_to_pie_for(
+                &app,
+                &roots,
+                &pie,
+                &path,
+                Some(crate::pies::PieMemberSource::Agent),
+                origin,
+            )?;
+            Ok(Reply::AddedToPie {
+                members: add.pie.members.len(),
+                pie: add.pie.name,
+                pie_id: add.pie.id,
+                path,
+                created: add.created,
+                added: add.inserted,
+            })
+        }
+
         // ── Feedback ────────────────────────────────────────────────────
         Request::FeedbackFor { path } => {
             let source = path.to_string_lossy().into_owned();
@@ -571,7 +609,21 @@ mod transport_tests {
             let message = e2e_only_refusal(&req);
             assert!(message.starts_with("this transport serves only e2e verbs (got "), "{message}");
         }
-        for req in [Request::Status, Request::FeedbackIndex] {
+        // `AddToPie` is pinned on the NOT-trusted-only side on purpose: it
+        // writes no bytes to any peer and mints no link — it adds a local
+        // path the caller already named to a local document — so it is the
+        // same kind of verb as `Status`, not the same kind as `ShareLink`.
+        // Recorded here so making it trusted-only later is a deliberate
+        // decision with a failing test, not a quiet edit of the matcher.
+        for req in [
+            Request::Status,
+            Request::FeedbackIndex,
+            Request::AddToPie {
+                pie: "Pricing".into(),
+                path: "/tmp/a".into(),
+                origin: None,
+            },
+        ] {
             assert!(!is_trusted_only(&req), "{req:?}");
         }
     }

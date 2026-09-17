@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applySeenFloors,
   bandOrder,
   dropPlan,
   holdsPath,
@@ -190,6 +191,36 @@ describe("subtractPending — the delete-undo filter", () => {
   it("ignores a pending id that is not in the list", () => {
     const pies = [pie({ id: "a" })];
     expect(subtractPending(pies, new Set(["gone"])).map((p) => p.id)).toEqual(["a"]);
+  });
+});
+
+describe("applySeenFloors — the optimistic touch_seen floor", () => {
+  it("returns the SAME array when no floor is held", () => {
+    const pies = [pie({ id: "a" }), pie({ id: "b" })];
+    expect(applySeenFloors(pies, new Map())).toBe(pies);
+  });
+
+  it("keeps the local stamp when an agent's list carries the OLD seen_at", () => {
+    // The bug this exists for: the agent socket emits `pies-updated` at
+    // arbitrary times, so a list built BEFORE the user's plate open can land
+    // while `touchPieSeen`'s IPC call is still in flight.
+    const fromServer = [pie({ id: "a", seen_at: 100 }), pie({ id: "b", seen_at: 100 })];
+    const next = applySeenFloors(fromServer, new Map([["a", 500]]));
+    expect(next.map((p) => p.seen_at)).toEqual([500, 100]);
+  });
+
+  it("never lowers a seen_at the server already advanced past the floor", () => {
+    // Another window's own `touch_seen` is newer than this window's floor,
+    // and must win: the floor RAISES, it does not pin.
+    const fromServer = [pie({ id: "a", seen_at: 900 })];
+    const next = applySeenFloors(fromServer, new Map([["a", 500]]));
+    expect(next[0].seen_at).toBe(900);
+    expect(next).toBe(fromServer);
+  });
+
+  it("ignores a floor for a pie that is not in the list", () => {
+    const pies = [pie({ id: "a", seen_at: 100 })];
+    expect(applySeenFloors(pies, new Map([["gone", 500]]))).toBe(pies);
   });
 });
 
