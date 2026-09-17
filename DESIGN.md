@@ -697,6 +697,57 @@ rows use.
 - **Don't** show a machine error kind as a headline. Name the problem, then
   offer the raw reason as detail.
 
+## Sky band
+
+The Sky band (⌘⇧B, `panes.sky_visible`) is a 120px strip between the toolbar
+and the tab view that shows the built-in pies — Pinned and Recent in M1. It
+borrows more from the surface language than any other part of the product,
+so this section names every departure and the limit that keeps it from
+spreading.
+
+- **A gradient.** The top 32px of the band is a linear gradient from
+  `{colors.bg-chrome}` into `--sky` — the one exception to "Don't add
+  atmospheric gradients" (line 690). The limit is exactly those 32px: below
+  the glaze the band is flat, opaque `--sky`, and the pie plate that drops
+  from it is flat and opaque too — no gradient, no `backdrop-filter`.
+- **A warm hairline.** The crust ring on every pie (`#c89a5c`) is the one
+  warm stroke in the product. The limit is the word "stroke": it is a 1px
+  ring, never a fill, a text color, or a hover state, so it reads as a rim
+  on a surface rather than a second chromatic accent alongside lavender.
+- **Ink-step wedge tones.** A pie's wedges are steps between `--sky-ink` and
+  `--sky`, not per-kind hues — the same shape-carries-meaning rule that
+  keeps `FileGlyph` colorless (line 692) applies to a wedge: its kind reads
+  from compass bearing and position, never from a palette.
+- **A persisted posture.** Showing the band moves the reading field down by
+  120px, which "Chrome is only removed, never re-flowed" (line 463) reserves
+  for reader mode's transient chrome. The band is not that: like
+  `panes.sidebar_visible` moving the reading field sideways, it is a layout
+  choice the user sets once and the app never toggles on its own. Reader
+  mode still strips it with the rest of the chrome.
+- **A per-theme accent shade.** `--sky-focus` does the focus ring's job with
+  its own value per theme (`#3b45b8` day, `#8b93e8` dusk), because
+  `{colors.accent-focus}` falls under 3:1 non-text contrast on the day
+  `--sky` field. Same job as the one accent's focus role, a shade chosen per
+  surface rather than a second color.
+- **A window-height breakpoint.** Below a 480px pane (`usePaneShort`,
+  `PiePlate.tsx`) the plate's pie drops from 200px to 120px — the one
+  exception to "Don't let chrome grow with the window, and don't add
+  breakpoints" (line 693). The limit is ONE threshold: the pie diameter is
+  the only thing it switches, and the 120px band height never changes. The
+  plate's own box does track the window continuously (`width: min(720px,
+  100% − 32px)`, `height: clamp(280px, 100vh − 232px, 440px)`), and its layer
+  list scrolls at every height — but nothing else in the band reflows, and
+  no second breakpoint is added. Owner decision: below a 480px pane the
+  plate uses this floor geometry.
+
+The plate's mono readout uses `{colors.fg-muted}`, not `{colors.fg-dim}`
+(line 674's "keep fg-dim off anything a user has to read"). Two labels in
+the plate are a scoped exception and do use `{colors.fg-dim}`:
+`.pie-plate-last-opened` and the layer rows' `.start-row-mtime`. Both are
+secondary timestamps beside the name they qualify, never the only text in
+their row, and the exception stops there — no other Sky band text takes
+`fg-dim`.
+
 ## Known Gaps
 
 - Success green is recorded above but not declared. Nothing in the product

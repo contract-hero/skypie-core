@@ -8,6 +8,7 @@ import Sidebar from "./components/Sidebar";
 import SidebarResizer from "./components/SidebarResizer";
 import TabStrip from "./components/TabStrip";
 import Toolbar from "./components/Toolbar";
+import Sky from "./components/Sky";
 import TabView from "./components/TabView";
 import PhoneShell from "./components/PhoneShell";
 import QuickOpen from "./components/QuickOpen";
@@ -48,6 +49,8 @@ import {
 import { currentEntry, ZOOM_STEP } from "./state/tabs";
 import { dispatchChord, useShortcuts } from "./keyboard/shortcuts";
 import type { Binding, ChordEvent } from "./keyboard/shortcuts";
+import { appBindings, IFRAME_FORWARDABLE } from "./keyboard/app-bindings";
+import { hydratePaneVisible } from "./state/panes";
 
 interface AppProps {
   ipc?: IpcSurface;
@@ -59,21 +62,6 @@ const MAX_SIDEBAR_PX = 480;
 
 /** How long a transient notice stays up before it dismisses itself. */
 const NOTICE_MS = 10000;
-
-// Chords honored when forwarded from a preview iframe: tab, nav, zoom and
-// view-mode chords, plus bare Escape (bound only while reader mode or the
-// comment tool is on, and only to leave that mode) — nothing that opens
-// native dialogs, steals focus, or discards something the user typed. Must
-// stay in sync with the FORWARD map in the injected script in
-// src/render/html.tsx.
-const IFRAME_FORWARDABLE = new Set([
-  "mod+t", "mod+w", "mod+shift+t", "ctrl+tab", "ctrl+shift+tab",
-  "mod+shift+bracketright", "mod+shift+bracketleft",
-  "mod+bracketleft", "mod+bracketright", "mod+r",
-  "mod+equal", "mod+shift+equal", "mod+minus",
-  "mod+b", "mod+shift+f", "escape",
-  ...Array.from({ length: 10 }, (_, i) => `mod+digit${i}`),
-]);
 
 function clampSidebarPx(px: number): number {
   return Math.max(MIN_SIDEBAR_PX, Math.min(MAX_SIDEBAR_PX, px));
@@ -206,6 +194,9 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
   // Reader mode: chrome down to tabs + document. Deliberately transient —
   // a reading posture, not a workspace setting, so it never persists.
   const [readerMode, setReaderMode] = React.useState<boolean>(false);
+  // The Sky band — off by default so the installed base sees nothing new
+  // (panes.sky_visible, hydrated below).
+  const [skyVisible, setSkyVisible] = React.useState<boolean>(false);
   const [refreshNonce, setRefreshNonce] = React.useState<number>(0);
   const [quickOpenVisible, setQuickOpenVisible] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
@@ -272,10 +263,13 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
       if (typeof px === "number" && px > 0) {
         setSidebarPx(clampSidebarPx(px));
       }
-      // Don't clobber a ⌘B the user pressed before this snapshot resolved.
-      if (!userToggledSidebar.current && s?.panes?.sidebar_visible === false) {
-        setSidebarVisible(false);
-      }
+      // One rule for both postures (state/panes.ts): a ⌘B / ⌘⇧B pressed
+      // before this snapshot resolved wins over the persisted value, and a
+      // non-boolean stored value leaves the default alone.
+      const sidebar = hydratePaneVisible(s?.panes?.sidebar_visible, userToggledSidebar.current);
+      if (sidebar !== null) setSidebarVisible(sidebar);
+      const sky = hydratePaneVisible(s?.panes?.sky_visible, userToggledSky.current);
+      if (sky !== null) setSkyVisible(sky);
     }).catch(() => {
       // Backend not wired or state.json missing — keep the default width
       // and visibility.
@@ -293,12 +287,33 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
   // Set true on the first ⌘B so the async getState() hydration can't clobber
   // a toggle that raced it.
   const userToggledSidebar = React.useRef(false);
+  // Same race, same fix, for ⌘⇧B.
+  const userToggledSky = React.useRef(false);
+
+  // `setStateField` is optional. `ipc.setStateField?.(…).catch(…)` used to
+  // short-circuit the WHOLE chain — including the `.catch` — when the
+  // surface was absent: nothing was written and nothing said so, and the
+  // pane silently came back in its old posture next launch. The missing
+  // surface is logged, and a rejected write reaches the user through the
+  // notice the shell already renders.
+  const persistPaneVisible = React.useCallback((field: string, label: string, visible: boolean) => {
+    if (!ipc.setStateField) {
+      console.error(`skypie: no setStateField surface — ${label} visibility is not persisted`);
+      return;
+    }
+    ipc.setStateField(field, visible).catch((e: unknown) => {
+      console.error(`skypie: failed to persist ${label} visibility`, e);
+      showNotice(`Couldn't save the ${label} setting — it won't survive a restart.`);
+    });
+  }, [ipc, showNotice]);
 
   const persistSidebarVisible = React.useCallback((visible: boolean) => {
-    ipc.setStateField?.("panes.sidebar_visible", visible).catch((e: unknown) => {
-      console.error("skypie: failed to persist sidebar visibility", e);
-    });
-  }, [ipc]);
+    persistPaneVisible("panes.sidebar_visible", "sidebar", visible);
+  }, [persistPaneVisible]);
+
+  const persistSkyVisible = React.useCallback((visible: boolean) => {
+    persistPaneVisible("panes.sky_visible", "sky band", visible);
+  }, [persistPaneVisible]);
 
   // ⌘B. In reader mode the sidebar is already gone, so the intuitive result
   // of "show me the sidebar" is to leave reader mode with the sidebar on.
@@ -320,6 +335,19 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
   const toggleReaderMode = React.useCallback(() => {
     setReaderMode((v) => !v);
   }, []);
+
+  // ⌘⇧B. Reader mode already unmounts the Toolbar and gates the band on
+  // !readerMode, so toggling Sky from inside reader mode only flips the
+  // persisted posture — the band itself reappears once the user leaves.
+  // No functional setState here, for the same reason as toggleSidebar: the
+  // updater must stay pure (StrictMode double-invokes it), and the IPC
+  // write is a side effect.
+  const toggleSky = React.useCallback(() => {
+    userToggledSky.current = true;
+    const next = !skyVisible;
+    setSkyVisible(next);
+    persistSkyVisible(next);
+  }, [persistSkyVisible, skyVisible]);
 
   // ── Pickers ────────────────────────────────────────────────────────────
   const handlePickFile = React.useCallback(() => {
@@ -396,76 +424,41 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
     });
   }, []);
 
-  const bindings: Binding[] = [
-    { combo: "mod+t", allowInInput: true, handler: () => dispatch({ type: "OPEN_NEW_TAB" }) },
-    { combo: "mod+w", allowInInput: true, handler: () => dispatch({ type: "CLOSE_TAB", tabId: active.id }) },
-    { combo: "mod+shift+t", allowInInput: true, handler: () => dispatch({ type: "REOPEN_CLOSED_TAB" }) },
-    { combo: "ctrl+tab", allowInInput: true, handler: () => dispatch({ type: "ACTIVATE_DELTA", delta: 1 }) },
-    { combo: "ctrl+shift+tab", allowInInput: true, handler: () => dispatch({ type: "ACTIVATE_DELTA", delta: -1 }) },
-    { combo: "mod+shift+bracketright", allowInInput: true, handler: () => dispatch({ type: "ACTIVATE_DELTA", delta: 1 }) },
-    { combo: "mod+shift+bracketleft", allowInInput: true, handler: () => dispatch({ type: "ACTIVATE_DELTA", delta: -1 }) },
-    ...Array.from({ length: 8 }, (_, i): Binding => ({
-      combo: `mod+digit${i + 1}`,
-      allowInInput: true,
-      handler: () => dispatch({ type: "ACTIVATE_INDEX", index: i }),
-    })),
-    { combo: "mod+digit9", allowInInput: true, handler: () => dispatch({ type: "ACTIVATE_INDEX", index: -1 }) },
-    { combo: "mod+bracketleft", handler: () => dispatch({ type: "GO_BACK" }) },
-    { combo: "mod+bracketright", handler: () => dispatch({ type: "GO_FORWARD" }) },
-    { combo: "mod+r", allowInInput: true, handler: handleRefreshActive },
-    { combo: "mod+l", allowInInput: true, handler: focusAddressBar },
-    // File picker (⌘O) and quick-open (⌘P) both act on a local workspace,
-    // which doesn't exist on iOS (PRODUCT.md: the phone owns no files) — the
-    // Sidebar and TabView hide their entry points there too.
-    ...(isMacos
-      ? [
-          { combo: "mod+o", allowInInput: true, handler: handlePickFile } satisfies Binding,
-          {
-            combo: "mod+p",
-            allowInInput: true,
-            handler: () => setQuickOpenVisible((v) => !v),
-          } satisfies Binding,
-          // Never in IFRAME_FORWARDABLE: rendered content must not be able to
-          // mint a link to itself onto the clipboard.
-          { combo: "mod+shift+c", handler: copyDeviceLinkForActive } satisfies Binding,
-        ]
-      : []),
-    { combo: "mod+b", allowInInput: true, handler: toggleSidebar },
-    { combo: "mod+shift+f", allowInInput: true, handler: toggleReaderMode },
-    { combo: "mod+shift+m", allowInInput: true, handler: () => setCommentsVisible((v) => !v) },
-    { combo: "mod+shift+k", allowInInput: true, handler: toggleCommentTool },
-    // Esc puts the comment tool down. Bound only while the tool is on, like
-    // the reader-mode Esc below.
-    //
-    // It deliberately does NOT drop the pending target: `escape` is in
-    // IFRAME_FORWARDABLE, so a rendered artifact can synthesize it, and
-    // clearing `pending` unmounts the composer with whatever the user had
-    // typed inside it. The composer owns its own Esc for cancelling.
-    ...(commentTool
-      ? [{
-          combo: "escape",
-          allowInInput: true,
-          handler: () => setCommentTool(false),
-        } satisfies Binding]
-      : []),
-    // Esc leaves reader mode. Registered only while the mode is on, so plain
-    // Escape keeps its meaning everywhere else (QuickOpen, address bar). An
-    // open context menu still owns Esc — it closes itself on the same window
-    // event, and one keypress must not do both.
-    ...(readerMode
-      ? [{
-          combo: "escape",
-          handler: () => {
-            if (document.querySelector(".context-menu")) return;
-            setReaderMode(false);
-          },
-        } satisfies Binding]
-      : []),
-    { combo: "mod+equal", handler: () => zoomBy(ZOOM_STEP) },
-    { combo: "mod+shift+equal", handler: () => zoomBy(ZOOM_STEP) },
-    { combo: "mod+minus", handler: () => zoomBy(-ZOOM_STEP) },
-    { combo: "mod+digit0", handler: () => dispatch({ type: "SET_ZOOM", tabId: active.id, zoom: 1 }) },
-  ];
+  // The combo table itself lives in keyboard/app-bindings.ts, beside the
+  // IFRAME_FORWARDABLE / IFRAME_DENIED lists it has to agree with; this
+  // shell only supplies the handlers and the three flags that gate a chord.
+  const bindings: Binding[] = appBindings(
+    {
+      openNewTab: () => dispatch({ type: "OPEN_NEW_TAB" }),
+      closeActiveTab: () => dispatch({ type: "CLOSE_TAB", tabId: active.id }),
+      reopenClosedTab: () => dispatch({ type: "REOPEN_CLOSED_TAB" }),
+      activateDelta: (delta) => dispatch({ type: "ACTIVATE_DELTA", delta }),
+      activateIndex: (index) => dispatch({ type: "ACTIVATE_INDEX", index }),
+      goBack: () => dispatch({ type: "GO_BACK" }),
+      goForward: () => dispatch({ type: "GO_FORWARD" }),
+      refreshActive: handleRefreshActive,
+      focusAddressBar,
+      pickFile: handlePickFile,
+      toggleQuickOpen: () => setQuickOpenVisible((v) => !v),
+      copyDeviceLinkForActive,
+      toggleSidebar,
+      toggleSky,
+      toggleReaderMode,
+      toggleComments: () => setCommentsVisible((v) => !v),
+      toggleCommentTool,
+      putCommentToolDown: () => setCommentTool(false),
+      leaveReaderMode: () => {
+        // An open context menu still owns Esc — it closes itself on the same
+        // window event, and one keypress must not do both.
+        if (document.querySelector(".context-menu")) return;
+        setReaderMode(false);
+      },
+      zoomBy,
+      resetZoom: () => dispatch({ type: "SET_ZOOM", tabId: active.id, zoom: 1 }),
+    },
+    { isMacos, commentTool, readerMode },
+    ZOOM_STEP,
+  );
 
   function handleRefreshActive(): void {
     dispatch({ type: "RELOAD" });
@@ -636,6 +629,8 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
               onSubmitPath={(p) => openFile(p)}
               sidebarVisible={sidebarVisible}
               onToggleSidebar={toggleSidebar}
+              skyVisible={skyVisible}
+              onToggleSky={toggleSky}
               onEnterReaderMode={toggleReaderMode}
               commentsVisible={commentsVisible}
               onToggleComments={() => setCommentsVisible((v) => !v)}
@@ -644,6 +639,10 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
               openComments={entry ? openCountFor(entry.path) : 0}
             />
           )}
+          {/* Reader mode already unmounts the Toolbar on the same condition
+              (see the JSX above); the band follows it down for the same
+              reason — the artifact stays the protagonist. */}
+          {skyVisible && !readerMode ? <Sky onOpenFile={openFile} /> : null}
           {notice ? <AppNotice text={notice} onDismiss={dismissNotice} /> : null}
           <div
             ref={tabViewRef}

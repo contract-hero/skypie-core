@@ -6,6 +6,7 @@ import MdRenderer from "./md";
 import TextRenderer from "./text";
 import ImageRenderer from "./image";
 import MetadataRenderer from "./metadata";
+import { extOf } from "./kind";
 
 const TEXT_EXTS = new Set([
   ".txt", ".md", ".markdown", ".ts", ".tsx", ".js", ".jsx", ".json",
@@ -16,12 +17,6 @@ const TEXT_EXTS = new Set([
 const IMAGE_EXTS = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".avif",
 ]);
-
-export function extOf(path: string): string {
-  const i = path.lastIndexOf(".");
-  if (i < 0) return "";
-  return path.slice(i).toLowerCase();
-}
 
 export function isHtmlPath(path: string): boolean {
   const ext = extOf(path);

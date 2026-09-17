@@ -39,6 +39,9 @@ export interface ToolbarProps {
    */
   sidebarVisible: boolean;
   onToggleSidebar: () => void;
+  /** Whether the Sky band is shown. */
+  skyVisible: boolean;
+  onToggleSky: () => void;
   onEnterReaderMode: () => void;
   /** Whether the margin notes are shown (⇧⌘M). */
   commentsVisible: boolean;
@@ -52,26 +55,53 @@ export interface ToolbarProps {
 
 function IconButton({
   title,
+  label,
   disabled,
+  pressed,
+  testId,
   onClick,
   children,
 }: {
   title: string;
+  /** Accessible name, when it differs from the tooltip — a toggle's title
+   *  names the shortcut, its label names the action. Defaults to `title`. */
+  label?: string;
   disabled?: boolean;
+  /** A toggle button: renders `aria-pressed` and the pressed-state class.
+   *  Left undefined for a plain action button, which has no pressed state
+   *  and must not advertise one. */
+  pressed?: boolean;
+  testId?: string;
   onClick: () => void;
   children: React.ReactNode;
 }): React.ReactElement {
   return (
     <button
       type="button"
-      className="toolbar-button"
+      className={`toolbar-button${pressed ? " toolbar-button-pressed" : ""}`}
       title={title}
-      aria-label={title}
+      aria-label={label ?? title}
+      aria-pressed={pressed}
+      data-testid={testId}
       disabled={disabled}
       onClick={onClick}
     >
       {children}
     </button>
+  );
+}
+
+/** A hairline circle with one wedge lifted 1px along its bisector — the
+ *  tile's own glyph, not from lucide (spec section 2). No fill on the
+ *  circle: the wedge is the only filled shape, currentColor throughout so
+ *  it follows the button's own hover/pressed color like every other
+ *  toolbar glyph. */
+function SkyGlyph(): React.ReactElement {
+  return (
+    <svg width={16} height={16} viewBox="0 0 16 16" aria-hidden focusable="false">
+      <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M 8 8 L 8 2 A 6 6 0 0 1 14 8 Z" fill="currentColor" transform="translate(0.7 -0.7)" />
+    </svg>
   );
 }
 
@@ -96,6 +126,8 @@ export default function Toolbar({
   onSubmitPath,
   sidebarVisible,
   onToggleSidebar,
+  skyVisible,
+  onToggleSky,
   onEnterReaderMode,
   commentsVisible,
   onToggleComments,
@@ -156,6 +188,17 @@ export default function Toolbar({
         onClick={onToggleSidebar}
       >
         <PanelLeft size={14.5} strokeWidth={2} />
+      </IconButton>
+
+      {/* No right-click menu in M1 ("Add current file to pie…" is M2). */}
+      <IconButton
+        title="Sky (⌘⇧B)"
+        label={skyVisible ? "Hide sky" : "Show sky"}
+        pressed={skyVisible}
+        testId="toolbar-sky-toggle"
+        onClick={onToggleSky}
+      >
+        <SkyGlyph />
       </IconButton>
 
       <span className="toolbar-sep" aria-hidden />
@@ -285,13 +328,11 @@ export default function Toolbar({
       {/* Feedback is its own job: see the notes, and make one. The two sit
           together, and the tool lights up while it is in hand — the one
           object the app is acting on, which is the accent's marker role. */}
-      <button
-        type="button"
-        className={`toolbar-button${commentsVisible ? " toolbar-button-pressed" : ""}`}
-        data-testid="toolbar-comments-toggle"
+      <IconButton
         title={commentsVisible ? "Hide comments (⇧⌘M)" : "Show comments (⇧⌘M)"}
-        aria-label={commentsVisible ? "Hide comments" : "Show comments"}
-        aria-pressed={commentsVisible}
+        label={commentsVisible ? "Hide comments" : "Show comments"}
+        pressed={commentsVisible}
+        testId="toolbar-comments-toggle"
         disabled={!entry}
         onClick={onToggleComments}
       >
@@ -301,7 +342,7 @@ export default function Toolbar({
             {openComments > 99 ? "99+" : openComments}
           </span>
         ) : null}
-      </button>
+      </IconButton>
       <button
         type="button"
         className={`toolbar-button${commentTool ? " toolbar-button-tool" : ""}`}
