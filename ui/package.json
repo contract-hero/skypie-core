@@ -17,6 +17,7 @@
     "e2e:m1": "tsx e2e/m1.e2e.ts",
     "e2e:m2": "tsx e2e/m2.e2e.ts",
     "e2e:m3": "tsx e2e/m3.e2e.ts",
+    "e2e:m4": "tsx e2e/m4.e2e.ts",
     "e2e:ios-smoke": "tsx e2e/ios-smoke.ts"
   },
   "dependencies": {
