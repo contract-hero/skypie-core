@@ -183,7 +183,7 @@ pub(crate) fn add_pie_member_for(
     kind: crate::pies::PieMemberKind,
     source: Option<&str>,
 ) -> Result<(), String> {
-    crate::pies::add_member(id, std::path::Path::new(path), kind, source)?;
+    crate::pies::add_member(id, std::path::Path::new(path), kind, source, None)?;
     let _ = app.emit("skypie://pies-updated", crate::pies::list());
     Ok(())
 }
@@ -296,6 +296,93 @@ pub(crate) fn canonicalize_path_for(_app: &tauri::AppHandle, path: &str) -> Resu
 #[tauri::command]
 fn canonicalize_path(app: tauri::AppHandle, path: String) -> Result<String, String> {
     canonicalize_path_for(&app, &path)
+}
+
+/// What `add_to_pie_for` resolves to. `ipc_server.rs`'s `AddToPie` dispatch
+/// arm builds the wire `Reply::AddedToPie` straight from this — kept as its
+/// own small struct here (not `skypie_ipc::Reply` itself) because this
+/// module's pies commands already return their own result shapes throughout
+/// this file, and `Reply` is the wire crate's enum, not something `app.rs`
+/// should construct mid-pipeline.
+pub(crate) struct Added {
+    pub pie: crate::pies::Pie,
+    pub path: std::path::PathBuf,
+    pub created: bool,
+    pub added: bool,
+}
+
+/// M5 (agent reach): resolve `pie` — a name or an id, decision 1 of the M5
+/// brief — add `path` to it with `source: "agent"` and `origin`, and confirm
+/// the write actually landed before telling the caller it did. Lives HERE,
+/// not in `pies.rs` (the spec's literal placement): `pies.rs` has no `tauri`
+/// dependency and its `#[cfg(test)]` tests run without an `AppHandle`, and
+/// every other `…_for(&AppHandle, …)` plus every `app.emit` in this whole
+/// pies surface already lives in this file (see the block comment above
+/// `list_pies_for`) — `add_to_pie_for` is one more of those, not an
+/// exception. No new `#[tauri::command]`: this is reached only from the
+/// agent socket (`ipc_server.rs`), never invoked from the webview.
+///
+/// `pie` resolution never asks the user to create the pie first: an exact
+/// `id` match wins, else a case-insensitive unique NAME match, else a new
+/// pie is minted with that name (`created: true`). Two existing pies
+/// sharing a case-insensitive name is `pies::find`'s own `Err`, naming both
+/// ids so the caller (or the person reading the agent's message) can pick
+/// one by id instead.
+///
+/// The path is resolved and stat'd BEFORE the pies document is touched at
+/// all, so a request for a path that does not exist never creates a pie for
+/// a write that was going to fail anyway — `pies::canonicalize` itself
+/// already refuses a missing path with a message naming it.
+pub(crate) fn add_to_pie_for(
+    app: &tauri::AppHandle,
+    pie: &str,
+    path: &std::path::Path,
+    origin: Option<crate::pies::PieMemberOrigin>,
+) -> Result<Added, String> {
+    let canonical = crate::pies::canonicalize(path)?;
+    let kind = if std::fs::metadata(&canonical)
+        .map_err(|e| format!("can't read {}: {e}", canonical.display()))?
+        .is_dir()
+    {
+        crate::pies::PieMemberKind::Folder
+    } else {
+        crate::pies::PieMemberKind::File
+    };
+
+    let (resolved, created) = match crate::pies::find(pie)? {
+        Some(existing) => (existing, false),
+        None => (crate::pies::upsert(None, pie)?, true),
+    };
+    let already_member = resolved.members.iter().any(|m| m.path == canonical);
+
+    crate::pies::add_member(&resolved.id, path, kind, Some("agent"), origin)?;
+
+    // LOAD-BEARING, not decorative: `mutate_doc` (pies.rs) silently leaves
+    // the on-disk document untouched when its `v` is unrecognised or it
+    // fails to parse, and `add_member` is a silent no-op for a pie id that
+    // no longer exists (a concurrent delete racing `find`/`upsert` above).
+    // Re-reading `pies::list()` and confirming the canonical path is
+    // actually a member is what turns either of those into a loud `Err`
+    // instead of the agent being told "added" for a write that never
+    // happened — see `mutate_doc`'s own doc comment (pies.rs) for the
+    // silent-failure class this closes.
+    let after = crate::pies::list().into_iter().find(|p| p.id == resolved.id).ok_or_else(|| {
+        format!(
+            "add_to_pie: \"{}\" was removed while this request was in flight — nothing was written",
+            resolved.name
+        )
+    })?;
+    if !after.members.iter().any(|m| m.path == canonical) {
+        return Err(format!(
+            "add_to_pie: {} did not persist as a member of \"{}\" — the pies document on disk may \
+             be an unrecognised schema version",
+            canonical.display(),
+            after.name
+        ));
+    }
+
+    let _ = app.emit("skypie://pies-updated", crate::pies::list());
+    Ok(Added { pie: after, path: canonical, created, added: !already_member })
 }
 
 /// Start (or replace) the filesystem watcher rooted at `path`. Each successful

@@ -214,6 +214,28 @@ async fn dispatch(app: tauri::AppHandle, req: Request) -> Result<Reply, String> 
         }
         Request::Status => Ok(Reply::Status(remote::status_for(&app).await)),
 
+        // ── Agent reach (M5) ────────────────────────────────────────────
+        // Called SYNCHRONOUSLY, like `pair_confirm_for` above — `add_to_pie_for`
+        // does its own filesystem I/O (`fs::canonicalize`, `fs::metadata`)
+        // OUTSIDE the state lock (inside `pies::add_member`/`pies::canonicalize`
+        // themselves), so nothing here needs `spawn_blocking`.
+        Request::AddToPie { pie, path, origin } => {
+            let origin = origin.map(|o| crate::pies::PieMemberOrigin {
+                session_id: o.session_id,
+                prompt_id: o.prompt_id,
+                cwd: o.cwd,
+            });
+            let added = crate::app::add_to_pie_for(&app, &pie, &path, origin)?;
+            Ok(Reply::AddedToPie {
+                pie: added.pie.name,
+                pie_id: added.pie.id,
+                path: added.path,
+                members: added.pie.members.len(),
+                created: added.created,
+                added: added.added,
+            })
+        }
+
         // ── Feedback ────────────────────────────────────────────────────
         Request::FeedbackFor { path } => {
             let source = path.to_string_lossy().into_owned();
