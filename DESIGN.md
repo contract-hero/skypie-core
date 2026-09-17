@@ -818,6 +818,35 @@ plate.** Four additions, none a new departure — every color below is
   step, which forces `<html data-theme>` and reads the computed styles
   back for both themes.
 
+**M6 — the phone band.** The iOS companion has no toolbar to toggle the
+band with, so `IosStartPage.tsx` renders it unconditionally at the top of
+the start page instead — SAME `.sky-band`/`.sky-glaze`/`.sky-cloud`/
+`.sky-pies` markup as the macOS band (`SkyClouds.tsx` is the two cumulus,
+shared verbatim between both), still exactly 120px and never elastic, just
+flush under the phone's own title band rather than under a toolbar. Three
+things this milestone deliberately leaves OUT, each because the phone has
+no counterpart for what it would mean:
+
+- **No tin.** The phone writes nothing — there is no folder to feed a
+  user pie and nowhere to drop one — so its two pies are both derived
+  (`Received`, and one `Shared from <Mac>` per ONLINE paired peer),
+  never persisted, exactly like Pinned/Recent on macOS.
+- **No freshness pill.** A derived pie carries no `seen_at`, so `Pie.tsx`
+  never draws a `+N` — the same rule Pinned/Recent already follow, applied
+  here by construction (`ios-pies.ts`'s two builders leave `fresh` unset)
+  rather than a runtime check.
+- **No persistence.** `panes.sky_visible` has nothing to gate on iOS —
+  the band is either present (at least one non-empty derived pie) or
+  entirely absent, never a user-toggled posture.
+
+Tapping a pie does not drop a plate — a plate assumes a pane wide enough
+to hold two columns beside the band it dropped from, which a phone is not
+— it opens a `PhonePieSheet.tsx` bottom sheet instead: the pie at 200px,
+a `shareLabel` readout, and a plain row list at the platform's own 44px
+tap target (`body.platform-ios .start-row`, already the phone's rule for
+every other retrieval list). No legend radiogroup, no slice filter, no
+layer tree — a phone screen has room for one list, not two panes of one.
+
 ## Known Gaps
 
 - Success green is recorded above but not declared. Nothing in the product
