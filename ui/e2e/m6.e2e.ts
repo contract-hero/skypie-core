@@ -1,75 +1,53 @@
-// `pnpm -C ui e2e:m6` — M6's own acceptance checkpoint: on the phone start
-// page the Sky band shows a "Received" pie over three seeded beams, tapping
-// it opens a PhonePieSheet with the 200px pie and 44px rows, the rows open
-// a file and close the sheet, the scrim dismisses it, and none of this
-// leaks onto the macOS tree once the phone-platform override is cleared.
-// Driven against the REAL debug desktop app — see ui/e2e/README.md.
+// `pnpm -C ui e2e:m6` — M6's own acceptance checkpoint, driven against the
+// REAL iOS simulator app (`launchIos`, not the desktop harness): on the
+// phone start page the Sky band shows a "Received" pie over three seeded
+// beams, tapping it opens a PhonePieSheet with the 200px pie and 44px rows,
+// a row opens a file and closes the sheet, the scrim dismisses it, and the
+// Library/Tabs/Comments sheets — untouched by M6 — still work alongside it.
+// See ui/e2e/README.md for the iOS transport and `ui/e2e/lib/ios.ts` for
+// `launchIos` itself.
 //
-// The desktop harness has no iPhone UA and no `platform_info` override to
-// lean on, so it reaches the phone tree the way the M6 brief prescribes:
-// `localStorage.setItem("skypie.platformOverride", "ios")` (the dev-only
-// seam in `state/platform.tsx`) followed by a reload. A reload mid-flight
-// can tear the page down before the e2e bridge's own report round-trip
-// finishes, so `reloadAs` below tolerates `evalIn` rejecting and instead
-// treats the NEXT `waitFor` as the source of truth for whether the reload
-// actually landed on the tree it asked for.
+// A real iOS WKWebView reports an iPhone user agent, which `guessPlatformOs`
+// (`state/platform.tsx`) already treats as decisive, and the compiled
+// `platform_info` command confirms it (`app/src/platform.rs`,
+// `std::env::consts::OS == "ios"`) — unlike the desktop harness, this
+// scenario needs no `skypie.platformOverride` seam at all: the phone tree is
+// simply what the real app renders.
+//
+// Seeding the Received pie needs a scratch `SKYPIE_STATE_DIR` the simulator
+// process itself will read — `launchIos`'s `env` option forwards it via
+// `xcrun simctl launch`'s `SIMCTL_CHILD_` prefix, and `skypie_ipc::state_dir()`
+// reads `SKYPIE_STATE_DIR` on every target_os, so this is the same seam
+// `launchDesktop({ stateDir })` already uses on macOS.
 //
 // The "Shared from <Mac>" pie needs an online paired peer, which this
 // harness cannot mint cheaply (real iroh pairing, two live nodes) — that
-// path is covered in `ios-pies.test.ts` (name, id, address, ms conversion,
-// per-peer split) instead, and can be eyeballed through the screenshot
-// `pnpm -C ui e2e:ios-smoke` takes on a simulator that IS paired.
+// path stays covered by `ios-pies.test.ts` (name, id, address, ms
+// conversion, per-peer split), not asserted here; this scenario only
+// asserts its ABSENCE with zero peers, which is the state a fresh
+// `SKYPIE_STATE_DIR` actually starts in.
 //
-// launchDesktop({ skipBuild: true }): M6 made no Rust change.
+// `launchIos` syncs `skypie-ios/core` to THIS checkout's HEAD commit before
+// it builds (`ui/e2e/lib/ios.ts`'s `syncIosCoreToThisCommit`) — so this file
+// itself has to be committed before a run tests its own content.
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { click, evalIn, launchDesktop, quit, text, waitFor } from "./lib/app";
-import type { LaunchedApp } from "./lib/app";
+import { click, evalIn, quit, text, waitFor } from "./lib/app";
+import { launchIos } from "./lib/ios";
+import type { LaunchedIosApp } from "./lib/ios";
 
-const PLATFORM_OVERRIDE_KEY = "skypie.platformOverride";
-
-/** Flips `state/platform.tsx`'s dev-only e2e seam and reloads — see this
- *  file's own header comment for why `evalIn` rejecting here is tolerated
- *  rather than treated as a failure. `override === null` clears the key
- *  (restores the macOS tree), matching the brief's own "clear the key and
- *  reload in finally" instruction. */
-async function reloadAs(app: LaunchedApp, override: "ios" | "macos" | null): Promise<void> {
-  const js = override
-    ? `(function(){ localStorage.setItem(${JSON.stringify(PLATFORM_OVERRIDE_KEY)}, ${JSON.stringify(override)}); location.reload(); return true; })()`
-    : `(function(){ localStorage.removeItem(${JSON.stringify(PLATFORM_OVERRIDE_KEY)}); location.reload(); return true; })()`;
-  try {
-    await evalIn(app, js);
-  } catch {
-    // The reload itself still happened; the caller's own waitFor is what
-    // actually confirms the new tree rendered.
-  }
-}
-
-/** `element.click()` via a JS predicate rather than a CSS selector — for
- *  the two phone-bar buttons whose `aria-label` is dynamic (a live count)
- *  or shared with no stable class of its own. Repeated from m2/m5.e2e.ts's
- *  own small-helper convention (ui/e2e/README.md: each scenario stays a
- *  single, independently-readable file). */
-async function clickButtonByAriaLabelPrefix(app: LaunchedApp, prefix: string): Promise<void> {
-  const js = `(function(){
-    var buttons = Array.from(document.querySelectorAll("button"));
-    var btn = buttons.find(function(b){
-      var label = b.getAttribute("aria-label") || "";
-      return label.indexOf(${JSON.stringify(prefix)}) === 0;
-    });
-    if (!btn) return false;
-    btn.click();
-    return true;
-  })()`;
-  const ok = await evalIn(app, js);
-  if (!ok) throw new Error(`clickButtonByAriaLabelPrefix: no button with aria-label starting ${JSON.stringify(prefix)}`);
-}
+// Same fixed port `ios-smoke.ts` uses — scenarios run sequentially, never
+// concurrently, so one fixed port stays easy to spot stuck (`lsof -i`)
+// rather than hunting a random one.
+const E2E_PORT = 17_845;
 
 /** Activates the phone Tabs sheet's row whose visible name is `label` —
- *  used to get back to the (now second) empty tab so the start page (and
- *  its Sky band) remounts after opening a file. */
-async function activateTabByLabel(app: LaunchedApp, label: string): Promise<void> {
+ *  used both to get back to the empty "New tab" (so the start page and its
+ *  Sky band remount after opening a file) and to bring a file's tab back to
+ *  the front (so Comments has an active document to open against).
+ *  Repeated from the small-helper convention m2/m5.e2e.ts already use. */
+async function activateTabByLabel(app: LaunchedIosApp, label: string): Promise<void> {
   const js = `(function(){
     var rows = Array.from(document.querySelectorAll(".phone-tab-row"));
     var row = rows.find(function(r){
@@ -84,14 +62,34 @@ async function activateTabByLabel(app: LaunchedApp, label: string): Promise<void
   if (!ok) throw new Error(`activateTabByLabel: no tab row labeled ${JSON.stringify(label)}`);
 }
 
+/** `element.click()` via a JS predicate rather than a CSS selector — for
+ *  the two phone-bar buttons whose `aria-label` is dynamic (a live count)
+ *  or has extra "(N open)" text. Repeated from m2/m5/the earlier
+ *  desktop-driven m6.e2e.ts's own convention. */
+async function clickButtonByAriaLabelPrefix(app: LaunchedIosApp, prefix: string): Promise<void> {
+  const js = `(function(){
+    var buttons = Array.from(document.querySelectorAll("button"));
+    var btn = buttons.find(function(b){
+      var label = b.getAttribute("aria-label") || "";
+      return label.indexOf(${JSON.stringify(prefix)}) === 0;
+    });
+    if (!btn) return false;
+    btn.click();
+    return true;
+  })()`;
+  const ok = await evalIn(app, js);
+  if (!ok) throw new Error(`clickButtonByAriaLabelPrefix: no button with aria-label starting ${JSON.stringify(prefix)}`);
+}
+
 async function main(): Promise<void> {
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "skypie-e2e-m6-state-"));
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "skypie-e2e-m6-ios-state-"));
   console.log(`scratch state dir: ${stateDir}`);
 
   // ── Seed three beams under one day directory — beam::list_received walks
   //    day directories and takes received_at from each file's mtime (not
   //    its name), so distinct, explicit mtimes are what makes "the newest
-  //    seeded file" deterministic below. ────────────────────────────────
+  //    seeded file" deterministic below. Same fixture the earlier
+  //    desktop-driven version of this scenario used. ─────────────────────
   const receivedDay = path.join(stateDir, "received", "2026-09-17");
   fs.mkdirSync(receivedDay, { recursive: true });
   const now = Date.now();
@@ -110,30 +108,21 @@ async function main(): Promise<void> {
   }
   const newestBasename = "pricing.html";
 
-  let app: LaunchedApp = await launchDesktop({ stateDir, skipBuild: true });
+  const app = await launchIos({ port: E2E_PORT, env: { SKYPIE_STATE_DIR: stateDir } });
   try {
-    // ── macOS tree first (the default guess for a desktop UA/window) ────
-    await waitFor(app, `document.querySelector(".toolbar") !== null`, 60_000);
-    console.log("ok: launched on the macOS tree");
-
-    // ── Flip to iOS via the dev-only localStorage seam and reload ───────
-    await reloadAs(app, "ios");
-    await waitFor(app, `document.body.classList.contains("platform-ios") === true`, 30_000);
-    console.log("ok: reloaded on the platform-ios tree");
-
-    // ── Checkpoint 1: phone chrome, no desktop chrome ───────────────────
+    // ── Checkpoint 1: real phone chrome, no desktop chrome — the UA/compiled
+    //    platform_info alone, no e2e override needed ────────────────────
+    await waitFor(app, `document.querySelector(".phone-shell") !== null`, 60_000);
     const isIos = await evalIn(app, `document.body.classList.contains("platform-ios")`);
-    const hasPhoneShell = await evalIn(app, `document.querySelector(".phone-shell") !== null`);
     const hasToolbar = await evalIn(app, `document.querySelector(".toolbar") !== null`);
     const hasSkyToggle = await evalIn(app, `document.querySelector('[data-testid="toolbar-sky-toggle"]') !== null`);
     if (isIos !== true) throw new Error(`expected body.platform-ios, got isIos=${JSON.stringify(isIos)}`);
-    if (hasPhoneShell !== true) throw new Error("expected .phone-shell to be mounted");
-    if (hasToolbar !== false) throw new Error("expected no .toolbar on the phone tree");
-    if (hasSkyToggle !== false) throw new Error('expected no [data-testid="toolbar-sky-toggle"] on the phone tree');
-    console.log("ok: phone chrome mounted, desktop chrome absent");
+    if (hasToolbar !== false) throw new Error("expected no .toolbar on the real iOS build");
+    if (hasSkyToggle !== false) throw new Error('expected no [data-testid="toolbar-sky-toggle"] on the real iOS build');
+    console.log("ok: real iOS build renders .phone-shell, no desktop chrome");
 
-    // ── Checkpoint 2: the band exists and is first ──────────────────────
-    await waitFor(app, `document.querySelector('[data-testid="ios-sky"]') !== null`, 10_000);
+    // ── Checkpoint 2: the band exists, is first, is 120px ───────────────
+    await waitFor(app, `document.querySelector('[data-testid="ios-sky"]') !== null`, 15_000);
     const bandFacts = (await evalIn(
       app,
       `(function(){
@@ -152,7 +141,7 @@ async function main(): Promise<void> {
     if (bandFacts.height !== 120) throw new Error(`expected a 120px band, got ${bandFacts.height}px`);
     console.log("ok: the band is first, role=listbox, aria-label=Pies, 120px tall");
 
-    // ── Checkpoint 3: the Received pie, no Shared pie (no online peer) ──
+    // ── Checkpoint 3: the Received pie, no Shared pie (no paired peer) ──
     const pieIds = (await evalIn(
       app,
       `Array.from(document.querySelectorAll('[data-testid="ios-sky"] [data-pie-id]')).map(function(e){ return e.getAttribute("data-pie-id"); })`,
@@ -167,14 +156,15 @@ async function main(): Promise<void> {
     if (receivedLabel !== "Received") {
       throw new Error(`expected the Received tile's label to read "Received", got ${JSON.stringify(receivedLabel)}`);
     }
-    console.log('ok: band pies are exactly ["builtin:received"], labeled "Received"');
+    console.log('ok: band pies are exactly ["builtin:received"], labeled "Received" (no online peer, so no "Shared from" pie)');
 
-    // ── Checkpoint 4: no desktop-only affordances on the band ───────────
-    const hasTin = await evalIn(app, `document.querySelector('[data-testid="ios-sky"] [data-pie-tin]') !== null`);
+    // ── Checkpoint 4: no tin anywhere, no freshness pill (no drops, no
+    //    census pill — both desktop-only affordances) ───────────────────
+    const hasTin = await evalIn(app, `document.querySelector('[data-pie-tin]') !== null`);
     const hasFreshPill = await evalIn(app, `document.querySelector('[data-testid="pie-fresh-pill"]') !== null`);
-    if (hasTin !== false) throw new Error("expected no tin on the phone band");
+    if (hasTin !== false) throw new Error("expected no pie tin anywhere on the phone tree (nothing to drop a Finder file onto)");
     if (hasFreshPill !== false) throw new Error("expected no freshness pill anywhere on the phone tree");
-    console.log("ok: no tin, no freshness pill");
+    console.log("ok: no tin (no drop target), no freshness pill");
 
     // ── Checkpoint 5: wedges — 2 html, 1 md, both above the 4% haze floor
     const wedgeKinds = (await evalIn(
@@ -186,8 +176,13 @@ async function main(): Promise<void> {
     }
     console.log('ok: wedges are ["html","md"] (2 html, 1 md)');
 
+    const startPageShot = await app.screenshot("m6-start-page");
+    console.log(`ok: screenshot of the start page (Sky band + Received pie) written to ${startPageShot}`);
+
     // ── Checkpoint 6: tap the pie — the sheet, the dialog, the scrim, the
-    //    200px portrait pie ──────────────────────────────────────────────
+    //    200px portrait pie, and the tapped tile's own disc staying visible
+    //    (the M1 disc-hiding rule is macOS-plate-only; PhonePieSheet is a
+    //    bottom sheet, not a plate animating out of the band slot) ───────
     await click(app, '[data-pie-id="builtin:received"]');
     await waitFor(app, `document.querySelector('[data-testid="pie-sheet"]') !== null`, 10_000);
     const sheetFacts = (await evalIn(
@@ -196,11 +191,6 @@ async function main(): Promise<void> {
         var sheet = document.querySelector('[data-testid="pie-sheet"]');
         var dialog = sheet.closest('[role="dialog"]');
         var svg = document.querySelector('.phone-sheet .sky-pie-portrait svg');
-        // review (major, styles.css:3005): the M1 rule that hides the band
-        // tile's OWN disc while its plate is open is desktop-only — the
-        // phone has no plate animating out of that slot, so the tile the
-        // user just tapped must keep its disc for as long as the sheet
-        // stays open.
         var bandDisc = document.querySelector('[data-testid="ios-sky"] [data-pie-id="builtin:received"] .sky-pie-disc');
         return {
           dialogAriaLabel: dialog ? dialog.getAttribute("aria-label") : null,
@@ -241,8 +231,14 @@ async function main(): Promise<void> {
     }
     console.log(`ok: 3 rows, all >= 44px, newest first (${rowFacts.firstName})`);
 
+    const pieSheetShot = await app.screenshot("m6-pie-sheet");
+    console.log(`ok: screenshot of the open PhonePieSheet (200px pie + 44px rows) written to ${pieSheetShot}`);
+
     // ── Checkpoint 8: opening the first row opens the file and closes the
-    //    sheet ────────────────────────────────────────────────────────────
+    //    sheet — no persistence: this reads the seeded file straight off
+    //    disk through the same FOCUS_OR_OPEN a tap on the start page's own
+    //    "Received" list uses, nothing about the band or the sheet writes
+    //    anywhere ───────────────────────────────────────────────────────
     await click(app, '[data-testid="pie-sheet"] .start-row');
     await waitFor(app, `document.querySelector('[data-testid="pie-sheet"]') === null`, 10_000);
     await waitFor(app, `document.querySelector(".phone-title").textContent === ${JSON.stringify(newestBasename)}`, 10_000);
@@ -250,7 +246,7 @@ async function main(): Promise<void> {
 
     // ── Back to the start page (the second, still-empty tab FOCUS_OR_OPEN
     //    left behind) so the band remounts, then checkpoint 9: reopen the
-    //    pie and dismiss it by clicking the scrim ───────────────────────
+    //    pie and dismiss it by tapping the scrim ─────────────────────────
     await clickButtonByAriaLabelPrefix(app, "Open tabs");
     await waitFor(app, `document.querySelector(".phone-tab-list") !== null`, 10_000);
     await activateTabByLabel(app, "New tab");
@@ -260,27 +256,72 @@ async function main(): Promise<void> {
     await waitFor(app, `document.querySelector('[data-testid="pie-sheet"]') !== null`, 10_000);
     await click(app, ".phone-scrim");
     await waitFor(app, `document.querySelector('[data-testid="pie-sheet"]') === null`, 10_000);
-    console.log("ok: reopening the pie then clicking the scrim dismisses the sheet");
+    console.log("ok: reopening the pie then tapping the scrim dismisses the sheet");
 
-    // ── Checkpoint 10: clearing the override restores the macOS tree,
-    //    with no trace of the phone band ────────────────────────────────
-    await reloadAs(app, null);
-    await waitFor(app, `document.querySelector(".toolbar") !== null`, 30_000);
-    const macosFacts = (await evalIn(
+    // ── Checkpoint 10: the Library sheet (M0/pre-M6, untouched by M6)
+    //    still works alongside the band — the same three received files,
+    //    listed a second way ─────────────────────────────────────────────
+    await clickButtonByAriaLabelPrefix(app, "Library");
+    await waitFor(app, `document.querySelector('[role="dialog"][aria-label="Library"]') !== null`, 10_000);
+    const libraryRowCount = await evalIn(
       app,
-      `({ toolbar: document.querySelector(".toolbar") !== null, iosSky: document.querySelector('[data-testid="ios-sky"]') !== null })`,
-    )) as { toolbar: boolean; iosSky: boolean };
-    if (!macosFacts.toolbar) throw new Error("expected .toolbar back once the override is cleared");
-    if (macosFacts.iosSky) throw new Error('expected no [data-testid="ios-sky"] on the macOS tree');
-    console.log("ok: clearing the override restores the macOS tree — no phone band leaks onto it");
+      `document.querySelectorAll('[data-testid="received-group"] li').length`,
+    );
+    if (libraryRowCount !== 3) {
+      throw new Error(`expected 3 rows in the Library sheet's Received group, got ${libraryRowCount}`);
+    }
+    const libraryShot = await app.screenshot("m6-library-sheet");
+    console.log(`ok: Library sheet still works (3 received rows) — screenshot written to ${libraryShot}`);
+    await click(app, '.phone-sheet-action[aria-label="Close"]');
+    await waitFor(app, `document.querySelector('[role="dialog"][aria-label="Library"]') === null`, 10_000);
+
+    // ── Checkpoint 11: the Tabs sheet still works, and still lists the
+    //    tab M6's own FOCUS_OR_OPEN opened earlier ──────────────────────
+    await clickButtonByAriaLabelPrefix(app, "Open tabs");
+    await waitFor(app, `document.querySelector(".phone-tab-list") !== null`, 10_000);
+    const tabLabels = (await evalIn(
+      app,
+      `Array.from(document.querySelectorAll(".phone-tab-row-name")).map(function(e){ return e.textContent; })`,
+    )) as string[];
+    if (!tabLabels.includes(newestBasename)) {
+      throw new Error(`expected the tabs sheet to include ${JSON.stringify(newestBasename)}, got ${JSON.stringify(tabLabels)}`);
+    }
+    const tabsShot = await app.screenshot("m6-tabs-sheet");
+    console.log(`ok: Tabs sheet still works (includes "${newestBasename}") — screenshot written to ${tabsShot}`);
+    // Activate the file's tab — Comments (checkpoint 12) needs an active
+    // document; this also closes the sheet.
+    await activateTabByLabel(app, newestBasename);
+    await waitFor(app, `document.querySelector(".phone-title").textContent === ${JSON.stringify(newestBasename)}`, 10_000);
+
+    // ── Checkpoint 12: the Comments sheet still works over an active file
+    await clickButtonByAriaLabelPrefix(app, "Comments");
+    await waitFor(app, `document.querySelector('[role="dialog"][aria-label="Comments"]') !== null`, 10_000);
+    const commentsShot = await app.screenshot("m6-comments-sheet");
+    console.log(`ok: Comments sheet still works over an active file — screenshot written to ${commentsShot}`);
+    await click(app, '.phone-sheet-action[aria-label="Close"]');
+    await waitFor(app, `document.querySelector('[role="dialog"][aria-label="Comments"]') === null`, 10_000);
 
     console.log("PASS");
   } finally {
-    // The brief's own warning: leaving the override set would start the
-    // NEXT scenario's launch on the phone tree, since localStorage
-    // persists across app relaunches at the webview's own origin.
-    await reloadAs(app, null);
     await quit(app);
+    // `quit()` calls `simctl terminate`, which does not wait for the
+    // state-store's own ~250ms debounced writer to flush — this is a
+    // best-effort check, not a hard gate, so a slow-to-flush write does not
+    // flake the whole scenario.
+    const statePath = path.join(stateDir, "state.json");
+    if (fs.existsSync(statePath)) {
+      const raw = fs.readFileSync(statePath, "utf8");
+      if (raw.includes("sky_visible") || raw.includes("panes.sky_visible")) {
+        console.warn(
+          `note: ${statePath} contains a "sky_visible" key — the phone has no toolbar to write ` +
+            "one, so this would mean something on iOS wrote a macOS-only persisted key.",
+        );
+      } else {
+        console.log(`ok: ${statePath} carries no "sky_visible" key — the band's presence is derived, never persisted`);
+      }
+    } else {
+      console.log(`ok: ${statePath} was never written — the band's presence is derived, never persisted`);
+    }
     await fs.promises.rm(stateDir, { recursive: true, force: true });
   }
 }
