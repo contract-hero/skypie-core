@@ -2059,6 +2059,24 @@ body.platform-ios .start-row {
   min-height: var(--tap-min);
 }
 
+/* ── M6: the phone Sky band ("Sky band", DESIGN.md — the M6 paragraph) ───
+   IosStartPage.tsx renders the SAME .sky-band/.sky-glaze/.sky-cloud/
+   .sky-pies/.sky-pie markup Sky.tsx uses on macOS (M1) — no new class, no
+   new departure, so every rule under "Sky band" below (height, glaze,
+   crust, wedge tones, --sky-focus) already applies unchanged. This
+   override only fixes where it SITS: the phone has no toolbar, so the
+   band is the first thing under .phone-titlebar, not a togglable strip
+   between a toolbar and a tab view. */
+body.platform-ios .sky-band {
+  flex: none;
+  /* .start-page-inner's own padding (56px top, --space-6 the sides) would
+     otherwise inset the band and break the glaze's continuity with
+     .phone-titlebar directly above it — pulling it out by exactly that
+     padding is what "flush" means here; the bottom margin restores the
+     usual gap before the wordmark that follows it. */
+  margin: -56px calc(-1 * var(--space-6)) var(--space-5);
+}
+
 .phone-shell {
   position: relative; /* anchor for the floating .app-notice toast */
   display: flex;
@@ -2225,6 +2243,25 @@ body.platform-ios .start-row {
    takes the taller stop. The scrim stays visible above it — the sheet is
    still a sheet, not a second screen. */
 .phone-sheet-tall { max-height: 92%; }
+
+/* M6: PhonePieSheet's own block — the 200px portrait pie plus its one-line
+   readout, above the file rows. Same shape as the desktop plate's left
+   rail (.pie-plate-left/.pie-plate-readout) at phone width: no new token,
+   no new departure, only the chrome-level spacing/type tokens every other
+   sheet already uses. */
+.phone-sheet-pie {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) 0 var(--space-4);
+}
+.phone-sheet-pie-readout {
+  font-family: var(--font-mono);
+  font-size: var(--text-body-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
 
 /* Settings on the phone: the same panel as the desktop, at thumb scale.
    Nothing here changes what the panel says, only what it takes to hit. */

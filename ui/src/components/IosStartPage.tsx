@@ -5,15 +5,23 @@
 // and reading what has already arrived. Reuses the
 // same start-page/start-list/start-row classes as the macOS StartPage —
 // same visual language, different content.
+//
+// M6 adds the Sky band at the top: a "Received" pie plus one
+// "Shared from <Mac>" pie per online peer, both derived and owned by
+// `IosPiesProvider` (mounted in PhoneShell.tsx) — see `state/ios-pies.ts`
+// and `state/ios-pies-context.tsx`. Tapping a pie sets `openPieId`, which
+// PhoneShell.tsx turns into an open `PhonePieSheet`.
 import * as React from "react";
 import { MonitorSmartphone } from "lucide-react";
 import { useRemoteState } from "../state/remote";
 import { useBeamActions, useBeamState } from "../state/beam";
 import { useTabsDispatch } from "../state/TabsProvider";
-import { tauriIpc, type SharedEntry } from "../ipc";
 import { formatRemoteAddress } from "../utils/remote-address";
 import { FileGlyph } from "./FileIcon";
 import { formatAgo, humanBytes, nowSecs } from "../utils/beam-format";
+import { useIosPies } from "../state/ios-pies-context";
+import Pie from "./Pie";
+import SkyClouds from "./SkyClouds";
 
 export interface IosStartPageProps {
   /** Opens the Settings modal, which mounts the Remote pane (pairing UI is
@@ -24,46 +32,16 @@ export interface IosStartPageProps {
 export default function IosStartPage({ onOpenSettings }: IosStartPageProps): React.ReactElement {
   const { peers, presence } = useRemoteState();
   const { received } = useBeamState();
-  const { openReceived, refreshReceived } = useBeamActions();
+  const { openReceived } = useBeamActions();
   const dispatch = useTabsDispatch();
 
-  React.useEffect(() => {
-    refreshReceived();
-  }, [refreshReceived]);
-
-  // What each paired Mac has offered this phone. There is no push and no
-  // notification: the Mac records an offer when the user shares a link, and
-  // this asks for the list. The right moment to ask is whenever presence
-  // changes, because the iOS foreground hop drops every session and rewrites
-  // presence — so a resume refreshes this without a second signal.
-  const [shared, setShared] = React.useState<Array<SharedEntry & { peer: string }>>([]);
-  const onlineKey = peers
-    .filter((p) => presence[p.node_id]?.state === "online")
-    .map((p) => p.node_id)
-    .join(",");
-
-  React.useEffect(() => {
-    const online = onlineKey ? onlineKey.split(",") : [];
-    if (online.length === 0) {
-      setShared([]);
-      return;
-    }
-    let cancelled = false;
-    Promise.all(
-      online.map((peer) =>
-        (tauriIpc.remoteListShared?.(peer) ?? Promise.resolve([]))
-          .then((entries) => entries.map((e) => ({ ...e, peer })))
-          // One unreachable device must not blank the whole list.
-          .catch(() => [] as Array<SharedEntry & { peer: string }>),
-      ),
-    ).then((lists) => {
-      if (cancelled) return;
-      setShared(lists.flat().sort((a, b) => b.shared_at - a.shared_at));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [onlineKey]);
+  // M6: `IosPiesProvider` (an ancestor, PhoneShell.tsx) owns the
+  // `remoteListShared` fan-out and the `refreshReceived` call this
+  // component used to do on its own — `sharedEntries` is the exact flat,
+  // per-file shape the "Shared with you" section below already rendered
+  // before M6, now sourced from that one fetch instead of a second copy of
+  // it here.
+  const { pies, sharedEntries, openPieId, setOpenPieId } = useIosPies();
 
   const openShared = React.useCallback(
     (peer: string, path: string) => {
@@ -84,6 +62,32 @@ export default function IosStartPage({ onOpenSettings }: IosStartPageProps): Rea
   return (
     <div className="start-page" data-testid="start-page">
       <div className="start-page-inner">
+        {pies.length > 0 ? (
+          // M6: the same band markup Sky.tsx renders on macOS — role, the
+          // glaze, the two clouds, `.sky-pies` as `role="presentation"` so
+          // the tiles stay the listbox's own accessible children (Sky.tsx's
+          // own comment on that trap) — minus the tin and the plate: iOS
+          // writes nothing, so there is nothing to create and nowhere to
+          // drop a folder. Omitted entirely (not just left empty) when it
+          // would hold no pie — a bare 120px strip with nothing in it earns
+          // no place on a screen this small, and it must appear whether or
+          // not the phone has ever been paired (Received needs no peer).
+          <div data-testid="ios-sky" className="sky-band" role="listbox" aria-label="Pies">
+            <div className="sky-glaze" aria-hidden />
+            <SkyClouds />
+            <div className="sky-pies" role="presentation">
+              {pies.map((pie) => (
+                <Pie
+                  key={pie.id}
+                  pie={pie}
+                  selected={pie.id === openPieId}
+                  onOpen={() => setOpenPieId(pie.id)}
+                />
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <div className="start-brand">
           <span className="start-mark" aria-hidden>V</span>
           <h1 className="start-title">Sky Pie</h1>
@@ -138,11 +142,11 @@ export default function IosStartPage({ onOpenSettings }: IosStartPageProps): Rea
               </button>
             </section>
 
-            {shared.length > 0 ? (
+            {sharedEntries.length > 0 ? (
               <section className="start-section">
                 <h2>Shared with you</h2>
                 <ul className="start-list">
-                  {shared.map((entry) => (
+                  {sharedEntries.map((entry) => (
                     <li key={`${entry.peer}:${entry.path}`}>
                       <button
                         type="button"
@@ -193,7 +197,7 @@ export default function IosStartPage({ onOpenSettings }: IosStartPageProps): Rea
               </section>
             ) : null}
 
-            {shared.length === 0 && received.length === 0 ? (
+            {sharedEntries.length === 0 && received.length === 0 ? (
               <p className="start-empty">
                 Nothing here yet. On your Mac, choose Share → Copy link for my
                 devices — the file shows up here — or beam a file to this phone.

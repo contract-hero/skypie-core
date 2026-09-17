@@ -19,10 +19,12 @@ import {
 import type { IpcSurface } from "../ipc";
 import TabView from "./TabView";
 import PhoneSheet from "./PhoneSheet";
+import PhonePieSheet from "./PhonePieSheet";
 import ReceivedDrawer from "./ReceivedDrawer";
 import { useActiveTab, useTabs, useTabsDispatch } from "../state/TabsProvider";
 import type { OpenFileOptions } from "../state/TabsProvider";
 import { useRemoteActions } from "../state/remote";
+import { IosPiesProvider, useIosPies } from "../state/ios-pies-context";
 import { canGoBack, canGoForward, currentEntry } from "../state/tabs";
 import { basename } from "../utils/path";
 import { parseRemoteAddress } from "../utils/remote-address";
@@ -43,9 +45,24 @@ export interface PhoneShellProps {
   workspaceRoot: string | null;
 }
 
-type Sheet = null | "library" | "tabs" | "comments";
+type Sheet = null | "library" | "tabs" | "comments" | "pie";
 
-export default function PhoneShell({
+// M6: `IosPiesProvider` must be an ANCESTOR of the component that reads
+// `useIosPies()` below, and it is rendered INSIDE this file's own return
+// tree (PhoneShell.tsx's brief: "wrap its returned tree in
+// IosPiesProvider") — never in App.tsx's ProviderShell, which mounts on
+// macOS too. A component cannot consume a context its own function body
+// also provides, so the real work moves to `PhoneShellInner`, mounted as
+// the provider's child.
+export default function PhoneShell(props: PhoneShellProps): React.ReactElement {
+  return (
+    <IosPiesProvider ipc={props.ipc}>
+      <PhoneShellInner {...props} />
+    </IosPiesProvider>
+  );
+}
+
+function PhoneShellInner({
   ipc,
   onOpenFile,
   onOpenSettings,
@@ -58,7 +75,39 @@ export default function PhoneShell({
   const active = useActiveTab();
   const entry = currentEntry(active);
   const [sheet, setSheet] = React.useState<Sheet>(null);
-  const closeSheet = React.useCallback(() => setSheet(null), []);
+
+  // M6: the Sky band's own pie sheet. `openPie` is looked up by id against
+  // the context's live pie list on EVERY render — never snapshotted — so a
+  // beam landing while the sheet is open still updates what it shows.
+  const { pies: iosPiesList, openPieId, setOpenPieId } = useIosPies();
+  const openPie = openPieId ? iosPiesList.find((p) => p.id === openPieId) ?? null : null;
+
+  // Exactly one sheet is open at a time; `PhoneSheet` owns the scrim (its
+  // own file comment). `openPieId` lives in `IosPiesProvider`, an ancestor
+  // of both this component and `IosStartPage.tsx` (which is what actually
+  // sets it, from the band) — mirroring it into `sheet` here is what makes
+  // opening Library/Tabs/Comments close a live pie sheet, and vice versa,
+  // rather than stacking two sheets (and two scrims) on top of each other.
+  React.useEffect(() => {
+    if (openPieId) setSheet("pie");
+    else setSheet((s) => (s === "pie" ? null : s));
+  }, [openPieId]);
+
+  const closeSheet = React.useCallback(() => {
+    setSheet(null);
+    setOpenPieId(null);
+  }, [setOpenPieId]);
+
+  // The three toggle buttons below all want the same "open this, or close
+  // it if it's already open — and always drop any live pie sheet" shape.
+  const toggleSheet = React.useCallback(
+    (kind: Exclude<Sheet, "pie" | null>) => {
+      setOpenPieId(null);
+      setSheet((s) => (s === kind ? null : kind));
+    },
+    [setOpenPieId],
+  );
+
   const [renderedText, setRenderedText] = React.useState("");
   const contentRef = React.useRef<HTMLDivElement | null>(null);
   const { openCountFor } = useAnnotations();
@@ -71,7 +120,10 @@ export default function PhoneShell({
   const remote = activePath ? parseRemoteAddress(activePath) : null;
   const from = remote ? deviceLabel(remote.peer) : null;
 
-  const openSheet = React.useCallback(() => setSheet("comments"), []);
+  const openSheet = React.useCallback(() => {
+    setOpenPieId(null);
+    setSheet("comments");
+  }, [setOpenPieId]);
 
   // The tool's rules are shared with the desktop shell — see the hook. On a
   // phone a rail cannot sit beside the document, so the pick IS the entry
@@ -96,9 +148,10 @@ export default function PhoneShell({
     (sel: PendingSelection | null, text: string) => {
       if (sel) setPending(sel);
       if (text) setRenderedText(text);
+      setOpenPieId(null);
       setSheet("comments");
     },
-    [setPending],
+    [setPending, setOpenPieId],
   );
 
   // A pick inside the artifact opens the comments sheet straight at the
@@ -174,7 +227,7 @@ export default function PhoneShell({
           type="button"
           className="phone-bar-button"
           aria-label="Library"
-          onClick={() => setSheet(sheet === "library" ? null : "library")}
+          onClick={() => toggleSheet("library")}
         >
           <LibraryBig size={20} strokeWidth={1.8} />
         </button>
@@ -203,7 +256,7 @@ export default function PhoneShell({
             openCount > 0 ? `Comments (${openCount} open)` : "Comments"
           }
           disabled={!activePath}
-          onClick={() => setSheet(sheet === "comments" ? null : "comments")}
+          onClick={() => toggleSheet("comments")}
         >
           <MessageSquare size={20} strokeWidth={1.8} />
           {openCount > 0 ? <span className="phone-bar-badge">{openCount}</span> : null}
@@ -222,7 +275,7 @@ export default function PhoneShell({
           type="button"
           className="phone-bar-button"
           aria-label={`Open tabs (${tabs.length})`}
-          onClick={() => setSheet(sheet === "tabs" ? null : "tabs")}
+          onClick={() => toggleSheet("tabs")}
         >
           <span className="phone-tab-count">{tabs.length}</span>
         </button>
@@ -325,6 +378,11 @@ export default function PhoneShell({
           </ul>
         </PhoneSheet>
       ) : null}
+
+      {/* M6: the Sky band's own pie sheet. `openPie` is re-derived above on
+          every render from the context's live list, so a beam landing
+          while this is open updates its rows without a re-tap. */}
+      {openPie ? <PhonePieSheet pie={openPie} onClose={closeSheet} /> : null}
     </div>
   );
 }
