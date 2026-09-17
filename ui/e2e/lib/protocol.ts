@@ -8,7 +8,31 @@ import type { Socket } from "node:net";
 /** The verbs the harness sends. Spelled out rather than `{ op: string }`,
  *  so a typo is a compile error here instead of a "malformed message" reply
  *  from the app. Mirrors `skypie_ipc::Request`. */
-export type Request = { op: "e2e_eval"; js: string } | { op: "status" };
+export type Request =
+  | { op: "e2e_eval"; js: string }
+  | { op: "status" }
+  /** M5 (agent reach): what an agent client sends. `pie` is a name or an id;
+   *  an unmatched NAME creates the pie. Mirrors `Request::AddToPie`. */
+  | {
+      op: "add_to_pie";
+      pie: string;
+      path: string;
+      origin?: { session_id?: string; prompt_id?: string; cwd?: string };
+    };
+
+/** The `Reply::AddedToPie` fields, flattened into the ok arm below. Optional
+ *  there rather than a separate arm keyed on `kind`, because the generic ok
+ *  arm already carries an open `kind: string` and TypeScript cannot narrow a
+ *  literal against it — a caller checks `kind === "added_to_pie"` itself and
+ *  then reads these. */
+interface AddedToPie {
+  pie: string;
+  pie_id: string;
+  path: string;
+  members: number;
+  created: boolean;
+  added: boolean;
+}
 
 /** Mirrors `skypie_ipc::Response`: tagged by `status`, with `Reply`
  *  flattened into the ok arm (hence `kind` and the reply's own fields).
@@ -16,7 +40,7 @@ export type Request = { op: "e2e_eval"; js: string } | { op: "status" };
  *  a reply with no `status` at all pass the cast, and `evalIn` would then
  *  return `undefined` as a success. */
 export type Response =
-  | { status: "ok"; kind: string; value?: unknown }
+  | ({ status: "ok"; kind: string; value?: unknown } & Partial<AddedToPie>)
   | { status: "err"; message: string };
 
 /** Accept only the two shapes above. A reply that is neither is the app
