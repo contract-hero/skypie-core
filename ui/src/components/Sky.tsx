@@ -56,6 +56,24 @@ function TinGlyph(): React.ReactElement {
   );
 }
 
+/** One cumulus: three overlapping ellipses on a fixed 37×22 viewBox. The
+ *  band's two clouds differ only in where CSS puts them, so this renders
+ *  once and is placed twice — `className` carries the position. */
+function Cloud({ className }: { className: string }): React.ReactElement {
+  return (
+    <svg
+      className={`sky-cloud ${className}`}
+      viewBox="0 0 37 22"
+      aria-hidden
+      focusable="false"
+    >
+      <ellipse cx="10" cy="16" rx="10" ry="7" />
+      <ellipse cx="19" cy="9" rx="13" ry="9" />
+      <ellipse cx="28" cy="17" rx="9" ry="6" />
+    </svg>
+  );
+}
+
 export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.ReactElement {
   const { bookmarks } = useBookmarksContext();
   const { recents } = useRecentsContext();
@@ -190,15 +208,14 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
         break;
       }
       case "Escape":
-        // Leaves the band (blurs the focused tile) without closing it — the
-        // plate owns its own Esc (useEscape) to close itself first.
-        // `stopPropagation` here is a bubble-phase call and cannot actually
-        // reach the reader-mode/comment-tool Escape bindings in App.tsx —
-        // those are capture-phase window listeners (`useShortcuts`,
-        // `useEscape`) that have already run before this handler ever sees
-        // the event, so this is a defensive no-op against any FUTURE
-        // bubble-phase listener rather than the guard an earlier comment
-        // here claimed it was (review: Sky.tsx:194).
+        // Leaves the band: blurs the focused tile without hiding the band —
+        // the plate owns its own Esc (useEscape) to close itself first.
+        //
+        // `stopPropagation` does NOT suppress App's `escape` bindings. The
+        // shortcut registry listens in the CAPTURE phase on `window`
+        // (keyboard/shortcuts.ts), so those bindings have already fired by
+        // the time this bubble-phase handler runs. The call only keeps the
+        // key from bubbling further up the React tree.
         e.stopPropagation();
         (document.activeElement as HTMLElement | null)?.blur();
         break;
@@ -255,6 +272,23 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
 
   const openPie = pies.find((p) => p.id === openPieId) ?? null;
 
+  // Stable identities: PiePlate subscribes window `pointerdown`/`blur` in an
+  // effect keyed on [onClose], so a fresh closure on every band render (one
+  // per recents/bookmarks tick) would tear down and re-add those listeners
+  // each time.
+  const closePlate = React.useCallback(() => setOpenPieId(null), []);
+  // One handler pair per pie, rebuilt only when the pie list itself changes
+  // — an inline arrow in the map below is a new function on every render,
+  // which is what a later `React.memo(Pie)` would trip over.
+  const handlers = React.useMemo(
+    () =>
+      pies.map((pie, i) => ({
+        onFocus: () => setFocusedIndex(i),
+        onOpen: () => setOpenPieId(pie.id),
+      })),
+    [pies],
+  );
+
   return (
     // The plate is a sibling of the listbox, not a DOM child of it: a
     // role="dialog" (with its own nested role="listbox" layer list) is not
@@ -275,43 +309,16 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
       >
         <div className="sky-glaze" aria-hidden />
         {/* Two separate fixed-size SVGs, positioned by CSS `left` percentage
-            (22% / 71% of the band width — DESIGN.md, "Sky band"). A single
+            (22% / 71% of the band width — `.sky-cloud-1` / `.sky-cloud-2`,
+            styles.css). A single
             SVG spanning the whole band with `preserveAspectRatio="none"`
             used to stretch every ellipse horizontally by paneWidth/100
             while its vertical scale stayed 1, turning each cumulus into a
             flat smear at any pane wider than the 100-unit viewBox (review:
             Sky.tsx:104). Only the CENTRE tracks the band width now; the
             shapes themselves stay a fixed size at every pane width. */}
-        <svg
-          className="sky-cloud sky-cloud-1"
-          viewBox="0 0 37 22"
-          aria-hidden
-          focusable="false"
-        >
-          <clipPath id="sky-cloud-base-1">
-            <rect x="0" y="0" width="37" height="22" />
-          </clipPath>
-          <g clipPath="url(#sky-cloud-base-1)">
-            <ellipse cx="10" cy="16" rx="10" ry="7" />
-            <ellipse cx="19" cy="9" rx="13" ry="9" />
-            <ellipse cx="28" cy="17" rx="9" ry="6" />
-          </g>
-        </svg>
-        <svg
-          className="sky-cloud sky-cloud-2"
-          viewBox="0 0 35 21"
-          aria-hidden
-          focusable="false"
-        >
-          <clipPath id="sky-cloud-base-2">
-            <rect x="0" y="0" width="35" height="21" />
-          </clipPath>
-          <g clipPath="url(#sky-cloud-base-2)">
-            <ellipse cx="9" cy="15" rx="9" ry="6" />
-            <ellipse cx="18" cy="8" rx="12" ry="8" />
-            <ellipse cx="27" cy="16" rx="8" ry="5" />
-          </g>
-        </svg>
+        <Cloud className="sky-cloud-1" />
+        <Cloud className="sky-cloud-2" />
         {/* role="presentation": the listbox's real options are this div's
             CHILDREN in the DOM, but an ARIA listbox only owns options that
             are its own accessible children — nesting them one div deeper
@@ -369,8 +376,8 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
                 pie={pie}
                 selected={pie.id === openPieId}
                 tabIndex={i === focusedIndex ? 0 : -1}
-                onFocus={() => setFocusedIndex(i)}
-                onOpen={() => setOpenPieId(pie.id)}
+                onFocus={handlers[i]?.onFocus}
+                onOpen={handlers[i]?.onOpen}
                 onContextMenu={isUser ? (e) => openPieContextMenu(e, pie) : undefined}
               />
             );
@@ -445,7 +452,7 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
         </div>
       </div>
       {openPie ? (
-        <PiePlate pie={openPie} onClose={() => setOpenPieId(null)} onOpenFile={onOpenFile} />
+        <PiePlate pie={openPie} onClose={closePlate} onOpenFile={onOpenFile} />
       ) : null}
     </div>
   );

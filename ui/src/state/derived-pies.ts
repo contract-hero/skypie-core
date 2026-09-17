@@ -8,6 +8,7 @@
 import type { BookmarkEntry, RecentEntry } from "../ipc";
 import { BEARINGS, HAZE_THRESHOLD, kindOf } from "../render/kind";
 import type { FileKind } from "../render/kind";
+import { isRemoteAddress } from "../utils/remote-address";
 
 export interface DerivedPieFile {
   path: string;
@@ -36,15 +37,27 @@ function secsToMs(secs: number): number {
   return secs * 1000;
 }
 
+/** A pie's census is a local-filesystem concept. Both stores can hold a
+ *  `skypie-remote://peer/path` address — recents because `useOpenFile` pushes
+ *  every address it opens (TabsProvider.tsx), bookmarks because the toolbar
+ *  star bookmarks whatever the active tab holds — so ONE predicate guards
+ *  both builders. Without it a remote bookmark reached `kindOf` and showed in
+ *  Pinned as a phantom file. */
+function isLocalFile(address: string): boolean {
+  return address.startsWith("/") && !isRemoteAddress(address);
+}
+
 export function pinnedPie(bookmarks: BookmarkEntry[]): DerivedPie {
   return {
     id: "builtin:pinned",
     name: "Pinned",
-    files: bookmarks.map((b) => ({
-      path: b.path,
-      kind: kindOf(b.path),
-      mtime: secsToMs(b.bookmarked_at),
-    })),
+    files: bookmarks
+      .filter((b) => isLocalFile(b.path))
+      .map((b) => ({
+        path: b.path,
+        kind: kindOf(b.path),
+        mtime: secsToMs(b.bookmarked_at),
+      })),
   };
 }
 
@@ -53,11 +66,7 @@ export function recentPie(recents: RecentEntry[]): DerivedPie {
     id: "builtin:recent",
     name: "Recent",
     files: recents
-      // useOpenFile pushes every address to recents, including
-      // `skypie-remote://peer/path` (TabsProvider.tsx) — a pie's census is a
-      // local-filesystem concept, so a remote address is dropped rather than
-      // ever reaching a `kindOf`/mtime call meant for a real path.
-      .filter((r) => r.path.startsWith("/"))
+      .filter((r) => isLocalFile(r.path))
       .map((r) => ({
         path: r.path,
         kind: kindOf(r.path),
@@ -103,10 +112,23 @@ export function groupByWedge(files: DerivedPieFile[]): Map<FileKind, DerivedPieF
  * threshold it keeps its own wedge ("under 4%" in the spec is a strict `<`).
  */
 export function wedgesOf(files: DerivedPieFile[]): Wedge[] {
-  const total = files.length;
-  if (total === 0) return [];
+  if (files.length === 0) return [];
+  return wedgesOfGroups(groupByWedge(files));
+}
 
-  const groups = groupByWedge(files);
+/**
+ * The wedge half of `wedgesOf`, over groups a caller already has. A consumer
+ * that needs BOTH (the plate needs the groups for its legend and layer
+ * filter, and the wedges for the disc) would otherwise group the same files
+ * twice on every render.
+ *
+ * The total is DERIVED from the groups rather than passed in: `Pie` turns
+ * `share` straight into geometry, so a caller-supplied total that disagreed
+ * with the groups silently over- or under-filled the disc.
+ */
+export function wedgesOfGroups(groups: Map<FileKind, DerivedPieFile[]>): Wedge[] {
+  const total = [...groups.values()].reduce((n, list) => n + list.length, 0);
+  if (total === 0) return [];
   return BEARINGS.filter((kind) => (groups.get(kind)?.length ?? 0) > 0).map((kind) => {
     const count = groups.get(kind)?.length ?? 0;
     return { kind, count, share: count / total };

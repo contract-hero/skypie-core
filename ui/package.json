@@ -13,7 +13,6 @@
     "test": "vitest run",
     "tauri": "tauri",
     "e2e:smoke": "tsx e2e/smoke.ts",
-    "e2e:sky": "tsx e2e/sky.e2e.ts",
     "e2e:m1": "tsx e2e/m1.e2e.ts",
     "e2e:m2": "tsx e2e/m2.e2e.ts",
     "e2e:ios-smoke": "tsx e2e/ios-smoke.ts"

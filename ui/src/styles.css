@@ -179,6 +179,24 @@
   --sky-ink-dim: #8c9bad;
   --sky-cloud: #213040;
   --sky-focus: #8b93e8;
+
+  /* Pie wedge tones — seven steps of ink between --sky-ink and --sky, one
+     slot per BEARINGS kind (render/kind.ts). Tones, not hues: the Single
+     Lamp Rule leaves warm ember as the only chromatic voice, so a pie
+     separates its kinds by value alone. Dusk is the day ramp reversed, so
+     the tone nearest the field stays nearest the field in both themes.
+     These are CSS custom properties because Pie.tsx feeds them straight to
+     an SVG `fill` — `fill="var(--sky-tone-3)"` resolves like any other
+     property, the same way the wedge separators already use
+     `stroke="var(--sky)"`. That keeps the theme swap in CSS with no JS
+     observer watching `<html data-theme>`. */
+  --sky-tone-1: #dbe4ef;
+  --sky-tone-2: #c2d0e2;
+  --sky-tone-3: #a6b8d1;
+  --sky-tone-4: #7f95b8;
+  --sky-tone-5: #5b729a;
+  --sky-tone-6: #3a4f75;
+  --sky-tone-7: #1f2f4d;
 }
 
 :root[data-theme="light"] {
@@ -235,6 +253,16 @@
   --sky-ink-dim: #5b6b7d;
   --sky-cloud: #eef5fb;
   --sky-focus: #3b45b8;
+
+  /* Pie wedge tones — day (see the dusk block above for why these are
+     tokens and not a JS ramp). */
+  --sky-tone-1: #1f2f4d;
+  --sky-tone-2: #3a4f75;
+  --sky-tone-3: #5b729a;
+  --sky-tone-4: #7f95b8;
+  --sky-tone-5: #a6b8d1;
+  --sky-tone-6: #c2d0e2;
+  --sky-tone-7: #dbe4ef;
 }
 
 * { box-sizing: border-box; }
@@ -3020,7 +3048,7 @@ pre[data-fallback] .line::before {
 }
 /* The plate pie renders at its FINAL size (200px, or 120px under a short
    pane) and only its transform animates — scale(0.24) to scale(1), 240ms on
-   --ease-emphasis, will-change: transform — so WebKit paints the sharp SVG
+   --ease-emphasis — so WebKit paints the sharp SVG
    at final size throughout instead of rasterising a 48px bitmap and
    upscaling it (spec section 4). `transform-origin: top` approximates the
    band slot's position (the portrait sits at the top of the plate's left
@@ -3032,7 +3060,6 @@ pre[data-fallback] .line::before {
    above), so this is the only copy of the disc on screen while it runs. */
 .pie-plate-left .sky-pie-disc {
   transform-origin: top center;
-  will-change: transform;
   animation: pie-plate-disc-in 240ms var(--ease-emphasis);
 }
 @keyframes pie-plate-disc-in {

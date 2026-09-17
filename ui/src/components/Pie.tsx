@@ -10,9 +10,9 @@ import { BEARINGS } from "../render/kind";
 import type { FileKind } from "../render/kind";
 import { shareLabel as pieShareLabel, wedgesOf } from "../state/derived-pies";
 import type { DerivedPie } from "../state/derived-pies";
-
-const CENTER = 100;
-const RADIUS = 92;
+// The angle arithmetic lives in render/wedge.ts so it can be tested without
+// a renderer (wedge.test.ts); this file only chooses tones and elements.
+import { CENTER, RADIUS, wedgePath } from "../render/wedge";
 
 /** The slice cut distance, in SVG user units (viewBox 0 0 200 200) — spec
  *  section 5's "12px cut" is 12 units in THIS coordinate space, not 12 CSS
@@ -20,44 +20,21 @@ const RADIUS = 92;
  *  renders at 48px (band), 120px (short plate) or 200px (plate). */
 const CUT_OFFSET = 12;
 
-// Tones are steps of ink between --sky-ink and --sky, not hues — the spec's
-// exact seven-step ramp, one slot per BEARINGS kind. Day and dusk are the
-// same steps reversed. A CSS custom property can't be sampled into an SVG
-// `fill` attribute without a JS round trip, so this reads `<html
-// data-theme>` directly — useTheme()'s own doc comment names that attribute
-// as the thing a consumer may read instead of re-subscribing to the theme.
-const TONE_RAMP_DAY = ["#1f2f4d", "#3a4f75", "#5b729a", "#7f95b8", "#a6b8d1", "#c2d0e2", "#dbe4ef"];
-const TONE_RAMP_DUSK = [...TONE_RAMP_DAY].reverse();
+// The one warm stroke in the product (DESIGN.md, "Sky band"). Wedge tones
+// themselves are CSS custom properties (`--sky-tone-1` … `--sky-tone-7`,
+// declared per theme in styles.css) rather than hex ramps in JS: a custom
+// property resolves inside an SVG `fill` exactly as it does in `stroke`,
+// which the wedge separators below already rely on. So the day/dusk swap is
+// a pure CSS re-resolve with no theme subscription and no MutationObserver.
 const CRUST = "#c89a5c";
-
-function useDomTheme(): "dark" | "light" {
-  const [theme, setTheme] = React.useState<"dark" | "light">(() =>
-    typeof document !== "undefined" && document.documentElement.dataset.theme === "light"
-      ? "light"
-      : "dark",
-  );
-  React.useEffect(() => {
-    const el = document.documentElement;
-    const observer = new MutationObserver(() => {
-      setTheme(el.dataset.theme === "light" ? "light" : "dark");
-    });
-    observer.observe(el, { attributes: true, attributeFilter: ["data-theme"] });
-    return () => observer.disconnect();
-  }, []);
-  return theme;
-}
-
-/** Point on the disc at `angleDeg` clockwise from north (SVG's 0° is east,
- *  so this rotates the usual parametrization by -90°). */
-function polar(angleDeg: number): [number, number] {
-  const rad = (angleDeg * Math.PI) / 180;
-  return [CENTER + RADIUS * Math.sin(rad), CENTER - RADIUS * Math.cos(rad)];
-}
 
 export interface PieProps {
   pie: DerivedPie;
   /** This pie's plate is the one currently open — dims every OTHER pie in
-   *  the same band to 60% (spec section 4). */
+   *  the same band to 60% (spec section 4), and hides THIS tile's own disc
+   *  (`.sky-pies .sky-pie.selected .sky-pie-disc`, styles.css) for as long as
+   *  the plate stays open, so the plate's portrait is the only copy of the
+   *  disc on screen while it scales out of this slot. */
   selected?: boolean;
   /** Required when `interactive` (the default); unused for a portrait. */
   onOpen?: (e: React.MouseEvent<HTMLButtonElement>) => void;
@@ -121,8 +98,6 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
   }: PieProps,
   ref,
 ) {
-  const theme = useDomTheme();
-  const ramp = theme === "light" ? TONE_RAMP_DAY : TONE_RAMP_DUSK;
   const wedges = React.useMemo(() => wedgesOf(pie.files), [pie.files]);
   const label = pieShareLabel(pie.files);
 
@@ -130,20 +105,9 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
   const paths = wedges.map((w) => {
     const sweep = w.share * 360;
     const bisector = angle + sweep / 2;
-    const fill = ramp[BEARINGS.indexOf(w.kind)] ?? CRUST;
-    let d: string;
-    if (wedges.length === 1) {
-      // One kind = a full disc. An SVG arc of exactly 360° degenerates to
-      // nothing, so the full circle is drawn as two 180° arcs instead.
-      const [nx, ny] = polar(0);
-      const [sx, sy] = polar(180);
-      d = `M ${nx},${ny} A ${RADIUS},${RADIUS} 0 1 1 ${sx},${sy} A ${RADIUS},${RADIUS} 0 1 1 ${nx},${ny} Z`;
-    } else {
-      const [x1, y1] = polar(angle);
-      const [x2, y2] = polar(angle + sweep);
-      const largeArc = sweep > 180 ? 1 : 0;
-      d = `M ${CENTER},${CENTER} L ${x1},${y1} A ${RADIUS},${RADIUS} 0 ${largeArc} 1 ${x2},${y2} Z`;
-    }
+    const toneIndex = BEARINGS.indexOf(w.kind);
+    // One kind = a full disc, drawn as two 180° arcs (see wedgePath).
+    const d = wedgePath(angle, sweep, wedges.length === 1);
     angle += sweep;
 
     const cut = cutKind === w.kind;
@@ -159,7 +123,10 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
       <path
         key={w.kind}
         d={d}
-        fill={fill}
+        // The crust is a STROKE and never a fill (DESIGN.md, "Sky band"), so
+        // a kind missing from BEARINGS falls back to the last tone instead.
+        // The branch is unreachable today — every FileKind is a bearing.
+        fill={toneIndex >= 0 ? `var(--sky-tone-${toneIndex + 1})` : "var(--sky-tone-7)"}
         stroke={cut ? "var(--sky-focus)" : "var(--sky)"}
         strokeWidth={cut ? 2 : 1}
         vectorEffect="non-scaling-stroke"
