@@ -1,8 +1,11 @@
 // The iOS half of the harness. macOS has `app.sock`; the simulator has
 // none (`app/src/ipc_server.rs` is `cfg(target_os = "macos")`), so the app
 // listens on a loopback TCP port instead when `SKYPIE_E2E_PORT` is set
-// (`app/src/e2e.rs::start_tcp_if_configured`) — same JSON-line protocol,
-// narrowed to `E2eEval` and `Status`. `xcrun simctl launch` forwards env
+// (`app/src/e2e.rs::start_tcp_if_configured`) — same JSON-line protocol and
+// the same dispatcher, but the listener is handed `Transport::E2eOnly`
+// (`app/src/ipc_server.rs`), so this unauthenticated loopback port answers
+// the harness and feedback verbs and REFUSES every sharing and pairing verb
+// the 0600 unix socket serves. `xcrun simctl launch` forwards env
 // vars prefixed `SIMCTL_CHILD_` into the launched process, which is how the
 // port reaches the app without a config file.
 import { execFileSync, execFile } from "node:child_process";
@@ -21,31 +24,46 @@ const execFileAsync = promisify(execFile);
 const SIMULATOR_NAME = process.env.SKYPIE_E2E_SIM ?? "iPhone 17 Pro";
 
 /** The last known-good udid on the machine this harness was written on.
- *  Only reached when the lookup below finds no device by name — a hardcoded
- *  udid that no longer exists is a worse failure than one that never did. */
+ *  Reached only when the listing itself failed (no Xcode, unreadable
+ *  output) — a listing that simply lacks the device is a naming problem,
+ *  and guessing a udid there would run the tests somewhere unintended. */
 const FALLBACK_UDID = "AF4CB22E-8E9F-4E83-ADFC-0FFF70B657FE";
 
 /** Resolve `SIMULATOR_NAME` to a udid, so the harness follows a machine's
- *  own simulator set instead of a literal that only ever matched one Mac. */
-function resolveSimulatorUdid(): string {
+ *  own simulator set instead of a literal that only ever matched one Mac.
+ *  Memoised and called on demand, not at import: importing this module (as
+ *  `tsc` and any tooling does) must not shell out to `xcrun`. */
+let cachedUdid: string | null = null;
+
+export function simulatorUdid(): string {
+  if (cachedUdid !== null) return cachedUdid;
+  let names: string[];
   try {
     const raw = execFileSync("xcrun", ["simctl", "list", "devices", "-j"], { encoding: "utf8" });
     const parsed = JSON.parse(raw) as {
       devices: Record<string, { udid: string; name: string; isAvailable?: boolean }[]>;
     };
-    for (const runtime of Object.values(parsed.devices)) {
-      for (const device of runtime) {
-        if (device.name === SIMULATOR_NAME && device.isAvailable !== false) return device.udid;
-      }
+    const available = Object.values(parsed.devices)
+      .flat()
+      .filter((d) => d.isAvailable !== false);
+    const hit = available.find((d) => d.name === SIMULATOR_NAME);
+    if (hit) {
+      cachedUdid = hit.udid;
+      return cachedUdid;
     }
+    names = available.map((d) => d.name);
   } catch {
-    // No Xcode, or an unreadable listing — fall through to the literal.
+    // No Xcode, or an unreadable listing — nothing was learned about this
+    // machine's simulators, so the literal is as good a guess as exists.
+    console.warn(`cannot list simulators; using ${FALLBACK_UDID}`);
+    cachedUdid = FALLBACK_UDID;
+    return cachedUdid;
   }
-  console.warn(`no available simulator named ${SIMULATOR_NAME}; using ${FALLBACK_UDID}`);
-  return FALLBACK_UDID;
+  throw new Error(
+    `no available simulator named "${SIMULATOR_NAME}". Available: ${names.join(", ") || "(none)"}. ` +
+      "Set SKYPIE_E2E_SIM to one of these.",
+  );
 }
-
-export const SIMULATOR_UDID = resolveSimulatorUdid();
 export const BUNDLE_ID = "ai.skypie.SkyPie";
 
 /** `core` (skypie-desktop's submodule) → the sibling `skypie-ios` repo.
@@ -106,13 +124,18 @@ export async function launchIos(opts: LaunchIosOptions): Promise<LaunchedIosApp>
     throw new Error(`built, but the bundle is not at ${IOS_APP_PATH}`);
   }
 
-  await ensureBooted();
-  run("xcrun", ["simctl", "install", "booted", IOS_APP_PATH]);
+  // One device for every step below. `booted` is not a device: with two
+  // simulators up, simctl resolves it to whichever one it likes, so an
+  // install, a launch and a screenshot could each land on a different
+  // device.
+  const udid = simulatorUdid();
+  await ensureBooted(udid);
+  run("xcrun", ["simctl", "install", udid, IOS_APP_PATH]);
 
-  console.log(`$ xcrun simctl launch --terminate-running-process booted ${BUNDLE_ID} (port ${opts.port})`);
+  console.log(`$ xcrun simctl launch --terminate-running-process ${udid} ${BUNDLE_ID} (port ${opts.port})`);
   await execFileAsync(
     "xcrun",
-    ["simctl", "launch", "--terminate-running-process", "booted", BUNDLE_ID],
+    ["simctl", "launch", "--terminate-running-process", udid, BUNDLE_ID],
     { env: { ...process.env, SIMCTL_CHILD_SKYPIE_E2E_PORT: String(opts.port) } },
   );
 
@@ -127,9 +150,18 @@ export async function launchIos(opts: LaunchIosOptions): Promise<LaunchedIosApp>
     connect: () => net.createConnection({ host: "127.0.0.1", port: opts.port }),
     quit: async () => {
       try {
-        execFileSync("xcrun", ["simctl", "terminate", "booted", BUNDLE_ID], { stdio: "ignore" });
-      } catch {
-        // Already not running — nothing to terminate.
+        execFileSync("xcrun", ["simctl", "terminate", udid, BUNDLE_ID], {
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+      } catch (e) {
+        // "found nothing to terminate" is the app already being gone, which
+        // is what `quit` wanted. Anything else — a device that vanished, a
+        // simctl fault — would otherwise leave the app running and the next
+        // run guessing.
+        const detail = e instanceof Error && "stderr" in e ? String(e.stderr) : String(e);
+        if (!detail.includes("found nothing to terminate")) {
+          console.warn(`simctl terminate failed: ${detail.trim()}`);
+        }
       }
     },
     screenshot,
@@ -137,9 +169,9 @@ export async function launchIos(opts: LaunchIosOptions): Promise<LaunchedIosApp>
   return app;
 }
 
-async function ensureBooted(): Promise<void> {
+async function ensureBooted(udid: string): Promise<void> {
   try {
-    execFileSync("xcrun", ["simctl", "boot", SIMULATOR_UDID], { stdio: "pipe" });
+    execFileSync("xcrun", ["simctl", "boot", udid], { stdio: "pipe" });
   } catch (e) {
     // "Unable to boot device in current state: Booted" is the expected
     // outcome most of the time on a dev machine — anything else is real.
@@ -149,7 +181,7 @@ async function ensureBooted(): Promise<void> {
     // only add seconds of polling to a device that is ready right now.
     return;
   }
-  execFileSync("xcrun", ["simctl", "bootstatus", SIMULATOR_UDID], { stdio: "inherit" });
+  execFileSync("xcrun", ["simctl", "bootstatus", udid], { stdio: "inherit" });
 }
 
 const OUT_DIR = path.resolve(CORE_DIR, "ui", "e2e", "out");
@@ -157,6 +189,6 @@ const OUT_DIR = path.resolve(CORE_DIR, "ui", "e2e", "out");
 async function screenshot(name: string): Promise<string> {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const dest = path.join(OUT_DIR, `${name}.png`);
-  run("xcrun", ["simctl", "io", SIMULATOR_UDID, "screenshot", dest]);
+  run("xcrun", ["simctl", "io", simulatorUdid(), "screenshot", dest]);
   return dest;
 }

@@ -287,10 +287,12 @@ pub fn dispatch_deep_link(
     }))
 }
 
-/// Handle a deep-link URL: parse it and (when the `e2e-hooks` feature is
-/// enabled AND `SKYPIE_E2E_ECHO_LOG` is set) write a content snippet to
-/// that log file. The feature gate ensures production builds cannot use
-/// the env var as a write-anywhere primitive (B3 / R6-001 fix).
+/// Handle a deep-link URL: parse it and (in a debug build OR one with the
+/// `e2e-hooks` feature, AND with `SKYPIE_E2E_ECHO_LOG` set) write a content
+/// snippet to that log file. The gate is `any(feature = "e2e-hooks",
+/// debug_assertions)` — a debug build echoes without the feature — which is
+/// still enough that a RELEASE build without the feature cannot use the env
+/// var as a write-anywhere primitive (B3 / R6-001 fix).
 pub fn handle_deep_link(url: &str) {
     let intent = match deeplink::parse(url) {
         Ok(i) => i,

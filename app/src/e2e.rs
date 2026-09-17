@@ -17,8 +17,9 @@
 // the app: `app.emit` + the frontend's `listen`, the same pattern
 // `skypie://tree-changed` / `skypie://state-updated` / `skypie://remote-event`
 // already rely on. `useE2eBridge` (ui/src/hooks/useE2eBridge.ts) is the
-// frontend half — it runs `js` as an async expression and reports the result
-// back through the `e2e_report` command below. `E2eState` is the rendezvous
+// frontend half (`ui/src/hooks/useE2eBridge.ts`) — it runs `js` as an async
+// expression and reports the result back through the `e2e_report` command
+// below. `E2eState` is the rendezvous
 // point in between: `eval_in_webview` parks a oneshot sender under a fresh
 // id before it emits, and `e2e_report` looks the id up and fires it.
 //
@@ -61,7 +62,7 @@ struct E2eEvalEvent<'a> {
 
 /// What one evaluation settles to: the JS value, or the message a throwing
 /// expression (or a timeout) produced.
-type EvalResult = Result<serde_json::Value, String>;
+pub type EvalResult = Result<serde_json::Value, String>;
 
 /// Rendezvous between `eval_in_webview` (parks a sender, awaits it) and the
 /// `e2e_report` command (looks the id up, fires it). One instance, `managed`
@@ -77,6 +78,9 @@ pub struct E2eState {
     /// this instead of emitting blindly turns that race into a short wait.
     /// `Default` is exactly right here: a fresh `watch::Sender<bool>` holds
     /// `false`, which is the "the page has not announced itself" state.
+    /// Once true it is never reset, so a page reload loses whatever
+    /// evaluation raced it: that request is emitted at a page with no
+    /// listener yet and surfaces as `EVAL_TIMEOUT`, which `waitFor` retries.
     ready: tokio::sync::watch::Sender<bool>,
 }
 
@@ -126,7 +130,10 @@ pub async fn eval_in_webview(app: &tauri::AppHandle, js: String) -> EvalResult {
         // The sender was dropped without sending — cannot happen on the path
         // above (e2e_report always sends before dropping it), but a future
         // change must not turn that into a hang.
-        Ok(Err(_)) => Err("the webview closed the channel without a result".to_string()),
+        Ok(Err(_)) => {
+            state.pending().remove(&id);
+            Err("the webview closed the channel without a result".to_string())
+        }
         Err(_) => {
             state.pending().remove(&id);
             Err(format!(
@@ -143,7 +150,21 @@ pub async fn eval_in_webview(app: &tauri::AppHandle, js: String) -> EvalResult {
 /// doc comment for why the frontend cannot fake a "yes" here.
 #[tauri::command]
 pub(crate) fn e2e_ready(state: tauri::State<E2eState>) {
-    let _ = state.ready.send(true);
+    // `send` drops the value when no receiver is subscribed, and a receiver
+    // exists only while an evaluation is parked — so between driver calls
+    // the flag would be lost for the life of the process. `send_replace`
+    // stores it either way.
+    state.ready.send_replace(true);
+}
+
+/// What `useE2eBridge` reports back: exactly one of a value or a message,
+/// so the illegal "failed, and here is the value" combination cannot be
+/// spelled on the wire. Tagged by `status`, the same word `Response` uses.
+#[derive(serde::Deserialize)]
+#[serde(tag = "status", rename_all = "lowercase")]
+pub(crate) enum E2eReport {
+    Ok { value: serde_json::Value },
+    Err { message: String },
 }
 
 /// The page's half of the round trip: called once `useE2eBridge`'s async
@@ -151,20 +172,13 @@ pub(crate) fn e2e_ready(state: tauri::State<E2eState>) {
 /// that is a late arrival after `eval_in_webview`'s own timeout already gave
 /// up and removed it, not a bug to surface to the caller.
 #[tauri::command]
-pub(crate) fn e2e_report(state: tauri::State<E2eState>, id: String, ok: bool, value: serde_json::Value) {
+pub(crate) fn e2e_report(state: tauri::State<E2eState>, id: String, report: E2eReport) {
     let Some(tx) = state.pending().remove(&id) else {
         return;
     };
-    let result = if ok {
-        Ok(value)
-    } else {
-        // The catch arm above always sends a string; anything else reaching
-        // here is a future caller of the command, not the script above.
-        let message = match value {
-            serde_json::Value::String(s) => s,
-            other => other.to_string(),
-        };
-        Err(message)
+    let result = match report {
+        E2eReport::Ok { value } => Ok(value),
+        E2eReport::Err { message } => Err(message),
     };
     // The receiver is gone when `eval_in_webview` already timed out; the
     // report just has nowhere left to land.
@@ -176,9 +190,11 @@ pub(crate) fn e2e_report(state: tauri::State<E2eState>, id: String, ok: bool, va
 // server, which never runs on a phone). iOS has no such neighbour process,
 // so an E2E driver instead dials a plain TCP port on loopback. Same
 // JSON-line framing, same `Request`/`Response` types, and the SAME
-// dispatcher: `ipc_server::serve_connections` takes any listener, so this
-// transport answers every verb the socket does, with no second copy of the
-// accept/read/dispatch/answer body. Nothing is target-gated here on
+// dispatcher: `ipc_server::serve_connections` takes any listener, so there
+// is no second copy of the accept/read/dispatch/answer body. It is handed
+// `Transport::E2eOnly`, which is what keeps this unauthenticated loopback
+// port from serving the sharing and pairing verbs the 0600 unix socket
+// serves. Nothing is target-gated here on
 // purpose: a desktop debug build can use the same path in a pinch, and the
 // one thing that decides whether it runs at all is the env var below.
 
@@ -201,7 +217,12 @@ pub fn start_tcp_if_configured(app: tauri::AppHandle) {
         match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
             Ok(listener) => {
                 eprintln!("skypie: e2e: listening at 127.0.0.1:{port}");
-                crate::ipc_server::serve_connections(listener, "e2e", app).await;
+                crate::ipc_server::serve_connections(
+                    listener,
+                    crate::ipc_server::Transport::E2eOnly,
+                    app,
+                )
+                .await;
             }
             Err(e) => eprintln!("skypie: e2e: cannot bind 127.0.0.1:{port}: {e}"),
         }

@@ -17,13 +17,17 @@ command.
 
 | Platform | Transport | Started by |
 |---|---|---|
-| macOS | `<state dir>/app.sock`, the socket `skypie-mcp` also uses | always, in every build |
+| macOS | `<state dir>/app.sock`, the socket `skypie-mcp` also uses | always, in every build — but `e2e_eval` itself exists only in a debug or `e2e-hooks` build |
 | iOS simulator | `127.0.0.1:<port>` TCP | only when `SKYPIE_E2E_PORT` is set; the simulator has no unix socket peer |
 
 Both transports run the same connection handler and the same dispatcher
-(`app/src/ipc_server.rs`), so a verb answers identically on either. The MCP
-verbs are macOS-only, because the code behind them is; on iOS they answer an
-error instead.
+(`app/src/ipc_server.rs`), so a verb answers identically on either — with one
+deliberate difference. Each listener declares a capability: the unix socket
+is `Transport::Trusted` (0600 in the state directory, so whoever reaches it
+is already this user), the loopback TCP port is `Transport::E2eOnly` and the
+dispatcher refuses the sharing and pairing verbs on it, because any process
+on the machine can dial a loopback port. The MCP verbs are macOS-only on top
+of that, because the code behind them is; on iOS they answer an error.
 
 ## What is gated, and how
 
@@ -57,8 +61,19 @@ git remote) before it builds, so commit first. It targets the simulator named
 `iPhone 17 Pro`; `SKYPIE_E2E_SIM` names another, and `SKYPIE_IOS_SHELL` points
 at an `skypie-ios` checkout kept somewhere other than beside this one.
 
-Scenarios live beside this file (`*.e2e.ts`, `smoke.ts`, `ios-smoke.ts`); the
-helpers in `lib/` (`launchDesktop`, `launchIos`, `evalIn`, `keys`, `click`,
+Scenarios live beside this file (`smoke.ts`, `ios-smoke.ts`, and one
+`<milestone>.e2e.ts` per feature milestone); each is an explicit `pnpm`
+script in `ui/package.json`, there is no glob — a file nothing references
+runs nowhere. The helpers in `lib/` (`launchDesktop`, `launchIos`, `evalIn`, `keys`, `click`,
 `text`, `waitFor`, `quit`, `makeFixtureWorkspace`, `setWorkspaceRoot`,
 `cleanupFixtureWorkspace`, and the iOS handle's `screenshot`) are the whole
 API. `out/` holds screenshots and is not tracked.
+
+## Verifying a change to the harness
+
+`scripts/verify.sh` (in the repo root) runs everything that has to pass. One
+line there cannot be replaced by `cargo test --workspace`: `cargo test -p
+skypie-ipc --release` is the only build with `debug_assertions` off, and so
+the only one where the "a release build cannot even parse an `e2e_eval` line"
+test compiles at all. `pnpm -C ui e2e:ios-smoke` builds against HEAD, so run
+it after committing.

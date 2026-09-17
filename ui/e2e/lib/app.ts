@@ -83,7 +83,7 @@ export async function launchDesktop(opts: LaunchDesktopOptions): Promise<Launche
     // The build failed, but the server may already be up: stop it rather
     // than leave an orphan behind (and never leave the promise unhandled).
     const stray = await devServerStarting.catch(() => null);
-    if (stray) await quitProcess(stray);
+    if (stray) await quitProcess(stray, { group: true });
     throw e;
   }
   const devServer = await devServerStarting;
@@ -106,7 +106,28 @@ export async function launchDesktop(opts: LaunchDesktopOptions): Promise<Launche
     console.log(`[skypie] exited (code=${code}, signal=${signal})`);
   });
 
-  await waitUntilConnectable(() => net.createConnection(sockPath), `app.sock at ${sockPath}`, 30_000);
+  // Two things can go wrong from here, and both used to be silent.
+  // (1) The app exits at start (a missing dylib, a panic in `setup`): the
+  //     socket never appears and the only report would be a 30 s timeout,
+  //     so the child's own exit races the wait and wins with its code.
+  // (2) Either way, `proc` and a dev server THIS call started would be left
+  //     running — and the next run would "reuse" that orphan dev server and
+  //     test against it. So the failure path stops both before it rethrows.
+  const death = exited(proc);
+  // The loser of the race stays pending; a rejection nobody is awaiting is
+  // an unhandled rejection in node, so it is claimed here once.
+  void death.catch(() => undefined);
+  try {
+    await Promise.race([
+      waitUntilConnectable(() => net.createConnection(sockPath), `app.sock at ${sockPath}`, 30_000),
+      death,
+    ]);
+  } catch (e) {
+    await quitProcess(proc);
+    if (devServer) await quitProcess(devServer, { group: true });
+    throw e;
+  }
+  death.settle();
 
   const app: LaunchedApp = {
     proc,
@@ -114,7 +135,7 @@ export async function launchDesktop(opts: LaunchDesktopOptions): Promise<Launche
     connect: () => net.createConnection(sockPath),
     quit: async () => {
       await quitProcess(proc);
-      if (devServer) await quitProcess(devServer);
+      if (devServer) await quitProcess(devServer, { group: true });
     },
   };
   return app;
@@ -156,18 +177,48 @@ async function isUp(url: string): Promise<boolean> {
   }
 }
 
+/** Rejects when `proc` exits, and never resolves. Raced against a wait, so
+ *  a process that dies at start is reported as what it is rather than as
+ *  whatever the wait was going to time out on. */
+function exited(proc: ChildProcess): Promise<never> & { settle(): void } {
+  let launched = false;
+  const p = new Promise<never>((_resolve, reject) => {
+    proc.once("exit", (code, signal) => {
+      // A normal `quit` later in the run is not a launch failure.
+      if (launched) return;
+      reject(new Error(`the app exited before it bound its socket (code=${code}, signal=${signal})`));
+    });
+  }) as Promise<never> & { settle(): void };
+  p.settle = () => {
+    launched = true;
+  };
+  return p;
+}
+
 /** Terminate a child process and wait for it to exit (SIGKILL after a
- *  grace period, so a hung process never leaves a script hanging). */
-async function quitProcess(proc: ChildProcess): Promise<void> {
+ *  grace period, so a hung process never leaves a script hanging).
+ *
+ *  `group` signals the whole process group instead of the process. Only
+ *  the dev server wants it: it is spawned `detached`, so it leads its own
+ *  group and vite dies with pnpm. A plain child does NOT lead a group — it
+ *  sits in the runner's — so signalling `-pid` there would either throw
+ *  `ESRCH` or, worse, SIGKILL an unrelated group that happens to carry
+ *  that id. */
+async function quitProcess(
+  proc: ChildProcess,
+  opts: { group?: boolean } = {},
+): Promise<void> {
   if (proc.exitCode !== null || proc.signalCode !== null) return;
-  // A detached child (the dev server) is its own process group: signal the
-  // group so vite dies with pnpm. A plain child has pid === pgid anyway.
   const signal = (sig: NodeJS.Signals) => {
-    try {
-      process.kill(-proc.pid!, sig);
-    } catch {
-      proc.kill(sig);
+    if (opts.group && proc.pid !== undefined) {
+      try {
+        process.kill(-proc.pid, sig);
+        return;
+      } catch {
+        // The group is already gone; fall through to the process itself.
+      }
     }
+    proc.kill(sig);
   };
   signal("SIGTERM");
   await new Promise<void>((resolve) => {
@@ -201,6 +252,12 @@ export async function evalIn(app: AppHandle, js: string): Promise<unknown> {
  * `src/keyboard/shortcuts.ts` bindings use, parsed with its own
  * `parseCombo` so this can never drift from what the app's registry
  * actually matches on (`e.code`, not `e.key`).
+ *
+ * `key` below is filled with the CODE, since the combo syntax carries no
+ * key value. So a component handler that reads `e.key` matches only where
+ * the two spellings coincide; a letter combo (`mod+p` → code `KeyP`) does
+ * not reach one. The app's own registry reads `e.code`, which is why this
+ * is enough for it.
  */
 export async function keys(app: AppHandle, combo: string): Promise<void> {
   const p = parseCombo(combo);
@@ -220,8 +277,10 @@ export async function keys(app: AppHandle, combo: string): Promise<void> {
 }
 
 /** Click the first element matching `selector`, via the real
- *  `HTMLElement.click()` — a trusted click, so React's delegated handlers
- *  fire exactly as they would for a person. Throws if nothing matches. */
+ *  `HTMLElement.click()`. The event bubbles, so React's delegated handlers
+ *  run exactly as they would for a person — but it carries
+ *  `isTrusted === false`, so a handler that checks that flag is NOT
+ *  exercised here. Throws if nothing matches. */
 export async function click(app: AppHandle, selector: string): Promise<void> {
   const js = `(function(){
     var el = document.querySelector(${JSON.stringify(selector)});

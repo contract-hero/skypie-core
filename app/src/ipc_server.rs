@@ -1,15 +1,23 @@
-// The local socket `skypie-mcp` drives this app through.
+// The local socket `skypie-mcp` drives this app through, and the dispatcher
+// every transport shares.
 //
 // The app is the only iroh node on the machine. A Claude Code session that
 // wants a share link, a beam link or a pairing asks THIS process over
 // `<state_dir>/app.sock` — one JSON line in, one JSON line out, per
-// connection (`skypie_ipc`). Every request maps onto the same `pub(crate)`
-// function the matching `#[tauri::command]` wraps, so there is exactly one
-// implementation of each operation.
+// connection (`skypie_ipc`). Nearly every request maps onto the same
+// `pub(crate)` function the matching `#[tauri::command]` wraps, so there is
+// exactly one implementation of each operation; `E2eEval` is the exception,
+// since it has no UI counterpart to wrap (`e2e.rs`).
+//
+// `skypie-mcp` is also not the only caller any more: the E2E harness's
+// loopback TCP listener (`e2e.rs`) serves the same dispatcher on iOS, which
+// has no unix socket at all.
 //
 // Trust: the socket is 0600 inside `~/Library/Application Support/SkyPie`,
 // so it is reachable by this user's processes and nobody else's — the same
-// boundary `identity.key` already draws.
+// boundary `identity.key` already draws. The loopback port draws no such
+// boundary, which is why it is handed `Transport::E2eOnly` and answers only
+// the verbs a test driver needs.
 
 use std::time::Duration;
 
@@ -32,9 +40,11 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ── The unix socket (macOS only) ────────────────────────────────────────────
 // The MCP server runs beside the desktop app; the phone has no such
-// neighbour, so only the listener below is target-gated. Everything from
-// `Listener` down serves every target, because the E2E harness's loopback
-// TCP listener (`e2e.rs`) reuses it verbatim.
+// neighbour, so every item down to `claim_socket` — the `OWNS_SOCKET` flag,
+// `path`, `start`, `cleanup`, `serve` and `claim_socket` itself — is
+// target-gated, as is the `Listener` impl for `UnixListener` further below.
+// Everything else from `Transport` down serves every target, because the
+// E2E harness's loopback TCP listener (`e2e.rs`) reuses it verbatim.
 
 /// Set once THIS process bound the socket. A second instance over the same
 /// state directory steps aside in `claim_socket`, and must not unlink the
@@ -74,7 +84,7 @@ async fn serve(app: tauri::AppHandle) -> Result<(), String> {
     let path = path();
     let listener = claim_socket(&path).await?;
     eprintln!("skypie: ipc: listening at {}", path.display());
-    serve_connections(listener, "ipc", app).await;
+    serve_connections(listener, Transport::Trusted { label: "ipc" }, app).await;
     Ok(())
 }
 
@@ -155,27 +165,76 @@ impl Listener for tokio::net::TcpListener {
     }
 }
 
+/// What a transport is allowed to ask for — a capability, not a label.
+///
+/// The unix socket is 0600 inside the state directory, so anything that
+/// reaches it is already this user: it may drive every verb. The E2E
+/// harness's loopback TCP port has no such boundary (any process on the
+/// machine can dial it), so it carries `E2eOnly` and the sharing and
+/// pairing verbs are refused on it. Making this an enum rather than a
+/// string means a new transport has to state which of the two it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Transport {
+    /// Only the unix socket constructs this, and that listener is macOS-only
+    /// — on iOS the variant is still part of the shared dispatcher's
+    /// vocabulary, just never built.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Trusted { label: &'static str },
+    E2eOnly,
+}
+
+impl Transport {
+    /// How this transport names itself in the log lines.
+    fn label(self) -> &'static str {
+        match self {
+            Transport::Trusted { label } => label,
+            Transport::E2eOnly => "e2e",
+        }
+    }
+}
+
+/// The verbs that mint links, move files or change who this device trusts.
+/// Only a trusted transport may drive them.
+fn is_trusted_only(req: &Request) -> bool {
+    matches!(
+        req,
+        Request::ShareLink { .. }
+            | Request::BeamArtifact { .. }
+            | Request::StopBeam { .. }
+            | Request::ListDevices { .. }
+            | Request::PairDevice
+            | Request::PairStatus
+            | Request::ConfirmPairing { .. }
+            | Request::ForgetDevice { .. }
+    )
+}
+
 /// Serve `listener` for the life of the app: one request in, one response
-/// out, per connection. `label` names the transport in the log lines, the
-/// only thing that differs between the unix socket above and the E2E
-/// harness's loopback TCP listener (`e2e.rs`). Never returns.
+/// out, per connection. `transport` says what the connections arriving here
+/// may ask for, and names them in the log lines. Never returns.
 pub(crate) async fn serve_connections<L: Listener>(
     listener: L,
-    label: &'static str,
+    transport: Transport,
     app: tauri::AppHandle,
 ) {
+    let label = transport.label();
     loop {
         let stream = match listener.accept().await {
             Ok(stream) => stream,
             Err(e) => {
                 eprintln!("skypie: {label}: accept failed: {e}");
+                // A transient fault (a client gone between SYN and accept)
+                // retries immediately enough after this pause; a persistent
+                // one (EMFILE, a broken listener) would otherwise spin the
+                // loop hot and flood stderr for the life of the app.
+                tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
         };
         let app = app.clone();
         tokio::spawn(async move {
             let mut stream = stream;
-            let response = handle_conn(&mut stream, |req| dispatch(app, req)).await;
+            let response = handle_conn(&mut stream, |req| dispatch(app, transport, req)).await;
             // Bounded like the read: a client that never reads its reply
             // must not pin this task once the send buffer fills.
             match tokio::time::timeout(REQUEST_TIMEOUT, write_line(&mut stream, &response)).await {
@@ -215,13 +274,21 @@ where
 /// One request onto the operation the app already implements.
 ///
 /// Every transport shares this one dispatcher, so a verb answers the same
-/// way whichever socket carried it. The MCP verbs below reach code that
-/// only exists on macOS (`remote.rs`'s own gates); on any other target they
-/// are replaced by the single fallthrough arm at the end, which answers an
-/// error instead of silently behaving differently.
-async fn dispatch(app: tauri::AppHandle, req: Request) -> Result<Reply, String> {
+/// way whichever socket carried it — except for what `transport` is allowed
+/// to ask for, which is checked once, up front. The MCP verbs below reach
+/// code that only exists on macOS (`remote.rs`'s own gates); on any other
+/// target they are replaced by the single fallthrough arm at the end, which
+/// answers an error instead of silently behaving differently.
+async fn dispatch(
+    app: tauri::AppHandle,
+    transport: Transport,
+    req: Request,
+) -> Result<Reply, String> {
     #[cfg(target_os = "macos")]
     use crate::remote;
+    if transport == Transport::E2eOnly && is_trusted_only(&req) {
+        return Err(e2e_only_refusal(&req));
+    }
     match req {
         #[cfg(target_os = "macos")]
         Request::ShareLink { path } => {
@@ -334,8 +401,22 @@ async fn dispatch(app: tauri::AppHandle, req: Request) -> Result<Reply, String> 
         // compile error here, because the E2E harness's TCP listener serves
         // this same dispatcher on iOS.
         #[cfg(not(target_os = "macos"))]
-        _ => Err("this build serves no remote-sharing verbs".to_string()),
+        other => Err(no_remote_sharing(&other)),
     }
+}
+
+/// Why an `E2eOnly` transport refused a verb. Names the verb: `Request`
+/// derives `Debug`, and a refusal that does not say what it refused reads
+/// as a transport fault to whoever hits it.
+fn e2e_only_refusal(req: &Request) -> String {
+    format!("this transport serves only e2e verbs (got {req:?})")
+}
+
+/// Why a non-macOS build refused a verb. Also names it, so a future variant
+/// a macOS-first author forgets to serve on iOS is not silently absorbed.
+#[cfg(not(target_os = "macos"))]
+fn no_remote_sharing(req: &Request) -> String {
+    format!("this build serves no remote-sharing verbs (got {req:?})")
 }
 
 // Unix-socket specific: `claim_socket` and its stale-file handling have no
@@ -418,5 +499,89 @@ mod tests {
             Response::Err { message } => assert!(message.contains("malformed"), "{message}"),
             other => panic!("expected an error reply, got {other:?}"),
         }
+    }
+}
+
+// Transport-shaped tests: no `AppHandle`, no unix socket, so they run on
+// every target the app builds for.
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    /// The macOS suite proves the framing over a `UnixStream`; iOS carries
+    /// the very same `handle_conn` over TCP and nothing exercised that.
+    #[tokio::test]
+    async fn one_request_is_answered_over_a_tcp_pair() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client = tokio::spawn(async move {
+            let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+            write_line(&mut c, &Request::Status).await.unwrap();
+            let mut r = BufReader::new(c);
+            read_line::<_, Response>(&mut r).await.unwrap()
+        });
+        let mut server_side = Listener::accept(&listener).await.unwrap();
+        let response = handle_conn(&mut server_side, |req| async move {
+            assert_eq!(req, Request::Status);
+            Ok(Reply::Forgotten { device: "x".into(), node_id: "y".into() })
+        })
+        .await;
+        write_line(&mut server_side, &response).await.unwrap();
+        assert_eq!(
+            client.await.unwrap(),
+            Response::ok(Reply::Forgotten { device: "x".into(), node_id: "y".into() })
+        );
+
+        // And a garbage line is an error reply here too.
+        let client = tokio::spawn(async move {
+            let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+            c.write_all(b"this is not json\n").await.unwrap();
+            let mut r = BufReader::new(c);
+            read_line::<_, Response>(&mut r).await.unwrap()
+        });
+        let mut server_side = Listener::accept(&listener).await.unwrap();
+        let response = handle_conn(&mut server_side, |_| async {
+            panic!("a malformed request must not be dispatched")
+        })
+        .await;
+        write_line(&mut server_side, &response).await.unwrap();
+        match client.await.unwrap() {
+            Response::Err { message } => assert!(message.contains("malformed"), "{message}"),
+            other => panic!("expected an error reply, got {other:?}"),
+        }
+    }
+
+    /// The capability, not the wiring: every sharing and pairing verb is
+    /// trusted-only, and the harness verbs are not.
+    #[test]
+    fn only_the_sharing_and_pairing_verbs_need_a_trusted_transport() {
+        for req in [
+            Request::ShareLink { path: "/tmp/a".into() },
+            Request::BeamArtifact { path: "/tmp/a".into(), ttl_hours: None },
+            Request::StopBeam { hash: None },
+            Request::ListDevices { probe: false },
+            Request::PairDevice,
+            Request::PairStatus,
+            Request::ConfirmPairing { accept: true, node_id: None },
+            Request::ForgetDevice { device: "phone".into() },
+        ] {
+            assert!(is_trusted_only(&req), "{req:?}");
+            let message = e2e_only_refusal(&req);
+            assert!(message.starts_with("this transport serves only e2e verbs (got "), "{message}");
+        }
+        for req in [Request::Status, Request::FeedbackIndex] {
+            assert!(!is_trusted_only(&req), "{req:?}");
+        }
+    }
+
+    /// iOS-only text, pinned here so a rewording is a test failure rather
+    /// than a surprise in a simulator log. Does not run on macOS.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_non_macos_fallthrough_names_the_verb_it_refused() {
+        let message = no_remote_sharing(&Request::PairDevice);
+        assert_eq!(message, "this build serves no remote-sharing verbs (got PairDevice)");
     }
 }

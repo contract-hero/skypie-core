@@ -40,17 +40,25 @@ export async function waitUntilConnectable(
 
 function canConnect(connect: () => net.Socket): Promise<boolean> {
   return new Promise((resolve) => {
+    const s = connect();
     let settled = false;
     const done = (ok: boolean) => {
       if (settled) return;
       settled = true;
+      // One place closes the socket, whichever way this attempt settled —
+      // a poll loop that leaks one socket per attempt runs out of
+      // descriptors long before its own deadline. A connected probe is
+      // ended politely (the app is mid-reply on it and a reset shows up in
+      // its log); an unanswered one is torn down.
+      if (ok) s.end();
+      else s.destroy();
       resolve(ok);
     };
-    const s = connect();
-    s.once("connect", () => {
-      s.end();
-      done(true);
-    });
+    // A SYN nothing answers (a port a firewall drops, a simulator still
+    // booting) would otherwise hold this socket for the OS default, once
+    // per poll, for the whole wait.
+    s.setTimeout(1_000, () => done(false));
+    s.once("connect", () => done(true));
     s.once("error", () => done(false));
   });
 }

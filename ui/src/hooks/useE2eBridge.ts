@@ -56,13 +56,27 @@ function compile(js: string): () => Promise<unknown> {
   return run;
 }
 
+/** Report one outcome. The payload mirrors Rust's `E2eReport` (app/src/e2e.rs):
+ *  tagged by `status`, carrying a value or a message, never both. */
+function report(id: string, report: { status: "ok"; value: unknown } | { status: "err"; message: string }) {
+  return invoke("e2e_report", { id, report });
+}
+
 async function runOne(payload: E2eEvalPayload): Promise<void> {
   const { id, js } = payload;
   try {
     const value = await compile(js)();
-    await invoke("e2e_report", { id, ok: true, value: value === undefined ? null : value });
+    try {
+      await report(id, { status: "ok", value: value === undefined ? null : value });
+    } catch (e) {
+      // The value does not survive the IPC boundary (a DOM node, a BigInt).
+      // Discarding this rejection would leave Rust waiting out its whole
+      // timeout and then blaming the page for being unresponsive, so say
+      // what actually happened instead.
+      await report(id, { status: "err", message: messageOf(e, "the result is not serialisable") });
+    }
   } catch (e) {
-    await invoke("e2e_report", { id, ok: false, value: messageOf(e, "the expression threw") });
+    await report(id, { status: "err", message: messageOf(e, "the expression threw") });
   }
 }
 
@@ -89,9 +103,18 @@ export function useE2eBridge(): boolean {
         await invoke("e2e_ready");
         if (!cancelled) setReady(true);
       })
-      .catch(() => {
-        // No such command — a release build. Undo the listener so the
-        // bridge is not merely idle but genuinely unreachable.
+      .catch((e: unknown) => {
+        // The expected case is "no such command" — a release build, where
+        // this hook is meant to stay quiet. Anything else (a listener that
+        // could not attach, a command that exists and threw) is a real
+        // fault that would otherwise vanish, so it is logged before the
+        // same teardown runs.
+        const message = messageOf(e, "the e2e bridge could not arm");
+        if (!/not found|not allowed|unknown command/i.test(message)) {
+          console.warn(`skypie: e2e bridge: ${message}`);
+        }
+        // Undo the listener so the bridge is not merely idle but genuinely
+        // unreachable.
         unlisten?.();
         unlisten = null;
       });
