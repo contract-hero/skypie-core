@@ -134,6 +134,13 @@ fn reorder_bookmarks(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), St
 // converts a snake_case Rust param name to camelCase for the JS `invoke()`
 // call, and a single word has no case to convert.
 
+/// Broadcast the whole pies list on `skypie://pies-updated`. Every write op
+/// below ends with this call, so the six copies of the emit stay one line
+/// that cannot drift apart (a dropped emit leaves the band stale).
+fn emit_pies(app: &tauri::AppHandle) {
+    let _ = app.emit("skypie://pies-updated", crate::pies::list());
+}
+
 pub(crate) fn list_pies_for(_app: &tauri::AppHandle) -> Vec<crate::pies::Pie> {
     crate::pies::list()
 }
@@ -149,7 +156,7 @@ pub(crate) fn upsert_pie_for(
     name: &str,
 ) -> Result<crate::pies::Pie, String> {
     let pie = crate::pies::upsert(id, name)?;
-    let _ = app.emit("skypie://pies-updated", crate::pies::list());
+    emit_pies(app);
     Ok(pie)
 }
 
@@ -167,7 +174,7 @@ fn upsert_pie(
 
 pub(crate) fn remove_pie_for(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     crate::pies::remove(id)?;
-    let _ = app.emit("skypie://pies-updated", crate::pies::list());
+    emit_pies(app);
     Ok(())
 }
 
@@ -184,7 +191,7 @@ pub(crate) fn add_pie_member_for(
     source: Option<&str>,
 ) -> Result<(), String> {
     crate::pies::add_member(id, std::path::Path::new(path), kind, source)?;
-    let _ = app.emit("skypie://pies-updated", crate::pies::list());
+    emit_pies(app);
     Ok(())
 }
 
@@ -201,7 +208,7 @@ fn add_pie_member(
 
 pub(crate) fn remove_pie_member_for(app: &tauri::AppHandle, id: &str, path: &str) -> Result<(), String> {
     crate::pies::remove_member(id, std::path::Path::new(path))?;
-    let _ = app.emit("skypie://pies-updated", crate::pies::list());
+    emit_pies(app);
     Ok(())
 }
 
@@ -217,7 +224,7 @@ pub(crate) fn relocate_pie_member_for(
     new: &str,
 ) -> Result<(), String> {
     crate::pies::relocate_member(id, std::path::Path::new(old), std::path::Path::new(new))?;
-    let _ = app.emit("skypie://pies-updated", crate::pies::list());
+    emit_pies(app);
     Ok(())
 }
 
@@ -233,7 +240,7 @@ fn relocate_pie_member(
 
 pub(crate) fn touch_pie_seen_for(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     crate::pies::touch_seen(id)?;
-    let _ = app.emit("skypie://pies-updated", crate::pies::list());
+    emit_pies(app);
     Ok(())
 }
 

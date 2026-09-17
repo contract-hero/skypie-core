@@ -83,10 +83,21 @@ export default function Tooltip({ content, children }: TooltipProps): React.Reac
   // `.props` — `cloneElement` below must forward it alongside this
   // component's anchor callback (see `mergeRefs`'s doc comment).
   const child = children as React.ReactElement<AnchorHandlers> & { ref?: React.Ref<HTMLElement> | null };
+  const childRef = child.ref ?? null;
+  const setAnchor = React.useCallback((el: HTMLElement | null) => {
+    anchorRef.current = el;
+  }, []);
+  // Memoized on the CHILD'S OWN ref identity: a fresh merged callback ref
+  // every render makes React detach (call with null) and re-attach the
+  // anchor on every single render, which for a band tile ran on every
+  // recents/bookmarks tick.
+  const mergedRef = React.useMemo(
+    () => mergeRefs<HTMLElement>(setAnchor, childRef),
+    [setAnchor, childRef],
+  );
+
   const cloned = React.cloneElement(child, {
-    ref: mergeRefs<HTMLElement>((el) => {
-      anchorRef.current = el;
-    }, child.ref),
+    ref: mergedRef,
     "aria-describedby": rect ? bubbleId : undefined,
     onMouseEnter: (e: React.MouseEvent) => {
       child.props.onMouseEnter?.(e);

@@ -27,6 +27,7 @@
 // for a property `uuid` already has is not worth the extra dependency.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 /// The only schema version this build understands. `list()` and every
@@ -92,56 +93,99 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Read-only: the current `pies` document's list, or an empty Vec when the
-/// key is absent OR its `v` doesn't match `CURRENT_VERSION` — an older
-/// build reading a newer build's document shows no user pies rather than
-/// guessing at an unknown shape (spec section 9).
-pub fn list() -> Vec<Pie> {
-    let val = crate::state_store::global_state()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone();
-    let Some(pies_val) = val.get("pies") else { return Vec::new() };
-    let Ok(doc) = serde_json::from_value::<PiesDoc>(pies_val.clone()) else { return Vec::new() };
-    if doc.v != CURRENT_VERSION {
-        return Vec::new();
+/// Why a `pies` document can't be read. The two cases get DISTINCT
+/// messages because they need distinct fixes: an unrecognised `v` means
+/// "this build is older than the document, upgrade"; an unparseable
+/// document means "the bytes are damaged". Reporting a corrupt document as
+/// a version problem sent users looking for an upgrade that does not exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DocError {
+    UnknownVersion,
+    Unparseable,
+}
+
+impl DocError {
+    fn message(self) -> &'static str {
+        match self {
+            DocError::UnknownVersion => "pies: unrecognised pies schema version on disk",
+            DocError::Unparseable => "pies: the pies document on disk could not be parsed",
+        }
     }
-    doc.pies
+}
+
+/// Parse the `pies` leaf into a `PiesDoc`, or say why it can't be. A
+/// missing key (`Value::Null`, what `update_state_field` hands a brand new
+/// leaf) is a brand new, empty document, not an error.
+///
+/// Takes the value BY VALUE so `serde_json::from_value` consumes it: the
+/// single caller-side clone of the `pies` subtree is the only copy made.
+/// Parsing runs FIRST and the typed `doc.v` is the gate, so the common
+/// cases are classified on real data. A document that fails to parse is
+/// still reported as a version problem when its raw `v` is not ours,
+/// because a newer build's shape is expected to be unparseable here.
+fn readable_doc(val: Value) -> Result<PiesDoc, DocError> {
+    if val.is_null() {
+        return Ok(PiesDoc::default());
+    }
+    let declared = val.get("v").and_then(Value::as_u64);
+    match serde_json::from_value::<PiesDoc>(val) {
+        Ok(doc) if doc.v == CURRENT_VERSION => Ok(doc),
+        Ok(_) => Err(DocError::UnknownVersion),
+        Err(_) if declared != Some(u64::from(CURRENT_VERSION)) => Err(DocError::UnknownVersion),
+        Err(_) => Err(DocError::Unparseable),
+    }
+}
+
+/// Read-only: the current `pies` document's list, or an empty Vec when the
+/// key is absent OR the document can't be read (see `readable_doc`) — an
+/// older build reading a newer build's document shows no user pies rather
+/// than guessing at an unknown shape (spec section 9).
+///
+/// Clones ONLY the `pies` subtree, and only while the lock is held. The
+/// whole state document (every tab, bookmark and annotation) used to be
+/// deep-cloned on every single call, and then the subtree cloned again for
+/// `from_value`.
+pub fn list() -> Vec<Pie> {
+    let pies_val = {
+        let global = crate::state_store::global_state()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        match global.get("pies") {
+            Some(v) => v.clone(),
+            None => return Vec::new(),
+        }
+    };
+    readable_doc(pies_val).map(|doc| doc.pies).unwrap_or_default()
 }
 
 /// Run `f` over the `pies` document under the store's single lock
-/// (`update_state_field`), starting from `PiesDoc::default()` when the key
-/// is missing (`Value::Null`, what `update_state_field` hands a brand new
-/// leaf) — and, critically, leaving the value COMPLETELY UNTOUCHED both when
-/// it already holds an object whose `v` we don't recognise AND when it fails
-/// to parse as a `PiesDoc` at all. That second case used to fall through
-/// `unwrap_or_default()` into an EMPTY document — one unparseable member (an
-/// unknown `kind` string, a non-numeric `added_at`, a hand-edited or
-/// torn-write entry) silently deleted every pie in the store on the next
-/// mutation (review: pies.rs:132). A parse failure is just as much "a
-/// document this build does not understand" as an unrecognised `v`, so it
-/// gets the same response: touch nothing. That is the "no write ever
-/// replaces the key" guarantee from spec section 9: an older build must
-/// never downgrade a newer build's `pies` document just because it ran a
-/// mutating op while that document was on disk. Every op in this file is
-/// safe by construction because they all funnel through here.
+/// (`update_state_field`) — and, critically, leave the value COMPLETELY
+/// UNTOUCHED whenever `readable_doc` refuses it, both for an unrecognised
+/// `v` and for a document that does not parse at all. That second case used
+/// to fall through `unwrap_or_default()` into an EMPTY document — one
+/// unparseable member (an unknown `kind` string, a non-numeric `added_at`,
+/// a hand-edited or torn-write entry) silently deleted every pie in the
+/// store on the next mutation (review: pies.rs:132). A parse failure is
+/// just as much "a document this build does not understand" as an
+/// unrecognised `v`, so it gets the same response: touch nothing, and
+/// return the reason so the caller can say which one it was. That is the
+/// "no write ever replaces the key" guarantee from spec section 9: an older
+/// build must never downgrade a newer build's `pies` document just because
+/// it ran a mutating op while that document was on disk. Every op in this
+/// file is safe by construction because they all funnel through here.
 fn mutate_doc(f: impl FnOnce(&mut PiesDoc)) -> Result<(), String> {
-    crate::state_store::update_state_field("pies", move |val| {
-        if !val.is_null() {
-            let v = val.get("v").and_then(|v| v.as_u64());
-            if v != Some(u64::from(CURRENT_VERSION)) {
-                return;
-            }
+    let mut refused: Option<DocError> = None;
+    crate::state_store::update_state_field("pies", |val| match readable_doc(val.clone()) {
+        Ok(mut doc) => {
+            f(&mut doc);
+            *val = serde_json::to_value(&doc).unwrap_or(Value::Null);
         }
-        let mut doc: PiesDoc = if val.is_null() {
-            PiesDoc::default()
-        } else {
-            let Ok(parsed) = serde_json::from_value::<PiesDoc>(val.clone()) else { return };
-            parsed
-        };
-        f(&mut doc);
-        *val = serde_json::to_value(&doc).unwrap_or(serde_json::Value::Null);
-    })
+        Err(e) => refused = Some(e),
+    })?;
+    match refused {
+        Some(e) => Err(e.message().to_string()),
+        None => Ok(()),
+    }
 }
 
 /// Create (`id: None`) or rename (`id: Some`) a pie, and return the result —
@@ -170,7 +214,9 @@ pub fn upsert(id: Option<&str>, name: &str) -> Result<Pie, String> {
         doc.pies.push(pie.clone());
         out = Some(pie);
     })?;
-    out.ok_or_else(|| "pies: unrecognised pies schema version on disk".to_string())
+    // Unreachable in practice: `mutate_doc` either ran `f` (which always
+    // sets `out`) or returned the refusal above through `?`.
+    out.ok_or_else(|| DocError::Unparseable.message().to_string())
 }
 
 /// Remove a pie. Idempotent: removing an id that doesn't exist (already

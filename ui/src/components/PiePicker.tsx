@@ -12,6 +12,7 @@ import type { Pie, PieMemberSource } from "../ipc";
 import { holdsPath, uniqueName } from "../state/pies";
 import { useEscape } from "../hooks/useEscape";
 import type { NoticeFn } from "../state/pies-context";
+import { messageOf } from "../utils/error-message";
 
 export interface PiePickerProps {
   /** The path being added — already canonicalized by `PiesProvider.openPicker`
@@ -39,10 +40,11 @@ export interface PiePickerProps {
 }
 
 /** Tauri surfaces a rejected command as the `Err` string itself, not an
- *  `Error` — `String(e)` is this codebase's own convention for turning
- *  either shape into readable text (state/beam.tsx, state/remote.tsx). */
+ *  `Error`; `messageOf` is this codebase's one reading of either shape, and
+ *  unlike `String(err)` it never renders "[object Object]" or "undefined"
+ *  at the user. */
 function errorMessage(err: unknown): string {
-  return String(err);
+  return messageOf(err, "that didn't work");
 }
 
 export default function PiePicker({

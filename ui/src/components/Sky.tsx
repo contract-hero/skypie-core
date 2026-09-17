@@ -9,9 +9,10 @@ import { FolderPlus, Pencil, Trash2 } from "lucide-react";
 import { useBookmarksContext } from "../state/bookmarks-context";
 import { useRecentsContext } from "../state/recents-context";
 import { usePiesContext } from "../state/pies-context";
-import { pinnedPie, recentPie, shareLabel } from "../state/derived-pies";
+import { labelOfWedges, pinnedPie, recentPie, wedgesOf } from "../state/derived-pies";
 import type { DerivedPie } from "../state/derived-pies";
-import { bandOrder, insertPieAt, isUserPieId, uniqueName, withoutPie } from "../state/pies";
+import { bandOrder, isUserPieId, uniqueName } from "../state/pies";
+import { messageOf } from "../utils/error-message";
 import Pie from "./Pie";
 import PiePlate from "./PiePlate";
 import Tooltip from "./Tooltip";
@@ -80,13 +81,16 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
   const piesCtx = usePiesContext();
   const contextMenu = useContextMenu();
 
-  const derived = React.useMemo<DerivedPie[]>(
-    () => [pinnedPie(bookmarks), recentPie(recents)],
-    [bookmarks, recents],
-  );
   const pies = React.useMemo<DerivedPie[]>(
-    () => bandOrder(derived, piesCtx.pies),
-    [derived, piesCtx.pies],
+    () => bandOrder([pinnedPie(bookmarks), recentPie(recents)], piesCtx.pies),
+    [bookmarks, recents, piesCtx.pies],
+  );
+  // One tooltip label per tile, keyed on the band list — building it in the
+  // map below grouped every pie's files afresh on every band render (one
+  // per recents/bookmarks tick).
+  const tileLabels = React.useMemo(
+    () => pies.map((pie) => labelOfWedges(wedgesOf(pie.files))),
+    [pies],
   );
   // Slots: every pie, then the tin — the tin's own roving-tabindex slot is
   // `pies.length`.
@@ -128,41 +132,13 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
     await piesCtx.upsertPie(null, uniqueName(piesCtx.pies, name));
   };
 
-  // Optimistically hides the pie, defers the actual `removePie` IPC call
-  // until the undo window closes — so undoing never has to reconstruct
-  // anything the backend already forgot, it just puts the local copy back.
-  // `withoutPie`/`insertPieAt` (state/pies.ts) are exactly this pair.
-  // Known limitation: a `skypie://pies-updated` event that lands from an
-  // UNRELATED write during the 5s window (e.g. another window's touch_seen)
-  // would currently reintroduce the pie early, since it replaces the whole
-  // local list from the server's still-has-it document. Narrow enough
-  // (would need a second write racing the exact undo window) to accept for
-  // M2 rather than adding a pending-delete filter for it.
+  // The hide/defer/undo mechanics live in `usePies` (`removePieWithUndo`,
+  // whose doc comment explains why the pending-delete set has to be there
+  // and not here). Sky owns only the toast that offers the undo.
   const deletePieWithUndo = (pie: DerivedPie) => {
-    const rawPies = piesCtx.pies;
-    const index = rawPies.findIndex((p) => p.id === pie.id);
-    if (index < 0) return;
-    const removed = rawPies[index];
-    piesCtx.setPies((prev) => withoutPie(prev, pie.id));
     if (openPieId === pie.id) setOpenPieId(null);
-
-    let undone = false;
-    const timer = window.setTimeout(() => {
-      if (!undone) void piesCtx.removePie(pie.id);
-    }, UNDO_MS);
-
-    onNotice(
-      `Deleted "${pie.name}"`,
-      {
-        label: "Undo",
-        onClick: () => {
-          undone = true;
-          window.clearTimeout(timer);
-          piesCtx.setPies((prev) => insertPieAt(prev, removed, index));
-        },
-      },
-      UNDO_MS,
-    );
+    const undo = piesCtx.removePieWithUndo(pie.id, UNDO_MS);
+    onNotice(`Deleted "${pie.name}"`, { label: "Undo", onClick: undo }, UNDO_MS);
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -246,7 +222,7 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
               // (review: PiePicker.tsx:75, "Sky.tsx:217... swallows the
               // same failure with a bare void").
               piesCtx.addPieMember(pie.id, picked, "folder", "menu").catch((err: unknown) => {
-                onNotice(`Couldn't add that folder — ${String(err)}`);
+                onNotice(`Couldn't add that folder — ${messageOf(err, "the folder could not be added")}`);
               });
             });
           },
@@ -388,7 +364,7 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
             // visible label and already in its own `aria-label`, so
             // prefixing it here just repeated it (review: Sky.tsx:357).
             return (
-              <Tooltip key={pie.id} content={shareLabel(pie.files)}>
+              <Tooltip key={pie.id} content={tileLabels[i] ?? ""}>
                 {tile}
               </Tooltip>
             );

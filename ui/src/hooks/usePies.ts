@@ -6,19 +6,19 @@
 // cleanup that runs before `listen()` resolves), and optimistic local
 // updates ahead of each IPC await.
 //
-// `setPies` is exposed (useBookmarks doesn't expose an equivalent) because
-// Sky.tsx's 5-second delete undo needs to hide a pie locally WITHOUT calling
-// `removePie` yet — see pies.ts's `withoutPie`/`insertPieAt` doc comments
-// for why the undo pair operates directly on this state instead of through
-// an op.
+// The 5-second delete undo lives here too (`removePieWithUndo`) rather than
+// in Sky.tsx, because it needs to survive a reconciliation: see that
+// function's own doc comment.
 import * as React from "react";
 import { defaultIpc } from "../ipc";
 import type { Pie, PieMemberSource } from "../ipc";
+import { subtractPending } from "../state/pies";
 import { useTauriEvent } from "./useTauriEvent";
+
+const NO_PENDING: ReadonlySet<string> = new Set<string>();
 
 export interface UsePiesResult {
   pies: Pie[];
-  setPies: React.Dispatch<React.SetStateAction<Pie[]>>;
   upsertPie: (id: string | null, name: string) => Promise<Pie | null>;
   removePie: (id: string) => Promise<void>;
   addPieMember: (
@@ -30,10 +30,19 @@ export interface UsePiesResult {
   removePieMember: (id: string, path: string) => Promise<void>;
   relocatePieMember: (id: string, oldPath: string, newPath: string) => Promise<void>;
   touchPieSeen: (id: string) => Promise<void>;
+  /** Deletes `id` after `undoMs`, hiding it immediately. Returns the undo:
+   *  call it inside the window to cancel the delete, after it to do
+   *  nothing. */
+  removePieWithUndo: (id: string, undoMs: number) => () => void;
 }
 
 export function usePies(ipc = defaultIpc): UsePiesResult {
-  const [pies, setPies] = React.useState<Pie[]>([]);
+  const [rawPies, setPies] = React.useState<Pie[]>([]);
+  // Ids whose delete is still inside its undo window. They are subtracted
+  // from EVERY list this hook publishes, not just from the one the delete
+  // itself produced — that is the whole point (see `removePieWithUndo`).
+  const [pendingDeletes, setPendingDeletes] = React.useState<ReadonlySet<string>>(NO_PENDING);
+  const pies = React.useMemo(() => subtractPending(rawPies, pendingDeletes), [rawPies, pendingDeletes]);
 
   React.useEffect(() => {
     if (ipc.listPies) {
@@ -119,14 +128,58 @@ export function usePies(ipc = defaultIpc): UsePiesResult {
     [ipc],
   );
 
+  /** Optimistically hides the pie and defers the real `removePie` IPC call
+   *  until the undo window closes, so undoing never has to reconstruct
+   *  anything the backend already forgot.
+   *
+   *  The pending-delete SET is what makes this correct. Hiding the pie by
+   *  filtering local state alone was undone by any
+   *  `skypie://pies-updated` event that landed during the window from an
+   *  UNRELATED write (another window's `touch_seen`, M5's agent socket):
+   *  that event replaces the whole local list with the server's document,
+   *  which still has the pie, so the deleted pie reappeared mid-undo. A set
+   *  the published list is always filtered through cannot be overwritten by
+   *  an incoming list.
+   */
+  const removePieWithUndo = React.useCallback(
+    (id: string, undoMs: number): (() => void) => {
+      const unhide = () =>
+        setPendingDeletes((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      setPendingDeletes((prev) => new Set(prev).add(id));
+
+      let settled = false;
+      const timer = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        // Remove for real FIRST: `removePie` filters `rawPies`
+        // synchronously, so the pie never flashes back between dropping it
+        // from `pendingDeletes` and the list catching up.
+        void removePie(id);
+        unhide();
+      }, undoMs);
+
+      return () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        unhide();
+      };
+    },
+    [removePie],
+  );
+
   return {
     pies,
-    setPies,
     upsertPie,
     removePie,
     addPieMember,
     removePieMember,
     relocatePieMember,
     touchPieSeen,
+    removePieWithUndo,
   };
 }

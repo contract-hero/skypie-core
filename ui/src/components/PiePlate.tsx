@@ -11,7 +11,7 @@ import * as React from "react";
 import { FileCode, FileText, FileImage, FileJson, File as FileIconGlyph, MessageSquare, PieChart, XCircle } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Pie from "./Pie";
-import { groupByWedge, wedgesOfGroups } from "../state/derived-pies";
+import { BUILTIN_PINNED_ID, groupByWedge, wedgesOfGroups } from "../state/derived-pies";
 import type { DerivedPie, DerivedPieFile, Wedge } from "../state/derived-pies";
 import { isUserPieId } from "../state/pies";
 import type { FileKind } from "../render/kind";
@@ -93,7 +93,7 @@ export function lastOpenedLabel(pie: DerivedPie): string {
   // real file mtime without M3's census), i.e. when the file was ADDED to
   // the pie, not when it changed — the same category of mislabel
   // (review: pies.ts:19).
-  const isPinned = pie.id === "builtin:pinned";
+  const isPinned = pie.id === BUILTIN_PINNED_ID;
   const isUser = isUserPieId(pie.id);
   if (files.length === 0) return isPinned ? "Never pinned" : isUser ? "No files added" : "Never opened";
   const newest = Math.max(...files.map((f) => f.mtime));
@@ -166,19 +166,6 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   const groups = React.useMemo(() => groupByWedge(pie.files), [pie.files]);
   const wedges = React.useMemo(() => wedgesOfGroups(groups), [groups]);
 
-  // The cursor can point at a kind that just disappeared from `wedges` —
-  // removing the last file of the focused kind through a layer row's
-  // "Remove from pie" leaves `focusedKindState` naming a kind with no
-  // radio at all, so `checked` is false for every row, every radio gets
-  // `tabIndex={-1}`, and the radiogroup falls out of the tab order
-  // entirely (review: PiePlate.tsx:119). `setFocusedLayer` already gets
-  // this same reset on the layer list below; the legend needed its own.
-  React.useEffect(() => {
-    if (focusedKindState && !wedges.some((w) => w.kind === focusedKindState)) {
-      setFocusedKindState(null);
-    }
-  }, [wedges, focusedKindState]);
-
   // The wedge the readout describes: the filtered kind while a slice is on,
   // otherwise the pie's dominant kind.
   const readoutWedge = React.useMemo<Wedge | null>(() => {
@@ -186,7 +173,18 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
     return dominantWedge(wedges);
   }, [filterKind, wedges]);
   const readoutKind = filterKind ?? readoutWedge?.kind ?? null;
-  const focusedKind = focusedKindState ?? readoutKind;
+  // The cursor can point at a kind that just disappeared from `wedges` —
+  // removing the last file of the focused kind through a layer row's
+  // "Remove from pie" left `focusedKindState` naming a kind with no radio
+  // at all, so `checked` was false for every row, every radio got
+  // `tabIndex={-1}`, and the radiogroup fell out of the tab order entirely
+  // (review: PiePlate.tsx:119). Validating the cursor HERE, at render, is
+  // the same correction without the extra state round trip an effect
+  // needed — the bad frame that effect had to repair never renders.
+  const focusedKind =
+    focusedKindState && wedges.some((w) => w.kind === focusedKindState)
+      ? focusedKindState
+      : readoutKind;
   const readout = React.useMemo(() => readoutLabel(readoutWedge), [readoutWedge]);
   const lastOpened = React.useMemo(() => lastOpenedLabel(pie), [pie]);
 
@@ -342,16 +340,17 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
     const current = focusedKind ? kinds.indexOf(focusedKind) : -1;
     switch (e.key) {
       case "ArrowRight":
+      case "ArrowLeft": {
         e.preventDefault();
-        focusRadio(kinds[(current + 1 + kinds.length) % kinds.length]);
+        const delta = e.key === "ArrowRight" ? 1 : -1;
+        focusRadio(kinds[(current + delta + kinds.length) % kinds.length]);
         break;
-      case "ArrowLeft":
-        e.preventDefault();
-        focusRadio(kinds[(current - 1 + kinds.length) % kinds.length]);
-        break;
+      }
       case "Enter":
         e.preventDefault();
-        if (focusedKind) setFilterKind((k) => (k === focusedKind ? null : focusedKind));
+        // Same path a click on the row takes, so keyboard and pointer
+        // cannot drift apart.
+        if (focusedKind) activateRadio(focusedKind);
         break;
       default:
         break;
@@ -420,6 +419,10 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
             — see the ARIA-ownership note on `onWedgeClick` in Pie.tsx. */}
         <Pie
           pie={pie}
+          // The plate already grouped these files for the legend and the
+          // layer filter; handing the wedges down stops the portrait from
+          // regrouping the very same list.
+          wedges={wedges}
           size={short ? 120 : 200}
           interactive={false}
           cutKind={filterKind}

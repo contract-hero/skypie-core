@@ -2,12 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   bandOrder,
   holdsPath,
-  insertPieAt,
   isUserPieId,
   pieFiles,
+  subtractPending,
   toDerivedPie,
   uniqueName,
-  withoutPie,
 } from "./pies";
 import type { Pie } from "../ipc";
 import type { DerivedPie } from "./derived-pies";
@@ -70,31 +69,29 @@ describe("bandOrder", () => {
   });
 });
 
-describe("withoutPie / insertPieAt — the undo pair", () => {
-  it("withoutPie removes exactly the named id", () => {
+describe("subtractPending — the delete-undo filter", () => {
+  it("returns the SAME array when nothing is pending", () => {
+    const pies = [pie({ id: "a" }), pie({ id: "b" })];
+    expect(subtractPending(pies, new Set())).toBe(pies);
+  });
+
+  it("hides every pending id and keeps the rest in order", () => {
     const pies = [pie({ id: "a" }), pie({ id: "b" }), pie({ id: "c" })];
-    expect(withoutPie(pies, "b").map((p) => p.id)).toEqual(["a", "c"]);
+    expect(subtractPending(pies, new Set(["b"])).map((p) => p.id)).toEqual(["a", "c"]);
+    expect(subtractPending(pies, new Set(["a", "c"])).map((p) => p.id)).toEqual(["b"]);
   });
 
-  it("insertPieAt restores a removed pie at its original index", () => {
-    const pies = [pie({ id: "a" }), pie({ id: "c" })];
-    const removed = pie({ id: "b" });
-    expect(insertPieAt(pies, removed, 1).map((p) => p.id)).toEqual(["a", "b", "c"]);
+  it("keeps a pie hidden in a list that arrived from an unrelated write", () => {
+    // The bug this exists for: a `skypie://pies-updated` event during the
+    // 5s undo window carries the server's document, which still holds the
+    // deleted pie.
+    const fromServer = [pie({ id: "a" }), pie({ id: "b" })];
+    expect(subtractPending(fromServer, new Set(["b"])).map((p) => p.id)).toEqual(["a"]);
   });
 
-  it("round-trips: insertPieAt(withoutPie(pies, id), pie, index) reconstructs the original order", () => {
-    const pies = [pie({ id: "a" }), pie({ id: "b" }), pie({ id: "c" }), pie({ id: "d" })];
-    const index = pies.findIndex((p) => p.id === "c");
-    const removedPie = pies[index];
-    const after = withoutPie(pies, "c");
-    const restored = insertPieAt(after, removedPie, index);
-    expect(restored.map((p) => p.id)).toEqual(pies.map((p) => p.id));
-  });
-
-  it("insertPieAt clamps an out-of-range index instead of throwing", () => {
+  it("ignores a pending id that is not in the list", () => {
     const pies = [pie({ id: "a" })];
-    expect(insertPieAt(pies, pie({ id: "b" }), 99).map((p) => p.id)).toEqual(["a", "b"]);
-    expect(insertPieAt(pies, pie({ id: "c" }), -5).map((p) => p.id)).toEqual(["c", "a"]);
+    expect(subtractPending(pies, new Set(["gone"])).map((p) => p.id)).toEqual(["a"]);
   });
 });
 

@@ -3,6 +3,7 @@
 // lives here (vitest here has no jsdom, no testing-library — every export
 // below is a plain function over plain data).
 import type { Pie } from "../ipc";
+import { BUILTIN_PINNED_ID, BUILTIN_RECENT_ID } from "./derived-pies";
 import type { DerivedPie, DerivedPieFile } from "./derived-pies";
 import { kindOf } from "../render/kind";
 
@@ -34,22 +35,17 @@ export function bandOrder(derived: DerivedPie[], userPies: Pie[]): DerivedPie[] 
   return [...derived, ...userPies.map(toDerivedPie)];
 }
 
-/** Pairs with `insertPieAt` for the 5-second delete undo (Sky.tsx):
- *  removing a pie from local state is optimistic and does NOT itself call
- *  `removePie` — the caller defers that IPC call until the undo window
- *  closes, so undoing never has to reconstruct a pie the backend already
- *  forgot. */
-export function withoutPie(pies: Pie[], id: string): Pie[] {
-  return pies.filter((p) => p.id !== id);
-}
-
-/** The undo half of `withoutPie`: re-insert `pie` at `index` (clamped into
- *  range), restoring the exact array shape a delete removed it from. */
-export function insertPieAt(pies: Pie[], pie: Pie, index: number): Pie[] {
-  const next = pies.slice();
-  const at = Math.max(0, Math.min(next.length, index));
-  next.splice(at, 0, pie);
-  return next;
+/** Hides every pie whose delete is still inside its undo window
+ *  (`usePies`'s `pendingDeletes`). The hook applies this to EVERY list it
+ *  reconciles, including one that arrives on a `skypie://pies-updated`
+ *  event from an unrelated write (another window's `touch_seen`, or M5's
+ *  agent socket). Without it such an event replaced the local list with the
+ *  server's still-has-it document and the deleted pie reappeared mid-undo.
+ *  Returns the SAME array when nothing is pending, so the common case adds
+ *  no new identity for React to re-render on. */
+export function subtractPending(pies: Pie[], pending: ReadonlySet<string>): Pie[] {
+  if (pending.size === 0) return pies;
+  return pies.filter((p) => !pending.has(p.id));
 }
 
 /** Whether `pie` already holds `path` as a member — the picker's check
@@ -73,9 +69,9 @@ export function uniqueName(pies: Pie[], wanted: string): string {
   return `${trimmed} ${n}`;
 }
 
-/** True for a user pie's id — every built-in pie's id is a fixed
- *  `"builtin:…"` literal (`derived-pies.ts`), and no user pie can ever be
- *  minted with that prefix (`uuid::Uuid::now_v7()` never produces one). */
+/** True for a user pie's id — the built-in pies are exactly the two fixed
+ *  ids `derived-pies.ts` exports, and no user pie can ever carry one
+ *  (`uuid::Uuid::now_v7()` never produces them). */
 export function isUserPieId(id: string): boolean {
-  return !id.startsWith("builtin:");
+  return id !== BUILTIN_PINNED_ID && id !== BUILTIN_RECENT_ID;
 }

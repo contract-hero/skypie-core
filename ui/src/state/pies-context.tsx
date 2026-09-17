@@ -21,24 +21,16 @@ export interface PiesContextValue extends UsePiesResult {
   openPicker: (path: string) => void;
 }
 
-const noopPies: UsePiesResult = {
-  pies: [],
-  setPies: () => {},
-  upsertPie: async () => null,
-  removePie: async () => {},
-  addPieMember: async () => {},
-  removePieMember: async () => {},
-  relocatePieMember: async () => {},
-  touchPieSeen: async () => {},
-};
-
-const PiesContext = React.createContext<PiesContextValue>({
-  ...noopPies,
-  openPicker: () => {},
-});
+// `null`, not a silent no-op default: with no-op defaults a consumer
+// rendered outside `PiesProvider` looked like an app with zero pies whose
+// every op quietly did nothing, which is a bug that shows up as "the button
+// does nothing" rather than as an error.
+const PiesContext = React.createContext<PiesContextValue | null>(null);
 
 export function usePiesContext(): PiesContextValue {
-  return React.useContext(PiesContext);
+  const ctx = React.useContext(PiesContext);
+  if (!ctx) throw new Error("usePiesContext must be used inside a <PiesProvider>");
+  return ctx;
 }
 
 export function PiesProvider({

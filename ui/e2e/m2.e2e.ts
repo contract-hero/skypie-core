@@ -10,21 +10,30 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { click, evalIn, keys, launchDesktop, quit, text, waitFor } from "./lib/app";
+import { click, evalIn, keys, launchDesktop, openViaQuickOpen, quit, text, waitFor } from "./lib/app";
 import type { LaunchedApp } from "./lib/app";
 import { cleanupFixtureWorkspace, makeFixtureWorkspace, setWorkspaceRoot } from "./lib/fixtureWorkspace";
+import { sleep } from "./lib/proc";
 
-/** Open a file through the app's own ⌘P palette — same technique as
- *  smoke.ts/sky.e2e.ts/m1.e2e.ts, repeated here rather than shared so each
- *  scenario stays a single, independently-readable file (this directory's
- *  existing convention). */
-async function openViaQuickOpen(app: LaunchedApp, absPath: string): Promise<void> {
-  await keys(app, "mod+p");
-  await waitFor(app, `document.querySelector('[data-testid="quick-open"]') !== null`, 10_000);
-  const rowSelector = `li[title=${JSON.stringify(absPath)}]`;
-  await waitFor(app, `document.querySelector(${JSON.stringify(rowSelector)}) !== null`, 10_000);
-  await click(app, rowSelector);
-  await waitFor(app, `document.querySelector(".tab.active .tab-label") !== null`, 10_000);
+/** Run `bodyJs` in the webview against the first element matching
+ *  `selector`, bound as `el`, and throw `what` when there is no match (or
+ *  when `bodyJs` itself returns false). Every DOM-poking helper below is
+ *  this one shape — find, act, report — so the find-and-throw half lives
+ *  here once. `bodyJs` may `return false` to report its own miss. */
+async function onSelector(
+  app: LaunchedApp,
+  selector: string,
+  bodyJs: string,
+  what: string,
+): Promise<void> {
+  const js = `(function(){
+    var el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return false;
+    ${bodyJs}
+    return true;
+  })()`;
+  const ok = await evalIn(app, js);
+  if (!ok) throw new Error(`${what} (selector: ${selector})`);
 }
 
 /** Type into a React-controlled `<input>` the native-setter way — a bare
@@ -32,22 +41,24 @@ async function openViaQuickOpen(app: LaunchedApp, absPath: string): Promise<void
  *  patches the DOM property setter itself (`ui/e2e/README.md`'s own
  *  documented technique, also in the M2 brief). */
 async function typeIntoInput(app: LaunchedApp, selector: string, value: string): Promise<void> {
-  const js = `(function(){
-    var el = document.querySelector(${JSON.stringify(selector)});
-    if (!el) return false;
-    var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-    setter.call(el, ${JSON.stringify(value)});
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    return true;
-  })()`;
-  const ok = await evalIn(app, js);
-  if (!ok) throw new Error(`typeIntoInput: no element matches ${selector}`);
+  await onSelector(
+    app,
+    selector,
+    `var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+     setter.call(el, ${JSON.stringify(value)});
+     el.dispatchEvent(new Event("input", { bubbles: true }));`,
+    "typeIntoInput: no such input",
+  );
 }
 
 /** Dispatch a keydown on `document.activeElement` — component-level arrow/
  *  Enter handling (the plate's radiogroup) is driven this way, not via
  *  `keys()`, which dispatches on `document` and only App's window-capture
- *  registry sees (M2 brief). */
+ *  registry sees (M2 brief).
+ *
+ *  The one helper here that does NOT go through `onSelector`: the harness
+ *  drives a window that does not hold OS focus, so the `:focus` pseudo-class
+ *  matches nothing even while `document.activeElement` is the right input. */
 async function keyOnActiveElement(app: LaunchedApp, key: string): Promise<void> {
   const js = `(function(){
     var el = document.activeElement;
@@ -63,14 +74,7 @@ async function keyOnActiveElement(app: LaunchedApp, key: string): Promise<void> 
  *  so the band's own roving-tabindex bookkeeping (`onFocus`) runs the same
  *  way a Tab landing there would drive it. */
 async function focusSelector(app: LaunchedApp, selector: string): Promise<void> {
-  const js = `(function(){
-    var el = document.querySelector(${JSON.stringify(selector)});
-    if (!el) return false;
-    el.focus();
-    return true;
-  })()`;
-  const ok = await evalIn(app, js);
-  if (!ok) throw new Error(`focusSelector: no element matches ${selector}`);
+  await onSelector(app, selector, `el.focus();`, "focusSelector: nothing to focus");
 }
 
 /** `document.activeElement`'s own value for `attr`, or `null` when nothing
@@ -91,32 +95,45 @@ async function activeElementAttr(app: LaunchedApp, attr: string): Promise<string
  *  either, ui/e2e/README.md), so this fires the same DOM event React's
  *  own `onContextMenu` prop listens for. */
 async function rightClick(app: LaunchedApp, selector: string): Promise<void> {
-  const js = `(function(){
-    var el = document.querySelector(${JSON.stringify(selector)});
-    if (!el) return false;
-    var rect = el.getBoundingClientRect();
-    el.dispatchEvent(new MouseEvent("contextmenu", {
-      bubbles: true, cancelable: true,
-      clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
-    }));
-    return true;
-  })()`;
-  const ok = await evalIn(app, js);
-  if (!ok) throw new Error(`rightClick: no element matches ${selector}`);
+  await onSelector(
+    app,
+    selector,
+    `var rect = el.getBoundingClientRect();
+     el.dispatchEvent(new MouseEvent("contextmenu", {
+       bubbles: true, cancelable: true,
+       clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
+     }));`,
+    "rightClick: no such element",
+  );
 }
 
 /** Click the `[role="menuitem"]` whose text is exactly `label` in
  *  whichever context menu `ContextMenu.tsx` currently has open. */
 async function clickMenuItem(app: LaunchedApp, label: string): Promise<void> {
-  const js = `(function(){
-    var items = Array.from(document.querySelectorAll('[role="menuitem"]'));
-    var el = items.find(function(i){ return i.textContent.trim() === ${JSON.stringify(label)}; });
-    if (!el) return false;
-    el.click();
-    return true;
-  })()`;
-  const ok = await evalIn(app, js);
-  if (!ok) throw new Error(`clickMenuItem: no menu item labeled ${JSON.stringify(label)}`);
+  await onSelector(
+    app,
+    '[role="menuitem"]',
+    `var items = Array.from(document.querySelectorAll('[role="menuitem"]'));
+     var item = items.find(function(i){ return i.textContent.trim() === ${JSON.stringify(label)}; });
+     if (!item) return false;
+     item.click();`,
+    `clickMenuItem: no menu item labeled ${JSON.stringify(label)}`,
+  );
+}
+
+/** Create a user pie from the tin: click it, type `name`, Enter, and wait
+ *  until a tile carrying that label exists in the band. Both of this
+ *  scenario's pies ("Pricing", "Scratch") are minted this way. */
+async function createPie(app: LaunchedApp, name: string): Promise<void> {
+  await click(app, '[data-testid="sky-new-pie"]');
+  await waitFor(app, `document.querySelector('input[data-testid="pie-name-input"]') !== null`, 10_000);
+  await typeIntoInput(app, 'input[data-testid="pie-name-input"]', name);
+  await keyOnActiveElement(app, "Enter");
+  await waitFor(
+    app,
+    `Array.from(document.querySelectorAll(".sky-pies .sky-pie-label")).some(function(el){ return el.textContent === ${JSON.stringify(name)}; })`,
+    10_000,
+  );
 }
 
 interface OnDiskPies {
@@ -134,10 +151,6 @@ function readStateJson(stateDir: string): OnDiskPies | null {
   } catch {
     return null;
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Poll the on-disk state document (the debounced writer, ~250ms) until
@@ -195,10 +208,7 @@ async function main(): Promise<void> {
     console.log("ok: ⌘⇧B shows the band, tile pressed");
 
     // ── Step 2: the tin creates "Pricing" ─────────────────────────────────
-    await click(app, '[data-testid="sky-new-pie"]');
-    await waitFor(app, `document.querySelector('input[data-testid="pie-name-input"]') !== null`, 10_000);
-    await typeIntoInput(app, 'input[data-testid="pie-name-input"]', "Pricing");
-    await keyOnActiveElement(app, "Enter");
+    await createPie(app, "Pricing");
 
     await waitFor(app, `document.querySelectorAll('.sky-pies [data-pie-id]').length === 3`, 10_000);
     const pieIds = (await evalIn(
@@ -453,15 +463,7 @@ async function main(): Promise<void> {
     // A throwaway pie, not Pricing — Step 8 below still expects to find
     // "Pricing" by name after the relaunch, so the rename/delete round
     // trip exercises its own pie instead of disturbing that one.
-    await click(app, '[data-testid="sky-new-pie"]');
-    await waitFor(app, `document.querySelector('input[data-testid="pie-name-input"]') !== null`, 10_000);
-    await typeIntoInput(app, 'input[data-testid="pie-name-input"]', "Scratch");
-    await keyOnActiveElement(app, "Enter");
-    await waitFor(
-      app,
-      `Array.from(document.querySelectorAll(".sky-pies .sky-pie-label")).some(function(el){ return el.textContent === "Scratch"; })`,
-      10_000,
-    );
+    await createPie(app, "Scratch");
     const scratchId = (await evalIn(
       app,
       `(function(){

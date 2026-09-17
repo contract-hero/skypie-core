@@ -164,12 +164,20 @@ function ProviderShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
   // ANCESTOR of `AppShell` (AppShell itself reads `usePiesContext()` for
   // ⌘D), but the notice toast's actual state lives inside AppShell —
   // `AppNoticeAction`'s own doc comment is explicit that this codebase
-  // does not centralize notices in a context. AppShell overwrites
-  // `noticeRef.current` with its `showNotice` on every render; `PiesProvider`
+  // does not centralize notices in a context. AppShell points
+  // `noticeRef.current` at its `showNotice` in a layout effect; `PiesProvider`
   // only ever calls `.current` from an async callback (a rejected
   // `canonicalizePath`/`addPieMember`), always well after that render has
   // committed, so there is no ordering hazard.
   const noticeRef = React.useRef<NoticeFn>(() => {});
+  // Stable over the ref, so `PiesProvider`'s context `value` memo actually
+  // holds: a fresh arrow here was a new `onNotice` on every ProviderShell
+  // render, which rebuilt `openPicker`, which rebuilt the whole pies
+  // context value, which re-rendered every consumer.
+  const onNotice = React.useCallback<NoticeFn>(
+    (text, action, durationMs) => noticeRef.current(text, action, durationMs),
+    [],
+  );
   return (
     <WatcherProvider ipc={ipc} root={root}>
       <BookmarksProvider ipc={ipc}>
@@ -180,10 +188,7 @@ function ProviderShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
                 <ScrollMemoryProvider>
                   <ExplorerUiProvider>
                     <ContextMenuProvider>
-                      <PiesProvider
-                        ipc={ipc}
-                        onNotice={(text, action, durationMs) => noticeRef.current(text, action, durationMs)}
-                      >
+                      <PiesProvider ipc={ipc} onNotice={onNotice}>
                         <AnnotatedShell ipc={ipc} noticeRef={noticeRef} />
                       </PiesProvider>
                     </ContextMenuProvider>
@@ -311,8 +316,14 @@ function AppShell({
     [],
   );
   // Keep ProviderShell's bridge ref pointed at the LATEST showNotice — see
-  // its own doc comment for why this is a ref and not a context.
-  noticeRef.current = showNotice;
+  // its own doc comment for why this is a ref and not a context. In a layout
+  // effect, not in the render body: writing a ref while rendering is a side
+  // effect React is free to run twice (StrictMode) or throw away (an
+  // interrupted render), and the assignment commits before any paint, so
+  // nothing can read a stale `showNotice`.
+  React.useLayoutEffect(() => {
+    noticeRef.current = showNotice;
+  }, [noticeRef, showNotice]);
 
   // ── Persisted sidebar width ────────────────────────────────────────────
   React.useEffect(() => {
