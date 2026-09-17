@@ -2,9 +2,10 @@
 // and Sky.tsx own the side effects; everything testable without a webview
 // lives here (vitest here has no jsdom, no testing-library — every export
 // below is a plain function over plain data).
-import type { Pie } from "../ipc";
+import type { Pie, PieCensus } from "../ipc";
 import type { DerivedPie, DerivedPieFile } from "./derived-pies";
 import { kindOf } from "../render/kind";
+import { censusToFiles, freshCount, newestPath } from "./pie-census";
 
 /** A user pie's FILE members, adapted to the same shape a derived pie's
  *  `files` already has, so `wedgesOf`/`groupByWedge` (derived-pies.ts) and
@@ -20,18 +21,41 @@ export function pieFiles(pie: Pie): DerivedPieFile[] {
 }
 
 /** Adapts a persisted `Pie` to `DerivedPie`'s shape — the one interface
- *  `Pie.tsx`/`PiePlate.tsx` already render against (M1). */
-export function toDerivedPie(pie: Pie): DerivedPie {
-  return { id: pie.id, name: pie.name, files: pieFiles(pie) };
+ *  `Pie.tsx`/`PiePlate.tsx` already render against. `census`, when given
+ *  (M3), REPLACES `pieFiles`'s pre-census fallback with real files (folder
+ *  contents plus real mtimes) and adds `fresh`/`newestFreshPath`/`census`;
+ *  omitted (or before the pie's first census resolves), this is exactly
+ *  M2's behavior — `added_at`-keyed direct-file members only, no pill. */
+export function toDerivedPie(pie: Pie, census?: PieCensus): DerivedPie {
+  if (!census) {
+    return { id: pie.id, name: pie.name, files: pieFiles(pie) };
+  }
+  const files = censusToFiles(census, pie.members);
+  const fresh = freshCount(files, pie.seen_at);
+  return {
+    id: pie.id,
+    name: pie.name,
+    files,
+    fresh,
+    newestFreshPath: fresh > 0 ? newestPath(files) ?? undefined : undefined,
+    census,
+  };
 }
 
 /** Band order (spec section 3, "Resting"): built-in pies first, then user
  *  pies in their stored order — `userPies` arrives already in that order
  *  (`pies::list()` never sorts), so this is a plain concatenation, not a
  *  sort. The tin is NOT part of this list; Sky.tsx appends it as its own
- *  trailing element. */
-export function bandOrder(derived: DerivedPie[], userPies: Pie[]): DerivedPie[] {
-  return [...derived, ...userPies.map(toDerivedPie)];
+ *  trailing element. `censusFor` (M3, `usePieCensus().censusFor`) is
+ *  optional — omitted, every user pie falls back to `toDerivedPie`'s own
+ *  pre-census behavior, which is what lets a bare `IpcSurface` test double
+ *  or an older `bandOrder(derived, userPies)` call site keep compiling. */
+export function bandOrder(
+  derived: DerivedPie[],
+  userPies: Pie[],
+  censusFor?: (id: string) => PieCensus | undefined,
+): DerivedPie[] {
+  return [...derived, ...userPies.map((p) => toDerivedPie(p, censusFor?.(p.id)))];
 }
 
 /** Pairs with `insertPieAt` for the 5-second delete undo (Sky.tsx):

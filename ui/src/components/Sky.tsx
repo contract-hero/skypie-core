@@ -3,12 +3,15 @@
 // M1 shipped the two derived built-ins, Pinned and Recent. M2 adds the
 // persisted user pies, the tin (create), inline rename, delete with a
 // 5-second undo, and each user pie's own right-click menu (DESIGN.md, "Sky
-// band"). Finder drop and folder census are M3/M4.
+// band"). M3 adds the freshness pill (+N, one-click-open-newest, ⌘Enter)
+// and folder census refresh-on-show — see PieCensusProvider (pie-census.ts)
+// and PiePlate.tsx for the folder layers themselves. Finder drop is M4.
 import * as React from "react";
 import { FolderPlus, Pencil, Trash2 } from "lucide-react";
 import { useBookmarksContext } from "../state/bookmarks-context";
 import { useRecentsContext } from "../state/recents-context";
 import { usePiesContext } from "../state/pies-context";
+import { usePieCensus } from "../state/pie-census";
 import { pinnedPie, recentPie, shareLabel } from "../state/derived-pies";
 import type { DerivedPie } from "../state/derived-pies";
 import { bandOrder, insertPieAt, isUserPieId, uniqueName, withoutPie } from "../state/pies";
@@ -18,6 +21,7 @@ import Tooltip from "./Tooltip";
 import { useContextMenu } from "./ContextMenu";
 import type { IpcSurface } from "../ipc";
 import type { AppNoticeAction } from "../App";
+import { openOptsFromClick } from "../state/TabsProvider";
 import type { OpenFileOptions } from "../state/TabsProvider";
 
 /** How long a deleted user pie stays undoable before the removal actually
@@ -60,6 +64,7 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
   const { bookmarks } = useBookmarksContext();
   const { recents } = useRecentsContext();
   const piesCtx = usePiesContext();
+  const pieCensusCtx = usePieCensus();
   const contextMenu = useContextMenu();
 
   const derived = React.useMemo<DerivedPie[]>(
@@ -67,12 +72,24 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
     [bookmarks, recents],
   );
   const pies = React.useMemo<DerivedPie[]>(
-    () => bandOrder(derived, piesCtx.pies),
-    [derived, piesCtx.pies],
+    () => bandOrder(derived, piesCtx.pies, pieCensusCtx.censusFor),
+    [derived, piesCtx.pies, pieCensusCtx.censusFor],
   );
   // Slots: every pie, then the tin — the tin's own roving-tabindex slot is
   // `pies.length`.
   const tinIndex = pies.length;
+
+  // "sky show" (spec section 6) — refresh every user pie's census the
+  // moment the band mounts. Sky.tsx only mounts when `skyVisible &&
+  // !readerMode` (App.tsx), so a plain mount effect IS the "on show"
+  // trigger; `pieCensusCtx.refreshAll` is intentionally left out of the
+  // deps array below (PiePlate.tsx's own seen_at effect follows the same
+  // "mount-only, not on every identity change" shape) — it already
+  // refreshes on every `pies` identity change on its own (`pie-census.ts`).
+  React.useEffect(() => {
+    pieCensusCtx.refreshAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [focusedIndex, setFocusedIndex] = React.useState(0);
   const [openPieId, setOpenPieId] = React.useState<string | null>(null);
@@ -172,7 +189,18 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
           break;
         }
         const pie = pies[focusedIndex];
-        if (pie) setOpenPieId(pie.id);
+        if (!pie) break;
+        // ⌘Enter opens the newest file directly (spec section 2's
+        // keyboard model) — bare Enter zooms into the plate, unchanged
+        // from M1/M2. `openOptsFromClick(e)` reads the SAME modifier set
+        // a mouse click on the pill would (see Pie.tsx/onOpenNewest
+        // below), so ⌘Enter and a plain pill click agree on how the tab
+        // opens.
+        if (e.metaKey && pie.newestFreshPath) {
+          onOpenFile(pie.newestFreshPath, openOptsFromClick(e));
+          break;
+        }
+        setOpenPieId(pie.id);
         break;
       }
       // Delete only — NOT Backspace. Backspace already means something else
@@ -372,6 +400,9 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
                 onFocus={() => setFocusedIndex(i)}
                 onOpen={() => setOpenPieId(pie.id)}
                 onContextMenu={isUser ? (e) => openPieContextMenu(e, pie) : undefined}
+                onOpenNewest={(e) => {
+                  if (pie.newestFreshPath) onOpenFile(pie.newestFreshPath, openOptsFromClick(e));
+                }}
               />
             );
             // Tooltip.tsx clones its child, so this wrap costs the band's
@@ -445,7 +476,13 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
         </div>
       </div>
       {openPie ? (
-        <PiePlate pie={openPie} onClose={() => setOpenPieId(null)} onOpenFile={onOpenFile} />
+        <PiePlate
+          pie={openPie}
+          onClose={() => setOpenPieId(null)}
+          onOpenFile={onOpenFile}
+          ipc={ipc}
+          onNotice={onNotice}
+        />
       ) : null}
     </div>
   );

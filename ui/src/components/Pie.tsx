@@ -101,6 +101,12 @@ export interface PieProps {
   /** M2: the band tile's own right-click menu (Rename / Add folder… /
    *  Delete pie — `Sky.tsx`). Only meaningful with `interactive`. */
   onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  /** M3: the freshness pill's click handler — opens `pie.newestFreshPath`
+   *  in one click, no zoom. Only rendered (and only meaningful) when
+   *  `interactive && pie.fresh > 0` — a built-in pie's `fresh` is always
+   *  `undefined`, so it never gets a pill regardless of whether this is
+   *  passed. */
+  onOpenNewest?: (e: React.MouseEvent) => void;
 }
 
 const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(function Pie(
@@ -118,6 +124,7 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
     cutKind,
     onWedgeClick,
     onContextMenu,
+    onOpenNewest,
   }: PieProps,
   ref,
 ) {
@@ -125,6 +132,24 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
   const ramp = theme === "light" ? TONE_RAMP_DAY : TONE_RAMP_DUSK;
   const wedges = React.useMemo(() => wedgesOf(pie.files), [pie.files]);
   const label = pieShareLabel(pie.files);
+  const fresh = pie.fresh ?? 0;
+
+  // A 160ms --sky tone flash on the disc when `fresh` RISES (a new file
+  // landed) — not on every render, and not on a drop back to 0 (opening the
+  // pill/plate clears the pill instantly; flashing on the way out would
+  // read as a second, contradictory event). `prevFresh` starts at the
+  // CURRENT value so mounting a pie that already has a pill never flashes.
+  const prevFreshRef = React.useRef(fresh);
+  const [flash, setFlash] = React.useState(false);
+  React.useEffect(() => {
+    if (fresh > prevFreshRef.current) {
+      setFlash(true);
+      const t = window.setTimeout(() => setFlash(false), 160);
+      prevFreshRef.current = fresh;
+      return () => window.clearTimeout(t);
+    }
+    prevFreshRef.current = fresh;
+  }, [fresh]);
 
   let angle = 0;
   const paths = wedges.map((w) => {
@@ -174,7 +199,7 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
 
   const disc = (
     <svg
-      className="sky-pie-disc"
+      className={"sky-pie-disc" + (flash ? " sky-pie-flash" : "")}
       viewBox="0 0 200 200"
       width={size}
       height={size}
@@ -229,6 +254,27 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
       onContextMenu={onContextMenu}
     >
       {disc}
+      {fresh > 0 ? (
+        // A nested <button> is invalid HTML and its click would bubble
+        // into the tile's own onOpen (zoom) — role="button" on a <span>
+        // instead, stopPropagation before calling onOpenNewest so a pill
+        // click never also opens the plate. tabIndex={-1}: the pill is a
+        // pointer-only shortcut for something ⌘Enter already reaches from
+        // the keyboard (Sky.tsx), so it does not need its own Tab stop.
+        <span
+          data-testid="pie-fresh-pill"
+          role="button"
+          tabIndex={-1}
+          className="sky-pie-fresh"
+          aria-label={`${fresh} new file${fresh === 1 ? "" : "s"}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenNewest?.(e);
+          }}
+        >
+          +{fresh}
+        </span>
+      ) : null}
       <span className="sky-pie-label">{pie.name}</span>
     </button>
   );

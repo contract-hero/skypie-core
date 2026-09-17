@@ -26,6 +26,7 @@ import { WatcherProvider } from "./state/watcher-bus";
 import { BookmarksProvider } from "./state/bookmarks-context";
 import { PiesProvider, usePiesContext } from "./state/pies-context";
 import type { NoticeFn } from "./state/pies-context";
+import { PieCensusProvider } from "./state/pie-census";
 import { RecentsProvider } from "./state/recents-context";
 import { ScrollMemoryProvider } from "./state/scroll-memory";
 import { ExplorerUiProvider, useExplorerUi } from "./state/explorer-ui";
@@ -174,7 +175,17 @@ function ProviderShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
                         ipc={ipc}
                         onNotice={(text, action, durationMs) => noticeRef.current(text, action, durationMs)}
                       >
-                        <AnnotatedShell ipc={ipc} noticeRef={noticeRef} />
+                        {/* Beside PiesProvider (a descendant of it, since it
+                            reads usePiesContext() for the "pies identity
+                            changed" refresh trigger — DESIGN.md/STATUS.md's
+                            "beside" means "in ProviderShell's own stack",
+                            not "as a sibling in the tree"), NOT inside
+                            Sky.tsx: the band unmounts on every ⌘⇧B /
+                            reader-mode flip, and a cache that lived inside
+                            it would be wiped every time. */}
+                        <PieCensusProvider ipc={ipc}>
+                          <AnnotatedShell ipc={ipc} noticeRef={noticeRef} />
+                        </PieCensusProvider>
                       </PiesProvider>
                     </ContextMenuProvider>
                   </ExplorerUiProvider>

@@ -2936,6 +2936,7 @@ pre[data-fallback] .line::before {
 }
 .sky-pies::-webkit-scrollbar { height: 0; }
 .sky-pie {
+  position: relative; /* anchors .sky-pie-fresh (M3's +N pill) */
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -3271,3 +3272,141 @@ pre[data-fallback] .line::before {
   font-size: var(--text-body-sm);
   padding: var(--space-2);
 }
+
+/* ── Sky band — M3 additions (folders and freshness) ─────────────────────
+   The freshness pill, the folder-layer tree, the truncated/not-live
+   captions and the "new"/"missing" row states. No new token: every color
+   here is --sky-cloud, --sky-ink / --sky-ink-dim (already the band's own
+   ink ladder) or an existing chrome/error token, and every transition
+   reuses --ease. */
+
+/* Pie.tsx's +N pill (spec section 3) — top-right of the 48px disc, which
+   sits centered in the 72px tile (12px inset each side); `right: 8px`
+   lands it on the disc's own rim rather than the tile's outer edge. A
+   `<span role="button">`, not a nested `<button>` — see Pie.tsx's own doc
+   comment on `onOpenNewest` for why. */
+.sky-pie-fresh {
+  position: absolute;
+  top: 0;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--r-pill);
+  background: var(--sky-cloud);
+  color: var(--sky-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: filter var(--dur-fast) var(--ease);
+}
+.sky-pie-fresh:hover { filter: brightness(0.96); }
+
+/* One 160ms --sky tone flash on the disc when `fresh` rises (Pie.tsx) — a
+   single reversed alternation reads as one pulse, not a blink loop. */
+@keyframes sky-pie-flash {
+  from { filter: brightness(1); }
+  50% { filter: brightness(1.35); }
+  to { filter: brightness(1); }
+}
+.sky-pie-flash { animation: sky-pie-flash 160ms var(--ease); }
+
+/* A folder layer's header (spec section 5) — mono path, `role="treeitem"
+   aria-level="1"`, part of the SAME roving-tabindex sequence as the rows
+   below it (PiePlate.tsx's navItems). */
+.pie-layer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 6px var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--sky-ink-dim);
+  cursor: default;
+}
+.pie-layer-header:focus-visible {
+  outline: 2px solid var(--sky-focus);
+  outline-offset: -2px;
+  border-radius: var(--r-xs);
+}
+.pie-layer-header-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* "not live" / "folder not found" — a caption, not an error: a folder
+   outside the workspace root or one whose watch lapsed is an EXPECTED
+   state (spec section 6), not a failure, so this stays on the ink ladder
+   rather than borrowing --error-fg. */
+.pie-layer-caption {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+  font-size: var(--text-caption);
+  color: var(--sky-ink-dim);
+}
+.pie-layer-caption button {
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--fg-strong);
+  font: inherit;
+  font-size: var(--text-caption);
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.pie-layer-caption button:hover { background: var(--bg-row-hover); }
+
+/* "truncated · 20,000+" under the readout (spec section 4) when the census
+   hit the 20,000-file cap. */
+.pie-plate-truncated {
+  font-size: var(--text-caption);
+  font-family: var(--font-mono);
+  color: var(--sky-ink-dim);
+}
+
+/* The per-row "new" dot (spec section 5: "a 'new' dot when mtime >
+   seen_at") — a plain filled circle, no fill-in-ink-only rule to respect
+   here (DESIGN.md's shape-carries-meaning rule is about file-KIND glyphs;
+   this dot carries recency, which the layer list's own sort already
+   orders by, so a single accent-adjacent dot is not a second chromatic
+   accent — it uses --sky-focus, the band's own per-theme accent shade). */
+.start-row-new {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sky-focus);
+}
+
+/* A missing FILE member's row (spec section 5) — dimmed, non-interactive
+   except its own Forget button. Reuses .start-row's box but is a <div>,
+   not a <button> (nothing to click but Forget), so the hover/press rules
+   scoped to a real .start-row button don't apply here. */
+.start-row-missing {
+  color: var(--fg-dim);
+  cursor: default;
+}
+.start-row-missing .start-row-dir { color: var(--fg-dim); }
+.start-row-missing button {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--fg-strong);
+  font: inherit;
+  font-size: var(--text-caption);
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.start-row-missing button:hover { background: var(--bg-row-hover); }

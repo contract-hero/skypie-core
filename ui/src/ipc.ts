@@ -97,6 +97,40 @@ export interface Pie {
   members: PieMember[];
 }
 
+// ── Folder census (M3, spec sections 6/9) ───────────────────────────────────
+// Mirrors `app/src/workspace.rs`'s `CensusFile`/`PieCensus` field for field
+// (snake_case throughout, matching every other Rust-shaped interface in this
+// file). Deliberately no `kind` here — `kindOf` (render/kind.ts) stays the
+// single kind table; `pie-census.ts`'s `censusToFiles` adds `kind` when it
+// adapts this into a `DerivedPieFile`.
+
+export interface CensusFile {
+  path: string;
+  /** ms epoch — `metadata.modified()` converted in Rust, same clock as
+   *  every other pies timestamp. */
+  mtime: number;
+  size: number;
+  /** The folder MEMBER this file was found under (always that member's own
+   *  canonical path, never an intermediate subdirectory) — absent for a
+   *  direct FILE member. */
+  folder?: string;
+}
+
+export interface PieCensus {
+  files: CensusFile[];
+  /** Member paths (file or folder) that no longer resolve. */
+  missing: string[];
+  /** Member paths not under the canonical workspace root — captioned "not
+   *  live" in the plate; these only refresh on sky show / plate open. */
+  outside_root: string[];
+  truncated: boolean;
+  /** Index into the pie's `members` of the member cut by the 20,000 cap. */
+  truncated_at?: number;
+  /** Count of `files` newer than the pie's `seen_at`; 0 when `seen_at ==
+   *  0` (never-opened). */
+  fresh: number;
+}
+
 /** The persisted `pies` document (`state.json`'s `"pies"` key). An unknown
  *  `v` means an older build is reading a newer build's document: `list()`
  *  then returns no pies and no write ever replaces the key (app/src/pies.rs). */
@@ -320,6 +354,11 @@ export interface IpcSurface {
   relocatePieMember?(id: string, oldPath: string, newPath: string): Promise<void>;
   /** Stamp `seen_at` to now — called on every plate open for a user pie. */
   touchPieSeen?(id: string): Promise<void>;
+  /** M3: walk pie `id`'s members and report freshness. `root` is the
+   *  current workspace root (or `null` with none open) — used only to
+   *  classify `outside_root`. An unknown id resolves to an empty census,
+   *  never a rejection (`pie_census_for`'s own contract). */
+  pieCensus?(id: string, root: string | null): Promise<PieCensus>;
   /** Resolves `path` to its canonical form (`std::fs::canonicalize`) —
    *  called before comparing a caller-supplied path (a tab entry, a tree
    *  row) against a pie's stored (always-canonical) members, e.g.
@@ -549,6 +588,10 @@ class TauriIpc implements IpcSurface {
 
   async touchPieSeen(id: string): Promise<void> {
     await invoke<void>("touch_pie_seen", { id });
+  }
+
+  async pieCensus(id: string, root: string | null): Promise<PieCensus> {
+    return await invoke<PieCensus>("pie_census", { id, root });
   }
 
   async canonicalizePath(path: string): Promise<string> {

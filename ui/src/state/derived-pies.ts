@@ -5,7 +5,7 @@
 // Derived pies are never persisted (spec section 9): there is no `seen_at`,
 // so they never show a freshness pill, and no `id` beyond the fixed
 // "builtin:*" ones below.
-import type { BookmarkEntry, RecentEntry } from "../ipc";
+import type { BookmarkEntry, PieCensus, RecentEntry } from "../ipc";
 import { BEARINGS, HAZE_THRESHOLD, kindOf } from "../render/kind";
 import type { FileKind } from "../render/kind";
 
@@ -13,12 +13,30 @@ export interface DerivedPieFile {
   path: string;
   kind: FileKind;
   mtime: number; // ms epoch — see the *1000 conversions below
+  /** M3: the folder MEMBER this file was found under (a census file) —
+   *  absent for a direct file member, a built-in pie's file, or any file
+   *  from before the census resolves. `pie-census.ts`'s `layersOf` groups
+   *  rows by this field. */
+  folder?: string;
 }
 
 export interface DerivedPie {
   id: string;
   name: string;
   files: DerivedPieFile[];
+  /** M3: count of `files` newer than the pie's `seen_at` — `undefined` for
+   *  a built-in pie (Pinned/Recent have no `seen_at` at all, spec section
+   *  9) or a user pie whose census hasn't resolved yet. `Pie.tsx` renders
+   *  the freshness pill only when this is a positive number, so a built-in
+   *  pie keeps having no pill exactly as it did before M3. */
+  fresh?: number;
+  /** M3: the path the freshness pill / band ⌘Enter open in one click —
+   *  `undefined` under the same conditions as `fresh`. */
+  newestFreshPath?: string;
+  /** M3: the resolved census behind `files`, when there is one — carried
+   *  through so `PiePlate.tsx` can build folder layers (`layersOf`) and the
+   *  truncated/not-live captions without a second lookup by id. */
+  census?: PieCensus;
 }
 
 export interface Wedge {
