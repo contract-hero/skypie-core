@@ -24,7 +24,9 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWr
 /// Bump when a request or reply changes shape. The app reports its value in
 /// `AppStatus::ipc_proto`, so a `server_status` call can say which side is
 /// old when a reply stops parsing.
-pub const IPC_PROTO: u32 = 2;
+///
+/// 3: `Request::AddToPie` / `Reply::AddedToPie` (M5, agent reach).
+pub const IPC_PROTO: u32 = 3;
 
 /// File name of the socket under the state directory.
 pub const SOCKET_NAME: &str = "app.sock";
@@ -121,6 +123,22 @@ pub enum Request {
     /// Node identity, boot state, offers.
     Status,
 
+    // ── Agent reach (M5) ────────────────────────────────────────────────
+    /// Add `path` to the pie named or identified by `pie` — a name resolves
+    /// case-insensitively, and one that matches no pie CREATES it (an agent
+    /// must never have to ask the user to make the pie first). `origin` is
+    /// provenance only (never used to decide anything); each of its fields
+    /// is independently optional because a caller may not have a
+    /// `session_id`/`prompt_id` to hand, and `cwd` is filled in by the MCP
+    /// client from its OWN trusted working directory, not taken from the
+    /// model's argument.
+    AddToPie {
+        pie: String,
+        path: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<MemberOrigin>,
+    },
+
     // ── Feedback ────────────────────────────────────────────────────────
     // What the Claude Code plugin drives. Deliberately three narrow verbs
     // rather than a general store API: the agent may READ feedback and mark
@@ -164,6 +182,25 @@ pub enum Request {
 
 fn yes() -> bool {
     true
+}
+
+/// Provenance recorded on a member `add_to_pie` creates — mirrors
+/// `app/src/pies.rs`'s `PieMemberOrigin` field for field, kept as a SEPARATE
+/// type in this crate (rather than reused from `skypie-app`, which this
+/// crate cannot depend on: see the module doc's "no tauri here" rule).
+/// `#[serde(default)]` so an old caller's bare `{"session_id":"x"}` (missing
+/// `prompt_id`/`cwd`) still parses, and each field is ALSO
+/// `skip_serializing_if` so a request that supplies none of them serializes
+/// with no `origin` object at all rather than `{}`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemberOrigin {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 // ── Replies ─────────────────────────────────────────────────────────────────
@@ -278,6 +315,24 @@ pub enum Reply {
         node_id: String,
     },
     Status(AppStatus),
+
+    // ── Agent reach (M5) ────────────────────────────────────────────────
+    /// The outcome of `AddToPie`. `pie`/`pie_id` are the resolved pie's own
+    /// name/id — `pie_id` lets the caller act on it again without a second
+    /// name lookup; `created` is true when `pie` named no existing pie and
+    /// one was minted; `added` is false when the path was ALREADY a member
+    /// (idempotent, same as `add_member`) rather than newly inserted.
+    /// `members` is the pie's member count after the call, so a caller can
+    /// tell the add actually landed without a second `list_devices`-style
+    /// round trip.
+    AddedToPie {
+        pie: String,
+        pie_id: String,
+        path: PathBuf,
+        members: usize,
+        created: bool,
+        added: bool,
+    },
 
     /// Open feedback on one file. `context` is empty when there is none.
     Feedback {
@@ -485,6 +540,20 @@ mod tests {
                 device: "phone".into(),
             },
             Request::Status,
+            Request::AddToPie {
+                pie: "Pricing".into(),
+                path: "/tmp/pricing-v3.html".into(),
+                origin: Some(MemberOrigin {
+                    session_id: Some("sess-1".into()),
+                    prompt_id: Some("prompt-1".into()),
+                    cwd: Some("/work".into()),
+                }),
+            },
+            Request::AddToPie {
+                pie: "Pricing".into(),
+                path: "/tmp/pricing-v3.html".into(),
+                origin: None,
+            },
             #[cfg(any(feature = "e2e-hooks", debug_assertions))]
             Request::E2eEval {
                 js: "document.title".into(),
@@ -493,6 +562,54 @@ mod tests {
         for r in all {
             assert_eq!(round_trip(&r), r);
         }
+    }
+
+    /// `add_to_pie`'s own wire shape (the brief's own naming: a
+    /// `the_wire_shape_is_tagged_by_op`-style assertion) — `origin` absent
+    /// entirely when not supplied, and a PARTIAL `origin` (missing
+    /// `prompt_id`/`cwd`) still parses courtesy of `MemberOrigin`'s own
+    /// `#[serde(default)]`.
+    #[test]
+    fn add_to_pie_is_tagged_by_op_and_origin_is_optional_all_the_way_down() {
+        let s = serde_json::to_string(&Request::AddToPie {
+            pie: "Pricing".into(),
+            path: "/tmp/a.html".into(),
+            origin: None,
+        })
+        .unwrap();
+        assert_eq!(s, r#"{"op":"add_to_pie","pie":"Pricing","path":"/tmp/a.html"}"#);
+
+        let r: Request = serde_json::from_str(
+            r#"{"op":"add_to_pie","pie":"Pricing","path":"/tmp/a.html","origin":{"session_id":"s1"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            r,
+            Request::AddToPie {
+                pie: "Pricing".into(),
+                path: "/tmp/a.html".into(),
+                origin: Some(MemberOrigin {
+                    session_id: Some("s1".into()),
+                    prompt_id: None,
+                    cwd: None,
+                }),
+            }
+        );
+
+        let added = Response::ok(Reply::AddedToPie {
+            pie: "Pricing".into(),
+            pie_id: "p1".into(),
+            path: "/tmp/a.html".into(),
+            members: 1,
+            created: false,
+            added: true,
+        });
+        let s = serde_json::to_string(&added).unwrap();
+        assert_eq!(
+            s,
+            r#"{"status":"ok","kind":"added_to_pie","pie":"Pricing","pie_id":"p1","path":"/tmp/a.html","members":1,"created":false,"added":true}"#
+        );
+        assert_eq!(round_trip(&added), added);
     }
 
     #[cfg(any(feature = "e2e-hooks", debug_assertions))]
