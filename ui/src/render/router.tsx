@@ -6,6 +6,12 @@ import MdRenderer from "./md";
 import TextRenderer from "./text";
 import ImageRenderer from "./image";
 import MetadataRenderer from "./metadata";
+import { extOf } from "./kind";
+
+// `kind.ts` owns the canonical ext helper now (the Sky band's file-kind
+// table needs the same one). Nothing outside this file imports `extOf`
+// today; the re-export is only for future callers.
+export { extOf } from "./kind";
 
 const TEXT_EXTS = new Set([
   ".txt", ".md", ".markdown", ".ts", ".tsx", ".js", ".jsx", ".json",
@@ -16,12 +22,6 @@ const TEXT_EXTS = new Set([
 const IMAGE_EXTS = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".avif",
 ]);
-
-export function extOf(path: string): string {
-  const i = path.lastIndexOf(".");
-  if (i < 0) return "";
-  return path.slice(i).toLowerCase();
-}
 
 export function isHtmlPath(path: string): boolean {
   const ext = extOf(path);

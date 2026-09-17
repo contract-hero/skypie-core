@@ -28,6 +28,7 @@ import {
   Settings,
   type LucideIcon,
 } from "lucide-react";
+import { kindOf } from "../render/kind";
 
 /** `subject` = an artifact this app is built to read. Everything else is `plain`. */
 export type GlyphTone = "subject" | "plain";
@@ -120,9 +121,6 @@ const EXT_MAP: Record<string, LucideIcon> = {
   ".lockb": FileLock,
 };
 
-/** Extensions whose files are the artifacts this app exists to read. */
-const SUBJECT_EXTS = new Set([".html", ".htm", ".md", ".markdown"]);
-
 const BASENAME_MAP: Record<string, LucideIcon> = {
   "package.json": FileJson,
   "package-lock.json": FileLock,
@@ -148,6 +146,13 @@ function lower(s: string): string {
   return s.toLowerCase();
 }
 
+// `dot > 0` (not `>= 0`), so a leading-dot basename like ".gitignore" has no
+// extension here — kept as the SHAPE lookup below; kind.ts's own `extOf`
+// uses `lastIndexOf(".") >= 0` for a different job (the Sky band's kind
+// table) and the two never resolve a real extension differently, only the
+// dotfile case, which both send to a shape/kind outside the tone-bearing set
+// ("plain" here, "other" there) — so swapping the TONE source to `kindOf`
+// below is behaviour-neutral even though the two helpers disagree on ".foo".
 function extensionOf(name: string): string | null {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? lower(name.slice(dot)) : null;
@@ -155,7 +160,11 @@ function extensionOf(name: string): string | null {
 
 export function iconForFile(name: string): { Icon: LucideIcon; tone: GlyphTone } {
   const ext = extensionOf(name);
-  const tone: GlyphTone = ext && SUBJECT_EXTS.has(ext) ? "subject" : "plain";
+  // Tone carries product meaning (html/md are the artifacts this app reads),
+  // so it comes from the single kind table rather than its own extension
+  // set. The shape below stays on `EXT_MAP`/`BASENAME_MAP`, untouched.
+  const k = kindOf(name);
+  const tone: GlyphTone = k === "html" || k === "md" ? "subject" : "plain";
 
   // Exact basename match wins for the shape; the tone still follows the
   // extension, so README.md reads as an artifact like any other .md.
