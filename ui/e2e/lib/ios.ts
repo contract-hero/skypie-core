@@ -67,6 +67,11 @@ export interface LaunchIosOptions {
   /** Skip the build (core sync + `build-ios-sim.sh`) — the caller already
    *  did it. Default: build. */
   skipBuild?: boolean;
+  /** Extra env vars for the launched app, e.g. `{ SKYPIE_STATE_DIR: dir }`
+   *  to point a run at a seeded scratch state dir — forwarded the same way
+   *  the port already is, via `xcrun simctl launch`'s `SIMCTL_CHILD_`
+   *  prefix convention (this file's own header comment). */
+  env?: Record<string, string>;
 }
 
 export interface LaunchedIosApp extends AppHandle {
@@ -88,11 +93,14 @@ export async function launchIos(opts: LaunchIosOptions): Promise<LaunchedIosApp>
   await ensureBooted();
   run("xcrun", ["simctl", "install", "booted", IOS_APP_PATH]);
 
+  const extraEnv = Object.fromEntries(
+    Object.entries(opts.env ?? {}).map(([k, v]) => [`SIMCTL_CHILD_${k}`, v]),
+  );
   console.log(`$ xcrun simctl launch --terminate-running-process booted ${BUNDLE_ID} (port ${opts.port})`);
   await execFileAsync(
     "xcrun",
     ["simctl", "launch", "--terminate-running-process", "booted", BUNDLE_ID],
-    { env: { ...process.env, SIMCTL_CHILD_SKYPIE_E2E_PORT: String(opts.port) } },
+    { env: { ...process.env, SIMCTL_CHILD_SKYPIE_E2E_PORT: String(opts.port), ...extraEnv } },
   );
 
   await waitForPort(opts.port, 30_000);
