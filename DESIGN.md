@@ -730,16 +730,23 @@ spreading.
   `--sky` field. Same job as the one accent's focus role, a shade chosen per
   surface rather than a second color.
 - **A window-height breakpoint.** Below a 480px pane (`usePaneShort`,
-  `PiePlate.tsx`) the plate's pie drops from 200px to 120px and the legend
-  scrolls — the one exception to "Don't let chrome grow with the window, and
-  don't add breakpoints" (line 693). The limit is exactly that one
-  threshold, on the plate's pie diameter only: the 120px band height never
-  changes, and no other Sky band surface reflows with the window. Owner
-  decision: below a 480px pane the plate uses this floor geometry.
+  `PiePlate.tsx`) the plate's pie drops from 200px to 120px — the one
+  exception to "Don't let chrome grow with the window, and don't add
+  breakpoints" (line 693). The limit is ONE threshold: the pie diameter is
+  the only thing it switches, and the 120px band height never changes. The
+  plate's own box does track the window continuously (`width: min(720px,
+  100% − 32px)`, `height: clamp(280px, 100vh − 232px, 440px)`), and its layer
+  list scrolls at every height — but nothing else in the band reflows, and
+  no second breakpoint is added. Owner decision: below a 480px pane the
+  plate uses this floor geometry.
 
 The plate's mono readout uses `{colors.fg-muted}`, not `{colors.fg-dim}`
-(line 674's "keep fg-dim off anything a user has to read") — no further
-departure is needed there.
+(line 674's "keep fg-dim off anything a user has to read"). Two labels in
+the plate are a scoped exception and do use `{colors.fg-dim}`:
+`.pie-plate-last-opened` and the layer rows' `.start-row-mtime`. Both are
+secondary timestamps beside the name they qualify, never the only text in
+their row, and the exception stops there — no other Sky band text takes
+`fg-dim`.
 
 ## Known Gaps
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupByWedge, pinnedPie, recentPie, wedgesOf } from "./derived-pies";
+import { groupByWedge, pinnedPie, recentPie, wedgesOf, wedgesOfGroups } from "./derived-pies";
 import { BEARINGS } from "../render/kind";
 import type { BookmarkEntry, RecentEntry } from "../ipc";
 import type { DerivedPieFile } from "./derived-pies";
@@ -10,6 +10,14 @@ describe("pinnedPie", () => {
     const pie = pinnedPie(bookmarks);
     expect(pie.id).toBe("builtin:pinned");
     expect(pie.files).toEqual([{ path: "/w/a.html", kind: "html", mtime: 1_700_000_000_000 }]);
+  });
+
+  it("skips a skypie-remote:// bookmark — the star bookmarks whatever the tab holds", () => {
+    const bookmarks: BookmarkEntry[] = [
+      { path: "/w/local.html", bookmarked_at: 1 },
+      { path: "skypie-remote://abc123/w/other.html", bookmarked_at: 2 },
+    ];
+    expect(pinnedPie(bookmarks).files.map((f) => f.path)).toEqual(["/w/local.html"]);
   });
 });
 
@@ -106,6 +114,25 @@ describe("groupByWedge", () => {
 
   it("returns an empty map for empty input", () => {
     expect(groupByWedge([]).size).toBe(0);
+  });
+
+  it("derives the wedge total from the groups themselves", () => {
+    // `wedgesOfGroups` takes no total any more: shares always add up to 1
+    // over the groups it was handed, so the disc can never be over- or
+    // under-filled by a caller's stale count.
+    const files: DerivedPieFile[] = [
+      { path: "/a.html", kind: "html", mtime: 0 },
+      { path: "/b.html", kind: "html", mtime: 0 },
+      { path: "/c.md", kind: "md", mtime: 0 },
+      { path: "/d.md", kind: "md", mtime: 0 },
+    ];
+    const wedges = wedgesOfGroups(groupByWedge(files));
+    expect(wedges.map((w) => w.share)).toEqual([0.5, 0.5]);
+    expect(wedges.reduce((n, w) => n + w.share, 0)).toBe(1);
+  });
+
+  it("returns no wedges for an empty group map", () => {
+    expect(wedgesOfGroups(new Map())).toEqual([]);
   });
 
   it("does not alias the same map instance across calls", () => {

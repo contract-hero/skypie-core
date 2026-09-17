@@ -41,11 +41,18 @@ const DATA_EXTS = new Set([".json", ".yml", ".yaml", ".toml", ".xml"]);
  *  `dot > 0`, not `>= 0`: a leading-dot basename (".gitignore", ".md") is a
  *  NAME, not an extension, which is the rule FileIcon.tsx's glyph lookup
  *  has always used. One parser, so the kind table and the glyph table can
- *  never answer differently for the same filename. */
+ *  never answer differently for the same filename.
+ *
+ *  The rule is applied to the BASENAME, not to the whole string: every
+ *  caller in derived-pies.ts passes an absolute path, so parsing the whole
+ *  path made "/Users/me/.md" report the extension ".md" (a leading-dot NAME)
+ *  and "/Users/me/site.v2/README" report ".v2/readme" (a dot in a DIRECTORY
+ *  segment). */
 export function extOf(path: string): string {
-  const dot = path.lastIndexOf(".");
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
   if (dot <= 0) return "";
-  return path.slice(dot).toLowerCase();
+  return name.slice(dot).toLowerCase();
 }
 
 export function kindOf(path: string): FileKind {

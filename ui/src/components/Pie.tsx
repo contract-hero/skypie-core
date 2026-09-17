@@ -9,9 +9,9 @@ import * as React from "react";
 import { BEARINGS } from "../render/kind";
 import { wedgesOf } from "../state/derived-pies";
 import type { DerivedPie } from "../state/derived-pies";
-
-const CENTER = 100;
-const RADIUS = 92;
+// The angle arithmetic lives in render/wedge.ts so it can be tested without
+// a renderer (wedge.test.ts); this file only chooses tones and elements.
+import { CENTER, RADIUS, wedgePath } from "../render/wedge";
 
 // The one warm stroke in the product (DESIGN.md, "Sky band"). Wedge tones
 // themselves are CSS custom properties (`--sky-tone-1` … `--sky-tone-7`,
@@ -21,17 +21,13 @@ const RADIUS = 92;
 // a pure CSS re-resolve with no theme subscription and no MutationObserver.
 const CRUST = "#c89a5c";
 
-/** Point on the disc at `angleDeg` clockwise from north (SVG's 0° is east,
- *  so this rotates the usual parametrization by -90°). */
-function polar(angleDeg: number): [number, number] {
-  const rad = (angleDeg * Math.PI) / 180;
-  return [CENTER + RADIUS * Math.sin(rad), CENTER - RADIUS * Math.cos(rad)];
-}
-
 export interface PieProps {
   pie: DerivedPie;
   /** This pie's plate is the one currently open — dims every OTHER pie in
-   *  the same band to 60% (spec section 4). */
+   *  the same band to 60% (spec section 4), and hides THIS tile's own disc
+   *  (`.sky-pies .sky-pie.selected .sky-pie-disc`, styles.css) for as long as
+   *  the plate stays open, so the plate's portrait is the only copy of the
+   *  disc on screen while it scales out of this slot. */
   selected?: boolean;
   /** Required when `interactive` (the default); unused for a portrait. */
   onOpen?: (e: React.MouseEvent<HTMLButtonElement>) => void;
@@ -71,25 +67,17 @@ export default function Pie({
   const paths = wedges.map((w) => {
     const sweep = w.share * 360;
     const toneIndex = BEARINGS.indexOf(w.kind);
-    let d: string;
-    if (wedges.length === 1) {
-      // One kind = a full disc. An SVG arc of exactly 360° degenerates to
-      // nothing, so the full circle is drawn as two 180° arcs instead.
-      const [nx, ny] = polar(0);
-      const [sx, sy] = polar(180);
-      d = `M ${nx},${ny} A ${RADIUS},${RADIUS} 0 1 1 ${sx},${sy} A ${RADIUS},${RADIUS} 0 1 1 ${nx},${ny} Z`;
-    } else {
-      const [x1, y1] = polar(angle);
-      const [x2, y2] = polar(angle + sweep);
-      const largeArc = sweep > 180 ? 1 : 0;
-      d = `M ${CENTER},${CENTER} L ${x1},${y1} A ${RADIUS},${RADIUS} 0 ${largeArc} 1 ${x2},${y2} Z`;
-    }
+    // One kind = a full disc, drawn as two 180° arcs (see wedgePath).
+    const d = wedgePath(angle, sweep, wedges.length === 1);
     angle += sweep;
     return (
       <path
         key={w.kind}
         d={d}
-        fill={toneIndex >= 0 ? `var(--sky-tone-${toneIndex + 1})` : CRUST}
+        // The crust is a STROKE and never a fill (DESIGN.md, "Sky band"), so
+        // a kind missing from BEARINGS falls back to the last tone instead.
+        // The branch is unreachable today — every FileKind is a bearing.
+        fill={toneIndex >= 0 ? `var(--sky-tone-${toneIndex + 1})` : "var(--sky-tone-7)"}
         stroke="var(--sky)"
         strokeWidth={1}
         vectorEffect="non-scaling-stroke"

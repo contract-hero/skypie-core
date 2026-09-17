@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BEARINGS, HAZE_THRESHOLD, kindOf } from "./kind";
+import { BEARINGS, extOf, HAZE_THRESHOLD, kindOf } from "./kind";
 import type { FileKind } from "./kind";
 
 describe("kindOf", () => {
@@ -57,6 +57,19 @@ describe("kindOf", () => {
     expect(BEARINGS[0]).toBe("html");
     expect(new Set(BEARINGS).size).toBe(BEARINGS.length);
     expect(BEARINGS).toContain("other");
+  });
+
+  it("parses the BASENAME, not the whole path", () => {
+    // Every caller in derived-pies.ts passes an absolute path.
+    expect(extOf("/Users/me/report.HTML")).toBe(".html");
+    // A leading-dot basename is a NAME, even deep in a path.
+    expect(extOf("/Users/me/.md")).toBe("");
+    expect(kindOf("/Users/me/.md")).toBe("other");
+    expect(extOf("/Users/me/.gitignore")).toBe("");
+    // A dot in a DIRECTORY segment is not the file's extension.
+    expect(extOf("/Users/me/site.v2/README")).toBe("");
+    expect(kindOf("/Users/me/site.v2/README")).toBe("other");
+    expect(kindOf("/Users/me/site.v2/notes.md")).toBe("md");
   });
 
   it("HAZE_THRESHOLD is 4%", () => {

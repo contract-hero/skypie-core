@@ -33,7 +33,10 @@ function readStateJson(stateDir: string): { panes?: { sky_visible?: boolean } } 
   if (!fs.existsSync(p)) return null;
   try {
     return JSON.parse(fs.readFileSync(p, "utf8"));
-  } catch {
+  } catch (e) {
+    // A corrupt or half-written document would otherwise report as the
+    // generic persistence timeout with "last read: undefined". Name it.
+    console.error(`state.json is present but unparseable at ${p}`, e);
     return null;
   }
 }
@@ -71,8 +74,12 @@ async function main(): Promise<void> {
   console.log(`fixture workspace: ${fixture.dir}`);
   console.log(`scratch state dir: ${stateDir}`);
 
-  let app: LaunchedApp = await launchDesktop({ stateDir });
+  // `launchDesktop` builds the app, and a build failure must not leak the
+  // fixture and state directories created above — so it runs INSIDE the try
+  // whose `finally` removes them.
+  let app: LaunchedApp | null = null;
   try {
+    app = await launchDesktop({ stateDir });
     await waitFor(app, `document.querySelector(".toolbar") !== null`, 60_000);
     console.log("ok: toolbar renders");
 
@@ -188,7 +195,16 @@ async function main(): Promise<void> {
     // this is a real tab switch, not a no-op re-click of the active tab.
     await click(app, '[data-testid="pie-layers"] .start-row');
     await waitFor(app, `document.querySelector('[data-testid="pie-plate"]') === null`, 10_000);
-    await waitFor(app, `document.querySelector(".tab-view")?.style.pointerEvents !== "none"`, 10_000);
+    // The element must EXIST and have had its inline pointer-events cleared:
+    // `?.style… !== "none"` alone is also true when `.tab-view` is absent.
+    await waitFor(
+      app,
+      `(function(){
+        var view = document.querySelector(".tab-view");
+        return view !== null && view.style.pointerEvents !== "none";
+      })()`,
+      10_000,
+    );
     const activeLabel = await text(app, ".tab.active .tab-label");
     if (activeLabel !== "report.html") {
       throw new Error(`expected the active tab's title to be "report.html", got ${JSON.stringify(activeLabel)}`);
@@ -213,10 +229,9 @@ async function main(): Promise<void> {
     console.log("ok: leaving reader mode restores both");
 
     // ── panes.sky_visible persists across relaunch ────────────────────────
-    // Tested with the band SHOWN, not hidden: App.tsx's hydration effect
-    // only acts `if (!userToggledSky.current && s?.panes?.sky_visible ===
-    // true)` — its own default is already `false`, so relaunching after
-    // HIDING the band would pass even if the hydration read were deleted
+    // Tested with the band SHOWN, not hidden: App.tsx starts the band at
+    // `false`, so relaunching after HIDING it would pass even if the
+    // hydration read (`hydratePaneVisible`, state/panes.ts) were deleted
     // entirely. Wait for the debounced writer to actually land the true
     // value on disk before killing the process out from under it.
     await waitForPersistedSkyVisible(stateDir, true);
@@ -245,9 +260,19 @@ async function main(): Promise<void> {
 
     console.log("PASS");
   } finally {
-    await quit(app);
-    await cleanupFixtureWorkspace(fixture);
-    await fs.promises.rm(stateDir, { recursive: true, force: true });
+    // Each cleanup step is guarded on its own. The scenario already quit the
+    // app once before the relaunch, so an unguarded second `quit` threw over
+    // the real assertion error AND skipped the two removals under it,
+    // leaking the fixture and the state dir on every failing run.
+    if (app) {
+      await quit(app).catch((e: unknown) => console.error("cleanup: quit failed", e));
+    }
+    await cleanupFixtureWorkspace(fixture).catch((e: unknown) =>
+      console.error("cleanup: removing the fixture workspace failed", e),
+    );
+    await fs.promises
+      .rm(stateDir, { recursive: true, force: true })
+      .catch((e: unknown) => console.error("cleanup: removing the scratch state dir failed", e));
   }
 }
 

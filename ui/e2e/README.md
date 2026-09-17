@@ -48,6 +48,7 @@ renders only after the bridge reported ready. Production renders nothing.
 
 ```bash
 pnpm -C ui e2e:smoke        # macOS: launch, set a fixture workspace, ⌘P, open a file
+pnpm -C ui e2e:m1           # macOS: the M1 Sky checkpoint — ⌘⇧B, the Recent plate, a slice, a relaunch
 pnpm -C ui e2e:ios-smoke    # simulator: build, install, launch, read document.title, screenshot
 ```
 

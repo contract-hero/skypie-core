@@ -92,12 +92,14 @@ export default function Sky({ onOpenFile }: SkyProps): React.ReactElement {
         break;
       }
       case "Escape":
-        // Leaves the band (blurs the focused tile) without closing it — the
-        // plate owns its own Esc (useEscape) to close itself first. Stop
-        // here so this bubble-phase handler cannot ALSO trigger whatever
-        // else in the tree is listening for a bare Escape (e.g. the reader
-        // mode / comment tool bindings in App.tsx) — the same one-press,
-        // one-effect rule useEscape enforces for the plate itself.
+        // Leaves the band: blurs the focused tile without hiding the band —
+        // the plate owns its own Esc (useEscape) to close itself first.
+        //
+        // `stopPropagation` does NOT suppress App's `escape` bindings. The
+        // shortcut registry listens in the CAPTURE phase on `window`
+        // (keyboard/shortcuts.ts), so those bindings have already fired by
+        // the time this bubble-phase handler runs. The call only keeps the
+        // key from bubbling further up the React tree.
         e.stopPropagation();
         (document.activeElement as HTMLElement | null)?.blur();
         break;
@@ -145,7 +147,8 @@ export default function Sky({ onOpenFile }: SkyProps): React.ReactElement {
       >
         <div className="sky-glaze" aria-hidden />
         {/* Two separate fixed-size SVGs, positioned by CSS `left` percentage
-            (22% / 71% of the band width — DESIGN.md, "Sky band"). A single
+            (22% / 71% of the band width — `.sky-cloud-1` / `.sky-cloud-2`,
+            styles.css). A single
             SVG spanning the whole band with `preserveAspectRatio="none"`
             used to stretch every ellipse horizontally by paneWidth/100
             while its vertical scale stayed 1, turning each cumulus into a
