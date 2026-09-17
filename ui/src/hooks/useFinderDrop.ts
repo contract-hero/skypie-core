@@ -109,31 +109,42 @@ export function useFinderDrop({ enabled, onOver, onDrop }: UseFinderDropOptions)
     if (!enabled) return;
     let unlisten: (() => void) | null = null;
     let cancelled = false;
-    getCurrentWebview()
-      .onDragDropEvent((e) => {
-        // `window.devicePixelRatio` AT EVENT TIME, not at mount — the
-        // window can move to a different-DPI display between mount and a
-        // drop landing.
-        const dpr = window.devicePixelRatio || 1;
-        switch (e.payload.type) {
-          case "enter":
-          case "over": {
-            const { x, y } = e.payload.position;
-            onOverRef.current(hitTestPieId(document, x, y, dpr));
-            break;
+    // `Promise.resolve().then(...)`, not a bare `getCurrentWebview()` call —
+    // `getCurrentWebview()` itself throws SYNCHRONOUSLY outside Tauri (it
+    // dereferences `window.__TAURI_INTERNALS__`), which the `.catch()`
+    // below can't see if it's the first thing this effect calls (review:
+    // useFinderDrop.ts:112). Deferring it into the promise chain routes
+    // that throw through the same `.catch()` as every other Tauri-missing
+    // case here, matching `useTheme.ts`'s try/catch around the equivalent
+    // `getCurrentWindow()` call.
+    Promise.resolve()
+      .then(() => getCurrentWebview())
+      .then((webview) =>
+        webview.onDragDropEvent((e) => {
+          // `window.devicePixelRatio` AT EVENT TIME, not at mount — the
+          // window can move to a different-DPI display between mount and a
+          // drop landing.
+          const dpr = window.devicePixelRatio || 1;
+          switch (e.payload.type) {
+            case "enter":
+            case "over": {
+              const { x, y } = e.payload.position;
+              onOverRef.current(hitTestPieId(document, x, y, dpr));
+              break;
+            }
+            case "drop": {
+              const { x, y } = e.payload.position;
+              onDropRef.current(hitTestPieId(document, x, y, dpr), e.payload.paths);
+              break;
+            }
+            case "leave":
+              onOverRef.current(null);
+              break;
+            default:
+              break;
           }
-          case "drop": {
-            const { x, y } = e.payload.position;
-            onDropRef.current(hitTestPieId(document, x, y, dpr), e.payload.paths);
-            break;
-          }
-          case "leave":
-            onOverRef.current(null);
-            break;
-          default:
-            break;
-        }
-      })
+        }),
+      )
       .then((fn) => {
         if (cancelled) fn();
         else unlisten = fn;

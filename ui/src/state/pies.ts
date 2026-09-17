@@ -129,6 +129,15 @@ export function pieHoldingPath(pies: DerivedPie[], path: string): DerivedPie | n
  * census is what turns a folder member into individual file rows) —
  * `App.tsx`'s own comment on this exact gap explains why "show-sidebar" is
  * the acceptable fallback rather than a hard failure to reveal at all.
+ *
+ * Reader mode routes the SAME as sidebar-hidden ("plate", when a pie holds
+ * `path`) rather than getting its own branch — reader mode already
+ * unmounts the sidebar, so there is nothing left to distinguish. `App.tsx`
+ * is the one that makes this route VISIBLE: it leaves reader mode
+ * (`setReaderMode(false)`) in the "plate" branch, since Sky only mounts
+ * when `!readerMode` — without that, a reveal received mid-read was a
+ * silent no-op until the user left reader mode by hand (review fix,
+ * App.tsx:454).
  */
 export function revealRoute(
   sidebarVisible: boolean,

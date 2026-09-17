@@ -60,6 +60,13 @@ export interface SkyProps {
   /** M4: see `SkyRevealTarget`. `null`/omitted whenever the last deep link
    *  (if any) didn't route to the plate. */
   revealTarget?: SkyRevealTarget | null;
+  /** M4: fired once PiePlate has actually consumed `revealTarget` (its
+   *  focus effect ran, whether or not it found the target row) — App.tsx's
+   *  `clearRevealTarget`. `revealTarget` is a ONE-SHOT routing decision
+   *  (spec line 148, "not persisted"); without this callback nothing ever
+   *  cleared it, so it kept steering every later open of the same pie's
+   *  plate and re-fired on every fresh Sky mount (review: App.tsx:466). */
+  onRevealConsumed?: () => void;
 }
 
 /** A dashed hairline circle with no fill — the tin's own glyph (spec
@@ -88,6 +95,7 @@ export default function Sky({
   onOpenFile,
   onNotice,
   revealTarget,
+  onRevealConsumed,
 }: SkyProps): React.ReactElement {
   const { bookmarks } = useBookmarksContext();
   const { recents } = useRecentsContext();
@@ -649,6 +657,13 @@ export default function Sky({
       </div>
       {openPie ? (
         <PiePlate
+          // Keyed by the open pie's id — switching the plate to a
+          // DIFFERENT pie (a reveal, or a click, while one is already
+          // open) now remounts it, so its mount-only "focus something"
+          // effect runs again for the new pie instead of leaving the old
+          // pie's row/radio focused underneath the new content (review:
+          // PiePlate.tsx:479).
+          key={openPie.id}
           pie={openPie}
           onClose={() => setOpenPieId(null)}
           onOpenFile={onOpenFile}
@@ -659,6 +674,13 @@ export default function Sky({
           // possible: nothing here locks the band) must not carry a stale
           // focus target into it.
           focusPath={revealTarget && revealTarget.pieId === openPie.id ? revealTarget.path : null}
+          // A SECOND reveal of a file in a pie whose plate is ALREADY open
+          // does not change `openPie.id` (no remount from the `key` above)
+          // — this nonce is what re-runs PiePlate's focus effect in that
+          // case, so the row is focused again instead of nothing happening
+          // (review: PiePlate.tsx:479).
+          focusNonce={revealTarget && revealTarget.pieId === openPie.id ? revealTarget.nonce : undefined}
+          onFocusConsumed={onRevealConsumed}
         />
       ) : null}
     </div>

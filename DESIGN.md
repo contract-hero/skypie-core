@@ -785,7 +785,8 @@ plate.** Four additions, none a new departure — every color below is
   silently — both M4 owner decisions, not new visual language.
 - **The plate's short/narrow floor.** `usePaneShort` (M3, pane height
   `< 480px`, the pie itself drops to 120px) is joined by `usePaneNarrow`
-  (pane width `<= 760px`, same `matchMedia` shape, a SEPARATE threshold —
+  (WINDOW width `<= 760px` — `window.innerWidth`, not the narrower pane
+  the sidebar leaves once it is open; same `matchMedia` shape, a SEPARATE threshold —
   a short-but-wide window and a narrow-but-tall one overflow at different
   points): the legend scrolls in its own box instead of pushing the layer
   list off the bottom, and the left rail (pie + readout) narrows from

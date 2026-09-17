@@ -38,15 +38,14 @@ describe("hitTestPieId", () => {
     expect(hitTestPieId(doc, 200, 100, 2)).toBe("builtin:pinned");
   });
 
-  it("resolves a hit on the disc SVG (a child of the tile) to the owning tile's id", () => {
+  it("resolves a hit on any descendant of the tile (disc SVG, freshness pill span, ...) to the owning tile's id", () => {
     // `closest()` on any descendant of the tile bubbles to the same match —
     // this fixture stands in for `elementFromPoint` returning the <svg>
-    // rather than the <button data-pie-id> that wraps it.
-    const doc = docAt(10, 10, tile({ "data-pie-id": "0199-fixture" }));
-    expect(hitTestPieId(doc, 10, 10, 1)).toBe("0199-fixture");
-  });
-
-  it("resolves a hit on the .sky-pie-fresh pill span (another child) the same way", () => {
+    // or the pill <span> rather than the <button data-pie-id> that wraps
+    // it. `tile()`'s stub `closest()` ignores which element it was called
+    // on, so a second fixture asserting the identical inputs/outputs (one
+    // per descendant) would not exercise any different code path — one
+    // case stands for all of them (review: finder-drop.test.ts:49).
     const doc = docAt(10, 10, tile({ "data-pie-id": "0199-fixture" }));
     expect(hitTestPieId(doc, 10, 10, 1)).toBe("0199-fixture");
   });

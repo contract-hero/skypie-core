@@ -107,13 +107,18 @@ function usePaneShort(): boolean {
   return short;
 }
 
-/** M4 polish: below a 760px pane the plate's two-column layout is the next
- *  thing to overflow after the pie/legend themselves (`usePaneShort`
+/** M4 polish: below a 760px WINDOW width the plate's two-column layout is
+ *  the next thing to overflow after the pie/legend themselves (`usePaneShort`
  *  handles the pie diameter and legend scroll) — the left rail (pie +
  *  readout) narrows from 240px to 140px so the right column keeps enough
  *  room to read a filename. Same shape as `usePaneShort`, width instead of
  *  height; a SEPARATE threshold, since a short-but-wide window and a
- *  narrow-but-tall one hit different overflow first. */
+ *  narrow-but-tall one hit different overflow first. Measures
+ *  `window.innerWidth`, NOT the narrower pane the sidebar leaves when open
+ *  (unlike the height axis, where pane height is a constant window-height
+ *  offset) — a 1000px window with the default 280px sidebar has a pane
+ *  narrower than this threshold implies; see the size-clamp fix on the
+ *  `<Pie>` disc below, which also checks `narrow` for exactly this reason. */
 const NARROW_PANE_WINDOW_W = 760;
 
 function usePaneNarrow(): boolean {
@@ -177,6 +182,19 @@ export interface PiePlateProps {
    *  the row focused"). `null`/omitted for every other way the plate opens
    *  (a band click, Enter on the band). */
   focusPath?: string | null;
+  /** M4: changes identity every time a NEW reveal targets the pie already
+   *  behind this open plate (Sky.tsx computes it from `revealTarget.nonce`)
+   *  — the focus effect below re-runs on a change here even though
+   *  `pie.id`/mount identity stay the same, so a second reveal into an
+   *  already-open plate still moves focus (review: PiePlate.tsx:479).
+   *  `undefined` whenever `focusPath` is also unset. */
+  focusNonce?: number;
+  /** M4: called once the focus effect below has used `focusPath` (found
+   *  the row, or fell through to the legend-radio target) — Sky.tsx wires
+   *  this to App.tsx's `clearRevealTarget`, making the deep-link reveal a
+   *  true one-shot instead of re-steering every later mount focus (review:
+   *  App.tsx:466). Never called when `focusPath` was never set. */
+  onFocusConsumed?: () => void;
 }
 
 export default function PiePlate({
@@ -186,6 +204,8 @@ export default function PiePlate({
   ipc,
   onNotice,
   focusPath,
+  focusNonce,
+  onFocusConsumed,
 }: PiePlateProps): React.ReactElement {
   const { root } = useWorkspace();
   const contextMenu = useContextMenu();
@@ -219,20 +239,19 @@ export default function PiePlate({
   const members = rawPie?.members ?? [];
   const treeMode = members.some((m) => m.kind === "folder");
   // The "new" dot's baseline is `seen_at` AS OF THE MOMENT THIS PLATE
-  // OPENED (or switched to a DIFFERENT pie without closing — the deps array
-  // is deliberately just `[pie.id]`, not `rawPie`/`seen_at`), NOT the live
-  // `rawPie.seen_at` below, which the mount effect right after this bumps
-  // to `Date.now()` on the very same open. Reading the live value here
-  // would mean every row's mtime is compared against a timestamp from
-  // AFTER it was written, so the marker this open exists to SHOW would
-  // already read false before its first paint — the same bug the pill
-  // itself avoids by living on the BAND tile, which is never remounted by
-  // opening the plate. `useMemo`, not `useState`'s lazy initializer: Sky.tsx
-  // does not remount `PiePlate` on a pie switch (no `key={pie.id}` — the
-  // roving-tabindex/filter state below already resets itself via its own
-  // `[pie.id]`-keyed effect instead), so a one-time initializer would stay
-  // frozen on the FIRST pie forever; `useMemo` recomputes synchronously
-  // during render whenever `pie.id` itself changes, with no one-render lag.
+  // OPENED, NOT the live `rawPie.seen_at` below, which the mount effect
+  // right after this bumps to `Date.now()` on the very same open. Reading
+  // the live value here would mean every row's mtime is compared against a
+  // timestamp from AFTER it was written, so the marker this open exists to
+  // SHOW would already read false before its first paint — the same bug
+  // the pill itself avoids by living on the BAND tile, which is never
+  // remounted by opening the plate. `useMemo`, not `useState`'s lazy
+  // initializer, deliberately: Sky.tsx keys `<PiePlate key={openPie.id}>`
+  // (review fix, PiePlate.tsx:479), so a pie SWITCH is always a fresh
+  // mount and `pie.id` never changes under one instance — but a plain
+  // `useState` initializer would still need `useMemo`'s per-mount
+  // recompute semantics to stay correct if that ever changes back to an
+  // in-place pie swap, and costs nothing to keep either way.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const seenAtAtOpen = React.useMemo(() => rawPie?.seen_at ?? 0, [pie.id]);
 
@@ -436,15 +455,55 @@ export default function PiePlate({
   // Falls back to the plate container when there is no radio to focus (an
   // empty pie).
   //
-  // M4: when `focusPath` is armed (App.tsx's deep-link reveal), THIS
-  // effect is the one that runs the reveal's own promise — "the plate
-  // opens on that pie with the row focused" (spec section 7) — instead of
-  // the checked-legend-radio target above, not in a second effect after
-  // it: a second effect would fire in DOM order after this one and win the
-  // race for real focus regardless of which target made more sense, and
-  // there is exactly one thing to focus on any given mount anyway.
+  // Split into TWO effects (review fix, PiePlate.tsx:479/App.tsx:466):
+  //
+  // Effect A below captures whatever had focus right before the plate's
+  // OWN focus effects run, and restores it — but ONLY on UNMOUNT (`[]`
+  // deps). Kept separate from the focus-choosing effect so that effect's
+  // OWN re-runs (a second reveal nonce, see below) never trip this
+  // restore-on-cleanup: an earlier single-effect version returned
+  // `() => previouslyFocused?.focus?.()` from the SAME effect that also
+  // read `focusNonce`, so consuming a reveal (which flips `focusNonce`
+  // back to `undefined` once `onFocusConsumed` clears `revealTarget`
+  // upstream) reran that effect, its cleanup fired FIRST, and yanked real
+  // focus straight back off the row this exact effect had just set —
+  // caught by `ui/e2e/m4.e2e.ts`'s own reveal step during this fix.
   React.useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
+    return () => {
+      previouslyFocused?.focus?.();
+    };
+  }, []);
+
+  // Effect B: the actual "what should be focused right now" decision —
+  // the checked legend radio (spec section 4's mount-focus fix) UNLESS
+  // `focusPath` is armed (App.tsx's deep-link reveal), in which case THIS
+  // effect runs the reveal's own promise — "the plate opens on that pie
+  // with the row focused" (spec section 7) — instead, not in a second
+  // effect after it: a second effect would fire in DOM order after this
+  // one and win the race for real focus regardless of which target made
+  // more sense, and there is exactly one thing to focus at a time anyway.
+  //
+  // Deps are `[focusNonce]`, not `[]` — a plain mount-only effect covered
+  // the FIRST reveal into a freshly opened plate (Sky.tsx keys `<PiePlate>`
+  // by `openPie.id`, so a reveal that switches pies remounts it), but not a
+  // SECOND reveal that targets a pie whose plate is already open: `pie.id`
+  // doesn't change, so nothing remounts, and a mount-only effect never
+  // fires again (review: PiePlate.tsx:479). `focusNonce` is exactly the
+  // reveal's own nonce (Sky.tsx), so it changes on a genuinely new reveal
+  // — but ALSO reverts to `undefined` once that reveal is consumed
+  // (App.tsx clears `revealTarget`), which must NOT re-run the focus
+  // logic below a second time; `lastNonceRef`/`didMountRef` tell "a fresh
+  // reveal nonce" apart from "the same one going away" so only the FORMER
+  // re-enters the body below.
+  const didMountRef = React.useRef(false);
+  const lastNonceRef = React.useRef<number | undefined>(focusNonce);
+  React.useEffect(() => {
+    const isMount = !didMountRef.current;
+    didMountRef.current = true;
+    const isFreshReveal = focusNonce !== undefined && focusNonce !== lastNonceRef.current;
+    lastNonceRef.current = focusNonce;
+    if (!isMount && !isFreshReveal) return;
     if (focusPath) {
       const navIndex = navItems.findIndex((item) => item.type === "file" && item.file.path === focusPath);
       if (navIndex >= 0) {
@@ -456,27 +515,28 @@ export default function PiePlate({
           ".pie-layer-header, .start-row",
         )[navIndex];
         row?.focus();
-        return () => {
-          previouslyFocused?.focus?.();
-        };
+        onFocusConsumed?.();
+        return;
       }
       // `focusPath` named a file that isn't in `navItems` YET — the pie's
       // census can still be in flight even though `App.tsx`'s own
       // `revealRoute` already saw it in `pie.files` a moment earlier (a
       // folder member's census resolving between that check and this
       // mount). Falls through to the legend-radio target below rather than
-      // focusing nothing.
+      // focusing nothing. Still reported as consumed — the target was
+      // acted on (unsuccessfully), and without a fresh nonce this effect
+      // will not run again to retry it, so leaving it "unconsumed" would
+      // just leak the same stale target App.tsx:466 was about (review).
+      onFocusConsumed?.();
     }
     const target = (focusedKind && legendRefs.current[focusedKind]) || plateRef.current;
     target?.focus();
-    return () => {
-      previouslyFocused?.focus?.();
-    };
-    // Deliberately mount-only: this is the INITIAL focus target, not a
-    // resync on every readout change (which would steal focus back from
-    // wherever the user has since moved it, e.g. into the layer list).
+    // `focusedKind`/`legendRefs`/`navItems`/etc. deliberately excluded:
+    // this is the INITIAL (or reveal-triggered) focus target, not a resync
+    // on every readout change, which would steal focus back from wherever
+    // the user has since moved it (e.g. into the layer list).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [focusNonce]);
 
   // Loose enough to accept either a mouse click or the Enter keydown that
   // opens the focused row — both carry the same modifier keys
@@ -610,7 +670,14 @@ export default function PiePlate({
             — see the ARIA-ownership note on `onWedgeClick` in Pie.tsx. */}
         <Pie
           pie={pie}
-          size={short ? 120 : 200}
+          // `narrow`, not just `short` (review: styles.css:3458) — the left
+          // rail only drops to 140px under `.pie-plate-narrow`, and narrow
+          // can be true while short is false (a narrow-but-tall window, a
+          // 640x800 desktop floor is reachable). A 200px disc in a 140px
+          // rail overflows the rail's padding/border by ~14px each side;
+          // checking either breakpoint keeps the disc inside its rail at
+          // every supported window size.
+          size={short || narrow ? 120 : 200}
           interactive={false}
           cutKind={filterKind}
           onWedgeClick={activateRadio}

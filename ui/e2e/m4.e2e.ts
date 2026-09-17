@@ -166,9 +166,22 @@ async function dragLeave(app: LaunchedApp, verifyJs: string): Promise<void> {
   await emitAndVerify(app, "tauri://drag-leave", {}, verifyJs);
 }
 
+/**
+ * Emits `tauri://drag-drop` exactly ONCE, then polls `verifyJs` — unlike
+ * `dragOver`/`dragLeave` (pure UI state, safe to re-emit via
+ * `emitAndVerify`), a drop is NOT idempotent: the real handler
+ * (Sky.tsx's `handleFinderDrop`) runs `listDir` → `upsertPie` →
+ * `addPieMember`, several awaited IPC round trips, and a re-emit that
+ * lands before the first one finishes creates a SECOND pie ("dropped 2")
+ * with its own member (review: m4.e2e.ts:151/169). By the time this is
+ * called in the checkpoint, a prior `dragOver`/`dragLeave` pair has
+ * already proven the `tauri://drag-*` listener is live, so there is no
+ * registration race left that re-emitting would be protecting against.
+ */
 async function dragDrop(app: LaunchedApp, selector: string, paths: string[], verifyJs: string): Promise<void> {
   const position = await physicalCenterOf(app, selector);
-  await emitAndVerify(app, "tauri://drag-drop", { paths, position }, verifyJs);
+  await emitTauriEvent(app, "tauri://drag-drop", { paths, position });
+  await waitFor(app, verifyJs);
 }
 
 async function main(): Promise<void> {
@@ -232,6 +245,16 @@ async function main(): Promise<void> {
       [droppedDir],
       `document.querySelectorAll('.sky-pies [data-pie-id]').length === 3`,
     );
+    // A duplicate drop (the bug `dragDrop` above now avoids) would create a
+    // 4th pie asynchronously, AFTER the count-3 check above already passed
+    // — this settle delay plus a second count check is what turns that
+    // into a loud, immediate failure instead of a silent stray "dropped 2"
+    // surviving into `state.json` (review: m4.e2e.ts:151/169).
+    await sleep(500);
+    const settledCount = await evalIn(app, `document.querySelectorAll('.sky-pies [data-pie-id]').length`);
+    if (settledCount !== 3) {
+      throw new Error(`pie count changed after settling: expected 3, got ${JSON.stringify(settledCount)} (duplicate drop?)`);
+    }
     const pieIds = (await evalIn(
       app,
       `Array.from(document.querySelectorAll(".sky-pies [data-pie-id]")).map(function(el){ return el.getAttribute("data-pie-id"); })`,
@@ -290,11 +313,14 @@ async function main(): Promise<void> {
     await waitFor(app, `document.querySelector(".pane-sidebar") === null`, 10_000);
     console.log("ok: mod+b hides the sidebar");
 
-    // `mod+b` just changed `sidebarVisible`, which is in `handleDeepLinkIntent`'s
-    // own deps (App.tsx) — that gives it a fresh identity, so `useDeepLink`'s
-    // effect tears down and re-subscribes `skypie://open-file` right around
-    // now; `emitAndVerify` re-emits until that fresh subscription is live
-    // rather than racing it with a single-shot emit.
+    // `handleDeepLinkIntent` reads `sidebarVisible` through a ref, not a
+    // dep, so `mod+b` above does not tear down/re-subscribe `useDeepLink`'s
+    // `skypie://open-file` listener (review fix, App.tsx:485) — this
+    // `emitAndVerify` is just the ordinary startup-registration retry
+    // every other `emitTauriEvent` caller in this file gets for free, and
+    // it stays safe to re-emit here (unlike `tauri://drag-drop` above):
+    // repeating a reveal just re-arms the same, idempotent routing
+    // decision.
     await emitAndVerify(
       app,
       "skypie://open-file",
