@@ -103,3 +103,39 @@ export function uniqueName(pies: Pie[], wanted: string): string {
 export function isUserPieId(id: string): boolean {
   return !id.startsWith("builtin:");
 }
+
+/** M4, deep-link reveal (spec section 7, "What happens to the old
+ *  sidebar" / "Deep-link reveal"): the first USER pie whose `files`
+ *  include `path` exactly, or `null`. Built-ins are excluded — only a user
+ *  pie has persisted MEMBERS, which is the thing "the path is a pie
+ *  member" means; Pinned/Recent are a live view over the bookmarks/
+ *  recents stores, not membership. Exported on its own (not inlined into
+ *  `revealRoute` below) so `App.tsx` can reuse the SAME lookup to learn
+ *  WHICH pie to arm the plate on, instead of computing it a second,
+ *  possibly different way. */
+export function pieHoldingPath(pies: DerivedPie[], path: string): DerivedPie | null {
+  return pies.find((p) => isUserPieId(p.id) && p.files.some((f) => f.path === path)) ?? null;
+}
+
+/**
+ * The deep-link reveal ROUTE (spec section 7): the sidebar visible (and
+ * not reader mode, which unmounts it) reveals in the tree exactly as
+ * before M4; else, when `path` is a user pie's member, the sky opens on
+ * that pie's plate instead; else the sidebar itself is shown so the tree
+ * can reveal. Pure so `App.tsx`'s branch is one call instead of an inline
+ * if/else chain, and testable here without a webview (pies.test.ts).
+ *
+ * A folder member whose census hasn't resolved yet is NOT in `files` (the
+ * census is what turns a folder member into individual file rows) —
+ * `App.tsx`'s own comment on this exact gap explains why "show-sidebar" is
+ * the acceptable fallback rather than a hard failure to reveal at all.
+ */
+export function revealRoute(
+  sidebarVisible: boolean,
+  readerMode: boolean,
+  pies: DerivedPie[],
+  path: string,
+): "tree" | "plate" | "show-sidebar" {
+  if (sidebarVisible && !readerMode) return "tree";
+  return pieHoldingPath(pies, path) ? "plate" : "show-sidebar";
+}

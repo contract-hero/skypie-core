@@ -5,6 +5,8 @@ import {
   insertPieAt,
   isUserPieId,
   pieFiles,
+  pieHoldingPath,
+  revealRoute,
   toDerivedPie,
   uniqueName,
   withoutPie,
@@ -208,5 +210,48 @@ describe("isUserPieId", () => {
     expect(isUserPieId("builtin:pinned")).toBe(false);
     expect(isUserPieId("builtin:recent")).toBe(false);
     expect(isUserPieId("0199018c-fixture-uuid")).toBe(true);
+  });
+});
+
+describe("pieHoldingPath", () => {
+  it("finds the user pie whose files include the path exactly", () => {
+    const pies: DerivedPie[] = [
+      { id: "builtin:pinned", name: "Pinned", files: [{ path: "/w/a.md", kind: "md", mtime: 0 }] },
+      { id: "u1", name: "Pricing", files: [{ path: "/w/b.html", kind: "html", mtime: 0 }] },
+    ];
+    expect(pieHoldingPath(pies, "/w/b.html")?.id).toBe("u1");
+  });
+
+  it("never matches a built-in pie even when its own files include the path", () => {
+    const pies: DerivedPie[] = [
+      { id: "builtin:pinned", name: "Pinned", files: [{ path: "/w/a.md", kind: "md", mtime: 0 }] },
+    ];
+    expect(pieHoldingPath(pies, "/w/a.md")).toBeNull();
+  });
+
+  it("returns null when no pie holds the path", () => {
+    const pies: DerivedPie[] = [{ id: "u1", name: "Pricing", files: [] }];
+    expect(pieHoldingPath(pies, "/w/missing.md")).toBeNull();
+  });
+});
+
+describe("revealRoute", () => {
+  const holder: DerivedPie[] = [{ id: "u1", name: "Pricing", files: [{ path: "/w/a.html", kind: "html", mtime: 0 }] }];
+
+  it("reveals in the tree when the sidebar is visible and it's not reader mode", () => {
+    expect(revealRoute(true, false, holder, "/w/a.html")).toBe("tree");
+  });
+
+  it("opens the plate when the sidebar is hidden and a user pie holds the path", () => {
+    expect(revealRoute(false, false, holder, "/w/a.html")).toBe("plate");
+  });
+
+  it("shows the sidebar when the sidebar is hidden and no pie holds the path", () => {
+    expect(revealRoute(false, false, holder, "/w/other.html")).toBe("show-sidebar");
+  });
+
+  it("treats reader mode as 'sidebar hidden' even when sidebarVisible is true", () => {
+    expect(revealRoute(true, true, holder, "/w/a.html")).toBe("plate");
+    expect(revealRoute(true, true, [], "/w/a.html")).toBe("show-sidebar");
   });
 });
