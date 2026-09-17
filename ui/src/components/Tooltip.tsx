@@ -10,8 +10,12 @@
 // applies to an element that IS a flex item). The bubble is `position:
 // fixed`, placed from the anchor's own `getBoundingClientRect()` in
 // viewport coordinates once, on open — so it needs no positioned ancestor
-// and no wrapper either.
+// and no wrapper either. It portals to `document.body` rather than
+// rendering as a sibling of `children`: an earlier version rendered inline,
+// which (for a band tile) put a non-`option` node inside `.sky-pies`'s
+// `role="listbox"` while open (review: Tooltip.tsx:87).
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { useEscape } from "../hooks/useEscape";
 
 export interface TooltipProps {
@@ -28,10 +32,29 @@ type AnchorHandlers = {
   onBlur?: (e: React.FocusEvent) => void;
 };
 
+/** `cloneElement(el, { ref })` REPLACES whatever ref `el` already carried —
+ *  it does not merge them (React 18: `cloneElement(el, {ref: mine}).ref ===
+ *  mine`, the original dropped). Sky.tsx puts its own roving-tabindex ref
+ *  (`setItemRef(i)`) on every band `<Pie>` and then wraps it in `<Tooltip>`,
+ *  so the old single-`ref` clone silently zeroed out `itemRefs.current` for
+ *  every pie tile — `focusTile()` moved `focusedIndex`/`tabIndex` but never
+ *  real DOM focus (review: Tooltip.tsx:60/61, three duplicate reports).
+ *  This calls BOTH the child's own ref and this component's anchor callback
+ *  from one merged callback ref instead of overwriting either. */
+function mergeRefs<T>(...refs: Array<React.Ref<T> | null | undefined>): (instance: T | null) => void {
+  return (instance: T | null) => {
+    for (const ref of refs) {
+      if (typeof ref === "function") ref(instance);
+      else if (ref) (ref as React.MutableRefObject<T | null>).current = instance;
+    }
+  };
+}
+
 export default function Tooltip({ content, children }: TooltipProps): React.ReactElement {
   const [rect, setRect] = React.useState<{ left: number; top: number } | null>(null);
   const timerRef = React.useRef<number | null>(null);
   const anchorRef = React.useRef<HTMLElement | null>(null);
+  const bubbleId = React.useId();
 
   const clearTimer = () => {
     if (timerRef.current !== null) {
@@ -56,11 +79,15 @@ export default function Tooltip({ content, children }: TooltipProps): React.Reac
   useEscape(hide, rect !== null);
   React.useEffect(() => clearTimer, []);
 
-  const child = children as React.ReactElement<AnchorHandlers>;
+  // `children`'s own ref (if any) lives on the element itself, not in
+  // `.props` — `cloneElement` below must forward it alongside this
+  // component's anchor callback (see `mergeRefs`'s doc comment).
+  const child = children as React.ReactElement<AnchorHandlers> & { ref?: React.Ref<HTMLElement> | null };
   const cloned = React.cloneElement(child, {
-    ref: (el: HTMLElement | null) => {
+    ref: mergeRefs<HTMLElement>((el) => {
       anchorRef.current = el;
-    },
+    }, child.ref),
+    "aria-describedby": rect ? bubbleId : undefined,
     onMouseEnter: (e: React.MouseEvent) => {
       child.props.onMouseEnter?.(e);
       show();
@@ -77,20 +104,24 @@ export default function Tooltip({ content, children }: TooltipProps): React.Reac
       child.props.onBlur?.(e);
       hide();
     },
-  } as AnchorHandlers & { ref: React.Ref<HTMLElement> });
+  } as AnchorHandlers & { ref: React.Ref<HTMLElement>; "aria-describedby"?: string });
 
   return (
     <>
       {cloned}
-      {rect ? (
-        <span
-          role="tooltip"
-          className="sky-tooltip"
-          style={{ left: rect.left, top: rect.top }}
-        >
-          {content}
-        </span>
-      ) : null}
+      {rect
+        ? createPortal(
+            <span
+              id={bubbleId}
+              role="tooltip"
+              className="sky-tooltip"
+              style={{ left: rect.left, top: rect.top }}
+            >
+              {content}
+            </span>,
+            document.body,
+          )
+        : null}
     </>
   );
 }

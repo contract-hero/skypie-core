@@ -57,6 +57,29 @@ async function keyOnActiveElement(app: LaunchedApp, key: string): Promise<void> 
   if (!ok) throw new Error("keyOnActiveElement: document.activeElement is null");
 }
 
+/** `element.focus()` on the first match — real DOM focus, not just a click,
+ *  so the band's own roving-tabindex bookkeeping (`onFocus`) runs the same
+ *  way a Tab landing there would drive it. */
+async function focusSelector(app: LaunchedApp, selector: string): Promise<void> {
+  const js = `(function(){
+    var el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return false;
+    el.focus();
+    return true;
+  })()`;
+  const ok = await evalIn(app, js);
+  if (!ok) throw new Error(`focusSelector: no element matches ${selector}`);
+}
+
+/** `document.activeElement`'s own value for `attr`, or `null` when nothing
+ *  is focused or the attribute is absent. */
+async function activeElementAttr(app: LaunchedApp, attr: string): Promise<string | null> {
+  return (await evalIn(
+    app,
+    `document.activeElement ? document.activeElement.getAttribute(${JSON.stringify(attr)}) : null`,
+  )) as string | null;
+}
+
 interface OnDiskPies {
   pies?: { v?: number; pies?: { id: string; name: string; members: { path: string }[] }[] };
 }
@@ -211,6 +234,55 @@ async function main(): Promise<void> {
     }
     console.log(`ok: state.json's pies key holds v:1, "Pricing", 3 canonical member paths`);
 
+    // ── Step 4b: band roving focus survives the Tooltip wrap ───────────────
+    // Tooltip.tsx used to steal Sky.tsx's own `ref={setItemRef(i)}` off
+    // every band pie tile via `cloneElement(child, { ref })` — React 18
+    // REPLACES a ref, it does not merge one — so `itemRefs.current` stayed
+    // null for every pie and ←/→/Home/End moved `focusedIndex`/`tabIndex`
+    // but never real DOM focus (review: Tooltip.tsx:60/61, three duplicate
+    // blocker reports). Nothing exercised an arrow key on the band before
+    // this test.
+    await focusSelector(app, `[data-pie-id=${JSON.stringify(pieIds[0])}]`);
+    await keyOnActiveElement(app, "ArrowRight");
+    let activeId = await activeElementAttr(app, "data-pie-id");
+    if (activeId !== pieIds[1]) {
+      throw new Error(`ArrowRight from pie 0: expected DOM focus on ${pieIds[1]}, got ${JSON.stringify(activeId)}`);
+    }
+    await keyOnActiveElement(app, "ArrowRight");
+    activeId = await activeElementAttr(app, "data-pie-id");
+    if (activeId !== pricingId) {
+      throw new Error(`ArrowRight from pie 1: expected DOM focus on ${pricingId}, got ${JSON.stringify(activeId)}`);
+    }
+    await keyOnActiveElement(app, "Home");
+    activeId = await activeElementAttr(app, "data-pie-id");
+    if (activeId !== pieIds[0]) {
+      throw new Error(`Home: expected DOM focus back on ${pieIds[0]}, got ${JSON.stringify(activeId)}`);
+    }
+    await keyOnActiveElement(app, "End");
+    const activeTestId = await activeElementAttr(app, "data-testid");
+    if (activeTestId !== "sky-new-pie") {
+      throw new Error(`End: expected DOM focus on the tin, got ${JSON.stringify(activeTestId)}`);
+    }
+    console.log("ok: ←/→/Home/End move real DOM focus across the band (Tooltip ref-merge holds)");
+
+    // ── Step 4c: the hover/focus tooltip opens after 400ms and closes on
+    //     blur ──────────────────────────────────────────────────────────
+    // Pie.tsx never forwarded onMouseEnter/onMouseLeave/onBlur to its
+    // <button> — Tooltip's cloned handlers landed in props Pie's explicit
+    // destructure never read, so the bubble never opened and, once opened
+    // by keyboard focus, never closed on blur either (review: Pie.tsx:199).
+    await focusSelector(app, `[data-pie-id=${JSON.stringify(pricingId)}]`);
+    await waitFor(app, `document.querySelector(".sky-tooltip") !== null`, 2_000);
+    const tooltipText = await text(app, ".sky-tooltip");
+    if (!tooltipText || !tooltipText.includes("%") || tooltipText.startsWith("Pricing")) {
+      throw new Error(
+        `expected the tooltip to read the share string alone (e.g. "code 67% · html 33%"), got ${JSON.stringify(tooltipText)}`,
+      );
+    }
+    await evalIn(app, `document.activeElement && document.activeElement.blur()`);
+    await waitFor(app, `document.querySelector(".sky-tooltip") === null`, 2_000);
+    console.log(`ok: hover/focus tooltip opened ("${tooltipText}") and closed on blur`);
+
     // ── Step 5: zoom the pie ───────────────────────────────────────────────
     await click(app, `[data-pie-id=${JSON.stringify(pricingId)}]`);
     await waitFor(app, `document.querySelector('[data-testid="pie-plate"]') !== null`, 10_000);
@@ -227,11 +299,23 @@ async function main(): Promise<void> {
     console.log("ok: zooming Pricing drops the plate with a radiogroup legend of ≥2 kinds");
 
     // ── Step 6: ←/→ rotate to HTML, Enter cuts the wedge ───────────────────
+    // No manual `.focus()` here — opening the plate already parks real DOM
+    // focus on the CHECKED legend radio (PiePlate.tsx's own mount effect).
+    // This assertion is the regression test for that fix: it used to focus
+    // the PLATE CONTAINER instead, which no key handler is bound to, so ←/→
+    // did nothing until several Tabs landed inside (review: PiePlate.tsx:220
+    // — "ui/e2e/m2.e2e.ts:231-235 masks this by calling .focus() on the
+    // first radio through evalIn before sending ArrowRight").
     const firstRadioSelector = '[data-testid="pie-legend"][role="radiogroup"] [role="radio"]';
-    await evalIn(
+    await waitFor(
       app,
-      `document.querySelectorAll(${JSON.stringify(firstRadioSelector)})[0]?.focus()`,
+      `(function(){
+        var el = document.activeElement;
+        return el !== null && el.matches(${JSON.stringify(firstRadioSelector)}) && el.getAttribute("aria-checked") === "true";
+      })()`,
+      10_000,
     );
+    console.log("ok: opening the plate already focused the checked legend radio, no manual focus needed");
     let rotations = 0;
     for (;;) {
       const checkedText = await evalIn(

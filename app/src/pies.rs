@@ -112,12 +112,19 @@ pub fn list() -> Vec<Pie> {
 /// Run `f` over the `pies` document under the store's single lock
 /// (`update_state_field`), starting from `PiesDoc::default()` when the key
 /// is missing (`Value::Null`, what `update_state_field` hands a brand new
-/// leaf) — and, critically, leaving the value COMPLETELY UNTOUCHED when it
-/// already holds an object whose `v` we don't recognise. That is the "no
-/// write ever replaces the key" guarantee from spec section 9: an older
-/// build must never downgrade a newer build's `pies` document just because
-/// it ran a mutating op while that document was on disk. Every op in this
-/// file is safe by construction because they all funnel through here.
+/// leaf) — and, critically, leaving the value COMPLETELY UNTOUCHED both when
+/// it already holds an object whose `v` we don't recognise AND when it fails
+/// to parse as a `PiesDoc` at all. That second case used to fall through
+/// `unwrap_or_default()` into an EMPTY document — one unparseable member (an
+/// unknown `kind` string, a non-numeric `added_at`, a hand-edited or
+/// torn-write entry) silently deleted every pie in the store on the next
+/// mutation (review: pies.rs:132). A parse failure is just as much "a
+/// document this build does not understand" as an unrecognised `v`, so it
+/// gets the same response: touch nothing. That is the "no write ever
+/// replaces the key" guarantee from spec section 9: an older build must
+/// never downgrade a newer build's `pies` document just because it ran a
+/// mutating op while that document was on disk. Every op in this file is
+/// safe by construction because they all funnel through here.
 fn mutate_doc(f: impl FnOnce(&mut PiesDoc)) -> Result<(), String> {
     crate::state_store::update_state_field("pies", move |val| {
         if !val.is_null() {
@@ -129,7 +136,8 @@ fn mutate_doc(f: impl FnOnce(&mut PiesDoc)) -> Result<(), String> {
         let mut doc: PiesDoc = if val.is_null() {
             PiesDoc::default()
         } else {
-            serde_json::from_value(val.clone()).unwrap_or_default()
+            let Ok(parsed) = serde_json::from_value::<PiesDoc>(val.clone()) else { return };
+            parsed
         };
         f(&mut doc);
         *val = serde_json::to_value(&doc).unwrap_or(serde_json::Value::Null);
@@ -174,6 +182,27 @@ pub fn remove(id: &str) -> Result<(), String> {
     })
 }
 
+/// Canonicalize `path` for a caller that must ERROR when it can't be
+/// resolved (adding a member, or the "new" side of a relocate — both
+/// contracts refuse a path that doesn't exist). Also exposed to the UI as
+/// the `canonicalize_path` command (`app.rs`): a picker path like `/tmp/x`
+/// must resolve to `/private/tmp/x` BEFORE it is compared against a pie's
+/// stored (always-canonical) members, or the comparison silently never
+/// matches for any non-canonical input (review: pies.ts:57 / pies.rs:206).
+pub fn canonicalize(path: &Path) -> Result<PathBuf, String> {
+    std::fs::canonicalize(path).map_err(|e| format!("can't resolve {}: {e}", path.display()))
+}
+
+/// Canonicalize `path` the same way `canonicalize` does, but fall back to
+/// `path` unchanged when it can't be resolved instead of erroring — used to
+/// match a MEMBER path that must still be findable even after its target
+/// has gone missing (e.g. removing a member whose file was deleted since it
+/// was added, where `fs::canonicalize` would now fail on the very path that
+/// is already stored verbatim).
+fn canonicalize_lenient(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// Add `path` as a member of pie `id`. Canonicalizes FIRST, outside the
 /// lock — filesystem I/O has no business holding the one process-wide state
 /// mutex — and refuses a path that doesn't exist, so a member can never be
@@ -185,8 +214,7 @@ pub fn add_member(
     kind: PieMemberKind,
     source: Option<&str>,
 ) -> Result<(), String> {
-    let canonical =
-        std::fs::canonicalize(path).map_err(|e| format!("can't add {}: {e}", path.display()))?;
+    let canonical = canonicalize(path)?;
     mutate_doc(|doc| {
         if let Some(p) = doc.pies.iter_mut().find(|p| p.id == id) {
             if !p.members.iter().any(|m| m.path == canonical) {
@@ -202,11 +230,19 @@ pub fn add_member(
     })
 }
 
-/// Remove a member by its stored (already-canonical) path. Idempotent.
+/// Remove a member by path. Canonicalizes `path` FIRST — `add_member`
+/// stores the canonical form, but a caller (the UI, a menu) may still pass
+/// the non-canonical form it was given (a picker path like `/tmp/x` for a
+/// stored `/private/tmp/x`); comparing the raw string made removal a silent
+/// no-op for exactly the paths `add_member` itself canonicalizes on the way
+/// in (review: pies.rs:206). Falls back to the raw path when it can no
+/// longer be resolved (the file was deleted since it was added) rather than
+/// erroring, so a dangling member can still be removed. Idempotent.
 pub fn remove_member(id: &str, path: &Path) -> Result<(), String> {
+    let canonical = canonicalize_lenient(path);
     mutate_doc(|doc| {
         if let Some(p) = doc.pies.iter_mut().find(|p| p.id == id) {
-            p.members.retain(|m| m.path != path);
+            p.members.retain(|m| m.path != canonical);
         }
     })
 }
@@ -214,13 +250,15 @@ pub fn remove_member(id: &str, path: &Path) -> Result<(), String> {
 /// Replace a member's stored path in place (keeping `added_at`/`source`/
 /// `origin`) — "Locate…" on a folder member whose old location is gone
 /// (M3). `new` is canonicalized the same way `add_member` canonicalizes an
-/// add; a member not found under `old` is a no-op.
+/// add (errors if unresolvable); `old` is canonicalized leniently, the same
+/// reasoning as `remove_member` — a member not found under either form is a
+/// no-op.
 pub fn relocate_member(id: &str, old: &Path, new: &Path) -> Result<(), String> {
-    let canonical_new =
-        std::fs::canonicalize(new).map_err(|e| format!("can't relocate to {}: {e}", new.display()))?;
+    let canonical_new = canonicalize(new)?;
+    let canonical_old = canonicalize_lenient(old);
     mutate_doc(|doc| {
         if let Some(p) = doc.pies.iter_mut().find(|p| p.id == id) {
-            if let Some(m) = p.members.iter_mut().find(|m| m.path == old) {
+            if let Some(m) = p.members.iter_mut().find(|m| m.path == canonical_old) {
                 m.path = canonical_new.clone();
             }
         }
@@ -323,6 +361,52 @@ mod tests {
         assert!(list().iter().all(|p| p.id != pie.id));
     }
 
+    /// `add_member` stores the CANONICAL path, but a caller (the UI) may
+    /// still pass the raw, non-canonical form it was given — a picker path
+    /// like the tempdir fixture below, which on macOS canonicalizes through
+    /// the /var → /private/var symlink to a different string. Comparing the
+    /// raw string used to make removal a silent no-op for exactly the paths
+    /// `add_member` itself resolves on the way in (review: pies.rs:206 /
+    /// pies.ts:57).
+    #[test]
+    fn remove_member_matches_a_non_canonical_caller_path() {
+        let _g = guard();
+        reset();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.md");
+        std::fs::write(&file, "hi").unwrap();
+        let pie = upsert(None, "Docs").unwrap();
+        add_member(&pie.id, &file, PieMemberKind::File, None).unwrap();
+
+        // `file` itself — NOT `fs::canonicalize(&file)` — is what a picker
+        // row built straight from a tab entry's path would pass.
+        remove_member(&pie.id, &file).unwrap();
+        assert_eq!(
+            list().into_iter().find(|p| p.id == pie.id).unwrap().members.len(),
+            0,
+            "remove_member must resolve the raw path before comparing, the same as add_member",
+        );
+    }
+
+    /// A member whose file was deleted since it was added can no longer be
+    /// re-canonicalized — `remove_member` must fall back to the already-
+    /// stored (canonical) path instead of erroring trying to re-resolve it.
+    #[test]
+    fn remove_member_falls_back_when_the_path_no_longer_resolves() {
+        let _g = guard();
+        reset();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.md");
+        std::fs::write(&file, "hi").unwrap();
+        let pie = upsert(None, "Docs").unwrap();
+        add_member(&pie.id, &file, PieMemberKind::File, None).unwrap();
+        let canonical = std::fs::canonicalize(&file).unwrap();
+        std::fs::remove_file(&file).unwrap();
+
+        remove_member(&pie.id, &canonical).unwrap();
+        assert_eq!(list().into_iter().find(|p| p.id == pie.id).unwrap().members.len(), 0);
+    }
+
     #[test]
     fn touch_seen_stamps_now() {
         let _g = guard();
@@ -353,6 +437,40 @@ mod tests {
         // write hasn't necessarily landed) must be byte-for-byte the same.
         let val = crate::state_store::current_state_value();
         assert_eq!(val["pies"], serde_json::json!({ "v": 99, "pies": [{"future": true}] }));
+    }
+
+    /// The other half of the same safety property: a document whose `v`
+    /// MATCHES `CURRENT_VERSION` but fails to parse as a `PiesDoc` (one
+    /// member with an unrecognised `kind`, here) must ALSO be left
+    /// untouched. Before this fix, `mutate_doc` answered a parse failure
+    /// with `unwrap_or_default()` — a fresh, EMPTY `PiesDoc` — and then
+    /// wrote that empty document straight back, deleting every pie in the
+    /// store over one bad member (review: pies.rs:132).
+    #[test]
+    fn an_unparseable_document_is_never_overwritten() {
+        let _g = guard();
+        let corrupt = serde_json::json!({
+            "v": 1,
+            "pies": [{
+                "id": "p1",
+                "name": "Pricing",
+                "created_at": 0,
+                "seen_at": 0,
+                "members": [{ "kind": "not-a-real-kind", "path": "/x", "added_at": 0 }]
+            }]
+        });
+        let _ = crate::state_store::set_state_field("pies", corrupt.clone());
+
+        // Same as an unrecognised v: list() sees no pies...
+        assert_eq!(list().len(), 0);
+
+        // ...a mutating op is refused rather than silently succeeding
+        // against an empty document conjured by unwrap_or_default()...
+        assert!(upsert(None, "New").is_err());
+
+        // ...and the corrupt document survives byte-for-byte.
+        let val = crate::state_store::current_state_value();
+        assert_eq!(val["pies"], corrupt, "an unparseable document must never be overwritten");
     }
 
     /// Two threads each add one member to the SAME pie through the public

@@ -85,11 +85,16 @@ function lastOpenedLabel(pie: DerivedPie): string {
   const { files } = pie;
   // Pinned's mtime is bookmarked_at (derived-pies.ts), i.e. when the file
   // was starred, not when it was opened — "Last opened" claimed something
-  // the data does not support (review: PiePlate.tsx:59).
+  // the data does not support (review: PiePlate.tsx:59). A user pie's
+  // `mtime` is `added_at` (pies.ts's `pieFiles` doc comment — there is no
+  // real file mtime without M3's census), i.e. when the file was ADDED to
+  // the pie, not when it changed — the same category of mislabel
+  // (review: pies.ts:19).
   const isPinned = pie.id === "builtin:pinned";
-  if (files.length === 0) return isPinned ? "Never pinned" : "Never opened";
+  const isUser = isUserPieId(pie.id);
+  if (files.length === 0) return isPinned ? "Never pinned" : isUser ? "No files added" : "Never opened";
   const newest = Math.max(...files.map((f) => f.mtime));
-  const verb = isPinned ? "Last pinned" : "Last opened";
+  const verb = isPinned ? "Last pinned" : isUser ? "Last added" : "Last opened";
   return `${verb} ${mtimeAgo(newest)}`;
 }
 
@@ -134,6 +139,19 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
 
   const wedges = React.useMemo(() => wedgesOf(pie.files), [pie.files]);
   const groups = React.useMemo(() => groupByWedge(pie.files), [pie.files]);
+
+  // The cursor can point at a kind that just disappeared from `wedges` —
+  // removing the last file of the focused kind through a layer row's
+  // "Remove from pie" leaves `focusedKindState` naming a kind with no
+  // radio at all, so `checked` is false for every row, every radio gets
+  // `tabIndex={-1}`, and the radiogroup falls out of the tab order
+  // entirely (review: PiePlate.tsx:119). `setFocusedLayer` already gets
+  // this same reset on the layer list below; the legend needed its own.
+  React.useEffect(() => {
+    if (focusedKindState && !wedges.some((w) => w.kind === focusedKindState)) {
+      setFocusedKindState(null);
+    }
+  }, [wedges, focusedKindState]);
 
   const dominant = wedges.reduce<typeof wedges[number] | null>(
     (best, w) => (best === null || w.share > best.share ? w : best),
@@ -215,12 +233,28 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   // focus — Tab can still leave it — so aria-modal is explicitly "false"
   // rather than dropping role="dialog": that is what the attribute already
   // defaults to, made non-ambiguous here.
+  // Focusing the PLATE CONTAINER here used to leave real DOM focus stranded
+  // one level above every key handler that matters: `onLegendKeyDown` is
+  // bound on `.pie-legend`, `onLayerKeyDown` on `.pie-layers`, and a keydown
+  // whose target is the plate div reaches neither — ←/→ did nothing on
+  // open, until a Tab (or several) landed inside (review: PiePlate.tsx:220,
+  // reported against the spec's own M2 acceptance demo). Focus the CHECKED
+  // legend radio instead — `legendRefs` is already populated by the time
+  // this effect runs (refs attach during commit, before effects), so the
+  // radiogroup's own keydown handler is live from the very first keypress.
+  // Falls back to the plate container when there is no radio to focus (an
+  // empty pie).
   React.useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
-    plateRef.current?.focus();
+    const target = (focusedKind && legendRefs.current[focusedKind]) || plateRef.current;
+    target?.focus();
     return () => {
       previouslyFocused?.focus?.();
     };
+    // Deliberately mount-only: this is the INITIAL focus target, not a
+    // resync on every readout change (which would steal focus back from
+    // wherever the user has since moved it, e.g. into the layer list).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Loose enough to accept either a mouse click or the Enter keydown that

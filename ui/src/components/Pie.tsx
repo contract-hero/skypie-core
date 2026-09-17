@@ -67,6 +67,15 @@ export interface PieProps {
   /** Roving-tabindex slot; the host (Sky, PiePlate) owns the roving index. */
   tabIndex?: number;
   onFocus?: () => void;
+  /** M2: `Tooltip.tsx` clones its child with these plus `onFocus` attached
+   *  (hover/focus open, leave/blur close, spec section 3). Pie destructures
+   *  its props explicitly rather than spreading an unknown rest object, so
+   *  without forwarding these the clone's handlers landed in `props` and
+   *  were never read: the 400ms hover bubble never opened, and a bubble
+   *  opened by keyboard focus never closed on blur (review: Pie.tsx:199). */
+  onMouseEnter?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onMouseLeave?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onBlur?: (e: React.FocusEvent<HTMLButtonElement>) => void;
   /** false renders an inert portrait: no `<button>`, no `role="option"`,
    *  no `aria-selected`, no `data-pie-id`. PiePlate's left-column copy of
    *  the pie that is already open uses this — without it, that copy is a
@@ -102,6 +111,9 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
     size = 48,
     tabIndex,
     onFocus,
+    onMouseEnter,
+    onMouseLeave,
+    onBlur,
     interactive = true,
     cutKind,
     onWedgeClick,
@@ -210,6 +222,9 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
       aria-label={`${pie.name} — ${label}`}
       tabIndex={tabIndex}
       onFocus={onFocus}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      onBlur={onBlur}
       onClick={onOpen}
       onContextMenu={onContextMenu}
     >

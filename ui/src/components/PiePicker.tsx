@@ -11,11 +11,15 @@ import { Check, Plus } from "lucide-react";
 import type { Pie, PieMemberSource } from "../ipc";
 import { holdsPath, uniqueName } from "../state/pies";
 import { useEscape } from "../hooks/useEscape";
+import type { NoticeFn } from "../state/pies-context";
 
 export interface PiePickerProps {
-  /** The path being added — a file today; M4's Finder drop is the only
-   *  other add path, and it goes straight through `addPieMember`, not this
-   *  component. */
+  /** The path being added — already canonicalized by `PiesProvider.openPicker`
+   *  before this component ever mounts, so `holdsPath`'s exact-string
+   *  compare lines up with the canonical member paths `pies::add_member`
+   *  stores (review: pies.ts:57). A file today; M4's Finder drop is the
+   *  only other add path, and it goes straight through `addPieMember`, not
+   *  this component. */
   path: string;
   pies: Pie[];
   addPieMember: (
@@ -26,7 +30,19 @@ export interface PiePickerProps {
   ) => Promise<void>;
   removePieMember: (id: string, path: string) => Promise<void>;
   upsertPie: (id: string | null, name: string) => Promise<Pie | null>;
+  /** Cleans up a pie `commitCreate` just minted when the follow-up
+   *  `addPieMember` for it fails, so a refused add never leaves an empty
+   *  pie behind (review: PiePicker.tsx:75). */
+  removePie: (id: string) => Promise<void>;
+  onNotice?: NoticeFn;
   onClose: () => void;
+}
+
+/** Tauri surfaces a rejected command as the `Err` string itself, not an
+ *  `Error` — `String(e)` is this codebase's own convention for turning
+ *  either shape into readable text (state/beam.tsx, state/remote.tsx). */
+function errorMessage(err: unknown): string {
+  return String(err);
 }
 
 export default function PiePicker({
@@ -35,6 +51,8 @@ export default function PiePicker({
   addPieMember,
   removePieMember,
   upsertPie,
+  removePie,
+  onNotice,
   onClose,
 }: PiePickerProps): React.ReactElement {
   const [query, setQuery] = React.useState("");
@@ -50,6 +68,18 @@ export default function PiePicker({
   React.useEffect(() => {
     if (creating) newNameRef.current?.focus();
   }, [creating]);
+
+  // Save + restore focus across the picker's whole lifetime (PiePlate's
+  // own open effect does the same) — `role="dialog" aria-modal="true"`
+  // here traps no Tab, so without this a keyboard user who opened the
+  // picker from a tree row or a tab lost their place in the tree/tab strip
+  // on close, landing on <body> instead (review: PiePicker.tsx:90).
+  React.useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    return () => {
+      previouslyFocused?.focus?.();
+    };
+  }, []);
 
   // One press: cancel the inline "New pie…" field if it's open, else close
   // the whole picker — never both at once (useEscape's capture-phase
@@ -71,21 +101,43 @@ export default function PiePicker({
   // A row click both toggles membership AND closes the picker — ⌘D /
   // "Add to pie…" is a one-shot action per spec section 6's own examples
   // ("⌘D three tabs into it" reads as three separate ⌘D presses, one
-  // picker open+close each), not a multi-select session.
+  // picker open+close each), not a multi-select session. `add_member`/
+  // `remove_member` can both reject (a path that stopped resolving between
+  // ⌘D and the click) — the picker used to `await` those bare, so a
+  // rejection skipped `onClose()` and left the picker open with no
+  // explanation (review: PiePicker.tsx:75); `finally` guarantees the close
+  // happens either way, and the catch surfaces WHY through the notice
+  // channel `Sky.tsx`'s own delete-undo already uses.
   const toggle = async (pie: Pie): Promise<void> => {
-    if (holdsPath(pie, path)) {
-      await removePieMember(pie.id, path);
-    } else {
-      await addPieMember(pie.id, path, "file", "picker");
+    try {
+      if (holdsPath(pie, path)) {
+        await removePieMember(pie.id, path);
+      } else {
+        await addPieMember(pie.id, path, "file", "picker");
+      }
+    } catch (err) {
+      onNotice?.(`Couldn't update "${pie.name}" — ${errorMessage(err)}`);
+    } finally {
+      onClose();
     }
-    onClose();
   };
 
   const commitCreate = async (): Promise<void> => {
     const name = uniqueName(pies, newName.trim() || "New pie");
-    const pie = await upsertPie(null, name);
-    if (pie) await addPieMember(pie.id, path, "file", "picker");
-    onClose();
+    let created: Pie | null = null;
+    try {
+      created = await upsertPie(null, name);
+      if (created) await addPieMember(created.id, path, "file", "picker");
+    } catch (err) {
+      // The create step itself succeeded but the add failed — undo the
+      // create rather than leaving an empty, unreachable pie behind
+      // (review: PiePicker.tsx:75, "leaves a newly created empty pie
+      // behind").
+      if (created) void removePie(created.id);
+      onNotice?.(`Couldn't add this file to a new pie — ${errorMessage(err)}`);
+    } finally {
+      onClose();
+    }
   };
 
   return (
@@ -93,7 +145,12 @@ export default function PiePicker({
       <div
         className="pie-picker"
         role="dialog"
-        aria-modal="true"
+        // Not a real trap — Tab can still walk out into the toolbar/tab
+        // strip behind it — so this is explicitly "false" rather than a
+        // claim `aria-modal="true"` doesn't back up, the same call
+        // `PiePlate.tsx` makes for its own non-trapping dialog (review:
+        // PiePicker.tsx:90).
+        aria-modal="false"
         aria-label="Add to pie"
         data-testid="pie-picker"
         onMouseDown={(e) => e.stopPropagation()}

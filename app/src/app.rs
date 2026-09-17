@@ -242,6 +242,24 @@ fn touch_pie_seen(app: tauri::AppHandle, id: String) -> Result<(), String> {
     touch_pie_seen_for(&app, &id)
 }
 
+/// Resolve `path` to its canonical form for the UI — used before comparing
+/// a caller-supplied path (a tab entry, a tree row, a deep link — none
+/// guaranteed canonical) against a pie's stored members, which
+/// `pies::add_member` always canonicalizes on the way in. Errors the same
+/// way `add_pie_member` does when the path cannot be resolved (missing),
+/// which `PiePicker` turns into a refusal notice rather than opening a
+/// picker with a check mark that can never match (review: pies.ts:57 /
+/// PiePicker.tsx:75).
+pub(crate) fn canonicalize_path_for(_app: &tauri::AppHandle, path: &str) -> Result<String, String> {
+    let canonical = crate::pies::canonicalize(std::path::Path::new(path))?;
+    Ok(canonical.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn canonicalize_path(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    canonicalize_path_for(&app, &path)
+}
+
 /// Start (or replace) the filesystem watcher rooted at `path`. Each successful
 /// call drops any previous watcher handle, which shuts down its entire
 /// pipeline (watcher, flush thread, raw-event thread, and the bridge thread
@@ -412,6 +430,7 @@ pub fn run(context: tauri::Context) {
             remove_pie_member,
             relocate_pie_member,
             touch_pie_seen,
+            canonicalize_path,
             crate::share::share_file,
             crate::share::share_link,
             crate::remote::beam_offer,

@@ -320,6 +320,12 @@ export interface IpcSurface {
   relocatePieMember?(id: string, oldPath: string, newPath: string): Promise<void>;
   /** Stamp `seen_at` to now — called on every plate open for a user pie. */
   touchPieSeen?(id: string): Promise<void>;
+  /** Resolves `path` to its canonical form (`std::fs::canonicalize`) —
+   *  called before comparing a caller-supplied path (a tab entry, a tree
+   *  row) against a pie's stored (always-canonical) members, e.g.
+   *  `PiePicker`'s checkmark. Rejects the same way `addPieMember` does when
+   *  the path cannot be resolved (review: pies.ts:57 / PiePicker.tsx:75). */
+  canonicalizePath?(path: string): Promise<string>;
 
   listFilesRecursive?(root: string): Promise<FileIndex>;
   /**
@@ -543,6 +549,10 @@ class TauriIpc implements IpcSurface {
 
   async touchPieSeen(id: string): Promise<void> {
     await invoke<void>("touch_pie_seen", { id });
+  }
+
+  async canonicalizePath(path: string): Promise<string> {
+    return await invoke<string>("canonicalize_path", { path });
   }
 
   async listFilesRecursive(root: string): Promise<FileIndex> {

@@ -175,8 +175,13 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
         if (pie) setOpenPieId(pie.id);
         break;
       }
-      case "Delete":
-      case "Backspace": {
+      // Delete only — NOT Backspace. Backspace already means something else
+      // one surface over (PiePlate.tsx's onLayerKeyDown clears the slice
+      // filter on it, per spec section 5), and it is the reflex "go back"
+      // key; binding it here too made an accidental destructive delete
+      // easier, with a 5s toast as the only safety net (review: Sky.tsx:179,
+      // reported twice).
+      case "Delete": {
         const pie = focusedIndex < tinIndex ? pies[focusedIndex] : null;
         if (pie && isUserPieId(pie.id)) {
           e.preventDefault();
@@ -186,11 +191,14 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
       }
       case "Escape":
         // Leaves the band (blurs the focused tile) without closing it — the
-        // plate owns its own Esc (useEscape) to close itself first. Stop
-        // here so this bubble-phase handler cannot ALSO trigger whatever
-        // else in the tree is listening for a bare Escape (e.g. the reader
-        // mode / comment tool bindings in App.tsx) — the same one-press,
-        // one-effect rule useEscape enforces for the plate itself.
+        // plate owns its own Esc (useEscape) to close itself first.
+        // `stopPropagation` here is a bubble-phase call and cannot actually
+        // reach the reader-mode/comment-tool Escape bindings in App.tsx —
+        // those are capture-phase window listeners (`useShortcuts`,
+        // `useEscape`) that have already run before this handler ever sees
+        // the event, so this is a defensive no-op against any FUTURE
+        // bubble-phase listener rather than the guard an earlier comment
+        // here claimed it was (review: Sky.tsx:194).
         e.stopPropagation();
         (document.activeElement as HTMLElement | null)?.blur();
         break;
@@ -214,7 +222,15 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
           onSelect: () => {
             if (!ipc.pickDirectory) return;
             void ipc.pickDirectory().then((picked) => {
-              if (picked) void piesCtx.addPieMember(pie.id, picked, "folder", "menu");
+              if (!picked) return;
+              // A bare `void` here used to swallow `add_member`'s own
+              // rejection (a folder that stops resolving between the
+              // native picker and this call) with no feedback at all
+              // (review: PiePicker.tsx:75, "Sky.tsx:217... swallows the
+              // same failure with a bare void").
+              piesCtx.addPieMember(pie.id, picked, "folder", "menu").catch((err: unknown) => {
+                onNotice(`Couldn't add that folder — ${String(err)}`);
+              });
             });
           },
         },
@@ -312,7 +328,14 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
                   key={pie.id}
                   ref={setItemRef(i)}
                   className="sky-pie sky-pie-renaming"
-                  tabIndex={-1}
+                  // Keeps this slot an `option` (with the band's own roving
+                  // tabIndex) while it's mid-edit — the swap to a plain
+                  // `<div>` used to drop the pie out of the listbox's option
+                  // count for the whole rename, and if it was the roving
+                  // slot, out of the Tab order entirely (review: Sky.tsx:310).
+                  role="option"
+                  aria-selected={pie.id === openPieId}
+                  tabIndex={i === focusedIndex ? 0 : -1}
                 >
                   <Pie pie={pie} interactive={false} />
                   <input
@@ -353,14 +376,24 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
             );
             // Tooltip.tsx clones its child, so this wrap costs the band's
             // flex layout nothing — see the component's own doc comment.
+            // Content is the share string ALONE (spec section 3: "html 58%
+            // · md 25% · code 17%") — the name is already the tile's
+            // visible label and already in its own `aria-label`, so
+            // prefixing it here just repeated it (review: Sky.tsx:357).
             return (
-              <Tooltip key={pie.id} content={`${pie.name} — ${shareLabel(pie.files)}`}>
+              <Tooltip key={pie.id} content={shareLabel(pie.files)}>
                 {tile}
               </Tooltip>
             );
           })}
           {creatingNew ? (
-            <div className="sky-pie sky-tin sky-tin-creating" ref={setItemRef(tinIndex)} tabIndex={-1}>
+            <div
+              className="sky-pie sky-tin sky-tin-creating"
+              ref={setItemRef(tinIndex)}
+              role="option"
+              aria-selected={false}
+              tabIndex={focusedIndex === tinIndex ? 0 : -1}
+            >
               <TinGlyph />
               <input
                 data-testid="pie-name-input"
@@ -381,6 +414,14 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
                     setCreatingNew(false);
                     setNewPieName("");
                   }
+                }}
+                // Clicking away used to leave `creatingNew` true forever —
+                // no blur handler meant the field just sat there focus-less
+                // (review: Sky.tsx:310). The rename input above already
+                // cancels the same way.
+                onBlur={() => {
+                  setCreatingNew(false);
+                  setNewPieName("");
                 }}
               />
             </div>

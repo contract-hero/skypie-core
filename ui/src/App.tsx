@@ -25,6 +25,7 @@ import { WorkspaceProvider, useWorkspace } from "./state/workspace";
 import { WatcherProvider } from "./state/watcher-bus";
 import { BookmarksProvider } from "./state/bookmarks-context";
 import { PiesProvider, usePiesContext } from "./state/pies-context";
+import type { NoticeFn } from "./state/pies-context";
 import { RecentsProvider } from "./state/recents-context";
 import { ScrollMemoryProvider } from "./state/scroll-memory";
 import { ExplorerUiProvider, useExplorerUi } from "./state/explorer-ui";
@@ -149,6 +150,16 @@ export default function App({ ipc: injectedIpc }: AppProps = {}): React.ReactEle
 
 function ProviderShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
   const { root } = useWorkspace();
+  // A callback bridge, not a notice context: `PiesProvider` must be an
+  // ANCESTOR of `AppShell` (AppShell itself reads `usePiesContext()` for
+  // ⌘D), but the notice toast's actual state lives inside AppShell —
+  // `AppNoticeAction`'s own doc comment is explicit that this codebase
+  // does not centralize notices in a context. AppShell overwrites
+  // `noticeRef.current` with its `showNotice` on every render; `PiesProvider`
+  // only ever calls `.current` from an async callback (a rejected
+  // `canonicalizePath`/`addPieMember`), always well after that render has
+  // committed, so there is no ordering hazard.
+  const noticeRef = React.useRef<NoticeFn>(() => {});
   return (
     <WatcherProvider ipc={ipc} root={root}>
       <BookmarksProvider ipc={ipc}>
@@ -159,8 +170,11 @@ function ProviderShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
                 <ScrollMemoryProvider>
                   <ExplorerUiProvider>
                     <ContextMenuProvider>
-                      <PiesProvider ipc={ipc}>
-                        <AnnotatedShell ipc={ipc} />
+                      <PiesProvider
+                        ipc={ipc}
+                        onNotice={(text, action, durationMs) => noticeRef.current(text, action, durationMs)}
+                      >
+                        <AnnotatedShell ipc={ipc} noticeRef={noticeRef} />
                       </PiesProvider>
                     </ContextMenuProvider>
                   </ExplorerUiProvider>
@@ -178,17 +192,29 @@ function ProviderShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
 // only exists inside TabsProvider — and the rail, the iOS sheet and the
 // sidebar badges must all read ONE subscription, so it wraps the shell rather
 // than living inside it.
-function AnnotatedShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
+function AnnotatedShell({
+  ipc,
+  noticeRef,
+}: {
+  ipc: IpcSurface;
+  noticeRef: React.MutableRefObject<NoticeFn>;
+}): React.ReactElement {
   const active = useActiveTab();
   const source = currentEntry(active)?.path ?? null;
   return (
     <AnnotationsProvider ipc={ipc} source={source}>
-      <AppShell ipc={ipc} />
+      <AppShell ipc={ipc} noticeRef={noticeRef} />
     </AnnotationsProvider>
   );
 }
 
-function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
+function AppShell({
+  ipc,
+  noticeRef,
+}: {
+  ipc: IpcSurface;
+  noticeRef: React.MutableRefObject<NoticeFn>;
+}): React.ReactElement {
   const { root, setRoot } = useWorkspace();
   const { isMacos } = usePlatform();
   const dispatch = useTabsDispatch();
@@ -274,6 +300,9 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
     },
     [],
   );
+  // Keep ProviderShell's bridge ref pointed at the LATEST showNotice — see
+  // its own doc comment for why this is a ref and not a context.
+  noticeRef.current = showNotice;
 
   // ── Persisted sidebar width ────────────────────────────────────────────
   React.useEffect(() => {
