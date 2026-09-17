@@ -150,6 +150,18 @@ static GLOBAL_STATE: OnceLock<Arc<Mutex<serde_json::Value>>> = OnceLock::new();
 static WRITE_COUNTER: OnceLock<Arc<AtomicU64>> = OnceLock::new();
 static PENDING_WRITE: OnceLock<Arc<Mutex<Option<std::time::Instant>>>> = OnceLock::new();
 
+/// How many times a disk write has been SCHEDULED. Test-only, and counted at
+/// the one place that schedules, so a test can assert that an op which
+/// changed nothing also wrote nothing — the observable effect of
+/// `update_state_field_if_changed`'s fast path.
+#[cfg(test)]
+static SCHEDULED_WRITES: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+pub(crate) fn scheduled_writes_for_test() -> u64 {
+    SCHEDULED_WRITES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 const DEBOUNCE_MS: u64 = 250;
 
 pub(crate) fn global_state() -> &'static Arc<Mutex<serde_json::Value>> {
@@ -287,10 +299,12 @@ pub fn save(state: &State) -> Result<(), String> {
 /// current leaf, let `f` modify it in place, write it back — all inside a
 /// single critical section — then schedule the debounced disk write.
 ///
-/// This is what `set_state_field` (below) used to do as TWO separate
-/// lock/unlock steps: the caller would lock, clone out a whole key (e.g.
-/// `bookmarks.rs::list_from_global`), unlock, mutate ITS OWN clone, then
-/// call `set_state_field` again to lock, overwrite, unlock. Two concurrent
+/// The pattern this replaces is the CALLER-side one still used by
+/// `bookmarks.rs`/`recents.rs`, which takes the lock TWICE: the caller locks
+/// and clones out a whole key (`bookmarks.rs::list_from_global`), unlocks,
+/// mutates ITS OWN clone, then calls `set_state_field`, which locks again to
+/// overwrite. (`set_state_field` itself was always one lock; the two
+/// acquisitions are one apiece, with the caller's edit in between.) Two concurrent
 /// callers doing that race a classic read-modify-write: both read the same
 /// starting array, both append to their own copy, and whichever write lands
 /// second silently discards the first's change. `pies.rs` needs a stronger
@@ -303,7 +317,25 @@ pub fn update_state_field(
     key: &str,
     f: impl FnOnce(&mut serde_json::Value),
 ) -> Result<(), String> {
-    {
+    update_state_field_if_changed(key, |leaf| {
+        f(leaf);
+        true
+    })
+}
+
+/// `update_state_field`, except the closure reports whether it actually
+/// CHANGED the leaf. A `false` skips `schedule_debounced_write` entirely.
+///
+/// The lock and the walk still run, because the closure needs the real leaf
+/// to decide. Only the disk write is skipped. An op that changed nothing —
+/// an idempotent `add_to_pie` re-adding a path that is already a member — has
+/// no new bytes to persist, so making it rewrite `state.json` is pure churn
+/// on the user's disk.
+pub fn update_state_field_if_changed(
+    key: &str,
+    f: impl FnOnce(&mut serde_json::Value) -> bool,
+) -> Result<(), String> {
+    let changed = {
         let mut global = global_state().lock().unwrap_or_else(|p| p.into_inner());
         if !global.is_object() {
             // Initialize with default state if not yet loaded.
@@ -311,9 +343,11 @@ pub fn update_state_field(
             *global = default_val;
         }
         let leaf = get_or_insert_nested_mut(&mut global, key)?;
-        f(leaf);
+        f(leaf)
+    };
+    if changed {
+        schedule_debounced_write();
     }
-    schedule_debounced_write();
     Ok(())
 }
 
@@ -332,6 +366,8 @@ pub fn set_state_field(key: &str, value: serde_json::Value) -> Result<(), String
 /// the old `set_state_field` body so `update_state_field` and
 /// `set_state_field` both schedule through this one function.
 fn schedule_debounced_write() {
+    #[cfg(test)]
+    SCHEDULED_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut pending = pending_write().lock().unwrap_or_else(|p| p.into_inner());
     let now = std::time::Instant::now();
     let was_none = pending.is_none();
@@ -394,10 +430,35 @@ fn get_or_insert_nested_mut<'a>(
     }
 }
 
+/// Where a failed debounced write is reported, besides stderr.
+///
+/// The writer runs on a bare `std::thread` spawned by
+/// `schedule_debounced_write`, which holds no `tauri::AppHandle` and cannot
+/// get one — this module is deliberately free of Tauri. A sink registered
+/// once at startup (`lib.rs`) is the smallest thing that actually reaches
+/// the UI: it emits `skypie://state-write-failed`, and the App shows one
+/// persistent notice. `eprintln!` alone told nobody but a terminal, and
+/// pies is the first feature where EVERY user action is a state write.
+type WriteFailureSink = Box<dyn Fn(&str) + Send + Sync + 'static>;
+static WRITE_FAILURE_SINK: OnceLock<WriteFailureSink> = OnceLock::new();
+
+/// Register the sink. Idempotent by `OnceLock`: a second call is ignored,
+/// so a test or a second window cannot displace the app's own reporter.
+pub fn set_write_failure_sink(sink: impl Fn(&str) + Send + Sync + 'static) {
+    let _ = WRITE_FAILURE_SINK.set(Box::new(sink));
+}
+
+fn report_write_failure(message: String) {
+    eprintln!("skypie: {message}");
+    if let Some(sink) = WRITE_FAILURE_SINK.get() {
+        sink(&message);
+    }
+}
+
 fn do_write_value(val: &serde_json::Value, counter: &AtomicU64) {
     let dir = state_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("skypie: cannot create state dir: {e}");
+        report_write_failure(format!("cannot create state dir: {e}"));
         return;
     }
     let path = state_path();
@@ -406,16 +467,16 @@ fn do_write_value(val: &serde_json::Value, counter: &AtomicU64) {
     let json = match serde_json::to_string_pretty(&on_disk) {
         Ok(j) => j,
         Err(e) => {
-            eprintln!("skypie: cannot serialize state: {e}");
+            report_write_failure(format!("cannot serialize state: {e}"));
             return;
         }
     };
     if let Err(e) = std::fs::write(&tmp_path, &json) {
-        eprintln!("skypie: cannot write state.json.tmp: {e}");
+        report_write_failure(format!("cannot write state.json.tmp: {e}"));
         return;
     }
     if let Err(e) = std::fs::rename(&tmp_path, &path) {
-        eprintln!("skypie: cannot rename state.json.tmp: {e}");
+        report_write_failure(format!("cannot rename state.json.tmp: {e}"));
         return;
     }
     counter.fetch_add(1, Ordering::SeqCst);

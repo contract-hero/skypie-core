@@ -4,56 +4,104 @@
 // which — unlike useBookmarks's own hand-rolled `listen()` call — carries
 // the StrictMode cancelled guard so a listener never gets orphaned by a
 // cleanup that runs before `listen()` resolves), and optimistic local
-// updates ahead of each IPC await.
+// updates ahead of each IPC await. Optimistic ops (`removePie`,
+// `removePieMember`, `touchPieSeen`) roll their local edit BACK and rethrow
+// when the IPC call rejects, so a refused write never leaves the band
+// showing a change the store does not have.
 //
-// `setPies` is exposed (useBookmarks doesn't expose an equivalent) because
-// Sky.tsx's 5-second delete undo needs to hide a pie locally WITHOUT calling
-// `removePie` yet — see pies.ts's `withoutPie`/`insertPieAt` doc comments
-// for why the undo pair operates directly on this state instead of through
-// an op.
+// The 5-second delete undo lives here too (`removePieWithUndo`) rather than
+// in Sky.tsx, because it needs to survive a reconciliation: see that
+// function's own doc comment.
 import * as React from "react";
 import { defaultIpc } from "../ipc";
-import type { Pie, PieMemberSource } from "../ipc";
+import type { Pie, PieMemberSource, PiesList } from "../ipc";
+import { applySeenFloors, subtractPending, withPending, withoutPending } from "../state/pies";
 import { useTauriEvent } from "./useTauriEvent";
+
+const NO_PENDING: ReadonlySet<string> = new Set<string>();
 
 export interface UsePiesResult {
   pies: Pie[];
-  setPies: React.Dispatch<React.SetStateAction<Pie[]>>;
-  upsertPie: (id: string | null, name: string) => Promise<Pie | null>;
+  /** Why the band is empty when the document could not be read at all
+   *  (`PiesList.warning`), or `null`. Raised once as a notice by the
+   *  provider; exposed here so a consumer can also render it inline. */
+  warning: string | null;
+  /** REJECTS when this build has no `upsert_pie` command — see the
+   *  implementation for why that is an error and not a resolved `null`. */
+  upsertPie: (id: string | null, name: string) => Promise<Pie>;
   removePie: (id: string) => Promise<void>;
+  /** REJECTS when this build has no `add_pie_member` command. `opts` is a
+   *  keyed bag so M5 can add `origin` without a positional placeholder at
+   *  every call site; there is no `kind` — Rust resolves it from the path. */
   addPieMember: (
     id: string,
     path: string,
-    kind: "file" | "folder",
-    source?: PieMemberSource,
+    opts?: { source?: PieMemberSource },
   ) => Promise<void>;
   removePieMember: (id: string, path: string) => Promise<void>;
   relocatePieMember: (id: string, oldPath: string, newPath: string) => Promise<void>;
   touchPieSeen: (id: string) => Promise<void>;
+  /** Deletes `id` after `undoMs`, hiding it immediately. Returns the undo:
+   *  call it inside the window to cancel the delete, after it to do
+   *  nothing. `onError` reports a delete that the backend refused once the
+   *  window closed — by then the toast already said "Deleted", so silence
+   *  left the user believing a pie was gone that is still on disk. */
+  removePieWithUndo: (id: string, undoMs: number, onError?: (err: unknown) => void) => () => void;
 }
 
-export function usePies(ipc = defaultIpc): UsePiesResult {
-  const [pies, setPies] = React.useState<Pie[]>([]);
+export function usePies(ipc = defaultIpc, onNotice?: (text: string) => void): UsePiesResult {
+  const [rawPies, setPies] = React.useState<Pie[]>([]);
+  // Ids whose delete is still inside its undo window. They are subtracted
+  // from EVERY list this hook publishes, not just from the one the delete
+  // itself produced — that is the whole point (see `removePieWithUndo`).
+  const [pendingDeletes, setPendingDeletes] = React.useState<ReadonlySet<string>>(NO_PENDING);
+  const pies = React.useMemo(() => subtractPending(rawPies, pendingDeletes), [rawPies, pendingDeletes]);
+  const [warning, setWarning] = React.useState<string | null>(null);
+
+  // One notice per DISTINCT warning text, not one per event: the backend
+  // echoes the whole list (warning included) on every write, so raising it
+  // unconditionally would toast on every keystroke-driven op.
+  const lastNotified = React.useRef<string | null>(null);
+  // Per-id `seen_at` floors for touches whose IPC call has not settled yet
+  // — see `applySeenFloors`. A ref, not state: it is read inside
+  // `acceptList`, which must stay stable across a touch (it is the
+  // `skypie://pies-updated` subscriber), and a floor never needs to render
+  // anything by itself.
+  const seenFloors = React.useRef<Map<string, number>>(new Map());
+  const acceptList = React.useCallback(
+    (list: PiesList) => {
+      setPies(applySeenFloors(list.pies, seenFloors.current));
+      const next = list.warning ?? null;
+      setWarning(next);
+      if (next && next !== lastNotified.current) onNotice?.(next);
+      lastNotified.current = next;
+    },
+    [onNotice],
+  );
 
   React.useEffect(() => {
     if (ipc.listPies) {
-      ipc.listPies().then(setPies).catch(() => {
+      ipc.listPies().then(acceptList).catch(() => {
         // Ignore: backend may not be wired (older builds, tests with a
         // partial IpcSurface).
       });
     }
-  }, [ipc]);
+  }, [ipc, acceptList]);
 
   // The backend echoes the full document on every write (add_bookmark's own
   // convention) — from any writer: this window's own optimistic call, a
   // touch_seen elsewhere, or (M5) the agent socket. Reconciling off this one
   // event is what keeps every subscriber consistent without each op having
   // to broadcast its own delta.
-  useTauriEvent<Pie[]>("skypie://pies-updated", setPies);
+  useTauriEvent<PiesList>("skypie://pies-updated", acceptList);
 
   const upsertPie = React.useCallback(
-    async (id: string | null, name: string): Promise<Pie | null> => {
-      if (!ipc.upsertPie) return null;
+    async (id: string | null, name: string): Promise<Pie> => {
+      // THROW, do not resolve: resolving `null` reported success to every
+      // caller while nothing was stored — the Finder-drop path then went on
+      // to add members to a pie that does not exist, and the picker had to
+      // re-raise this exact error itself. One refusal, stated once, here.
+      if (!ipc.upsertPie) throw new Error("this build cannot create pies");
       const pie = await ipc.upsertPie(id, name);
       setPies((prev) => {
         const at = prev.findIndex((p) => p.id === pie.id);
@@ -69,21 +117,36 @@ export function usePies(ipc = defaultIpc): UsePiesResult {
 
   const removePie = React.useCallback(
     async (id: string): Promise<void> => {
-      setPies((prev) => prev.filter((p) => p.id !== id));
-      if (ipc.removePie) await ipc.removePie(id);
+      if (!ipc.removePie) {
+        setPies((prev) => prev.filter((p) => p.id !== id));
+        return;
+      }
+      // Snapshot BEFORE the optimistic filter, so a refused delete puts the
+      // pie back exactly where it was instead of leaving the band claiming
+      // a removal that never landed (it would reappear on the next
+      // unrelated event anyway, which reads as a ghost).
+      let snapshot: Pie[] = [];
+      setPies((prev) => {
+        snapshot = prev;
+        return prev.filter((p) => p.id !== id);
+      });
+      try {
+        await ipc.removePie(id);
+      } catch (err) {
+        setPies(snapshot);
+        throw err;
+      }
     },
     [ipc],
   );
 
   const addPieMember = React.useCallback(
-    async (
-      id: string,
-      path: string,
-      kind: "file" | "folder",
-      source?: PieMemberSource,
-    ): Promise<void> => {
-      if (!ipc.addPieMember) return;
-      await ipc.addPieMember(id, path, kind, source);
+    async (id: string, path: string, opts?: { source?: PieMemberSource }): Promise<void> => {
+      // THROW, same reason as `upsertPie`: resolving quietly reported a
+      // stored member to the drop path, the picker and the file menu alike
+      // while nothing had been written anywhere.
+      if (!ipc.addPieMember) throw new Error("this build cannot add pie members");
+      await ipc.addPieMember(id, path, opts);
       // No optimistic member insert here — canonicalization happens on the
       // Rust side (`fs::canonicalize`), so the local path string may not be
       // the one that ends up stored; the pies-updated event above carries
@@ -94,10 +157,22 @@ export function usePies(ipc = defaultIpc): UsePiesResult {
 
   const removePieMember = React.useCallback(
     async (id: string, path: string): Promise<void> => {
-      setPies((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, members: p.members.filter((m) => m.path !== path) } : p)),
-      );
-      if (ipc.removePieMember) await ipc.removePieMember(id, path);
+      if (!ipc.removePieMember) return;
+      // Same rollback contract as `removePie` — the plate's own row vanishes
+      // optimistically, so a refused removal has to put it back.
+      let snapshot: Pie[] = [];
+      setPies((prev) => {
+        snapshot = prev;
+        return prev.map((p) =>
+          p.id === id ? { ...p, members: p.members.filter((m) => m.path !== path) } : p,
+        );
+      });
+      try {
+        await ipc.removePieMember(id, path);
+      } catch (err) {
+        setPies(snapshot);
+        throw err;
+      }
     },
     [ipc],
   );
@@ -113,20 +188,72 @@ export function usePies(ipc = defaultIpc): UsePiesResult {
   const touchPieSeen = React.useCallback(
     async (id: string): Promise<void> => {
       const now = Date.now();
+      // Raise the floor BEFORE the optimistic edit, so a `pies-updated` event
+      // that lands anywhere inside this call — the agent socket emits at
+      // arbitrary times — cannot hand back the pie's pre-touch `seen_at` and
+      // re-light the pill on a pie the user has open. Cleared once the write
+      // has settled either way: on success the server document now carries a
+      // `seen_at` of its own, and on failure there is no stamp left to
+      // defend.
+      seenFloors.current.set(id, now);
       setPies((prev) => prev.map((p) => (p.id === id ? { ...p, seen_at: now } : p)));
-      if (ipc.touchPieSeen) await ipc.touchPieSeen(id);
+      try {
+        if (ipc.touchPieSeen) await ipc.touchPieSeen(id);
+      } finally {
+        seenFloors.current.delete(id);
+      }
     },
     [ipc],
   );
 
+  /** Optimistically hides the pie and defers the real `removePie` IPC call
+   *  until the undo window closes, so undoing never has to reconstruct
+   *  anything the backend already forgot.
+   *
+   *  The pending-delete SET is what makes this correct. Hiding the pie by
+   *  filtering local state alone was undone by any
+   *  `skypie://pies-updated` event that landed during the window from an
+   *  UNRELATED write (another window's `touch_seen`, M5's agent socket):
+   *  that event replaces the whole local list with the server's document,
+   *  which still has the pie, so the deleted pie reappeared mid-undo. A set
+   *  the published list is always filtered through cannot be overwritten by
+   *  an incoming list.
+   */
+  const removePieWithUndo = React.useCallback(
+    (id: string, undoMs: number, onError?: (err: unknown) => void): (() => void) => {
+      const unhide = () => setPendingDeletes((prev) => withoutPending(prev, id));
+      setPendingDeletes((prev) => withPending(prev, id));
+
+      let settled = false;
+      const timer = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        // Remove for real FIRST: `removePie` applies its local filter
+        // before it awaits, so the pie never flashes back between dropping
+        // it from `pendingDeletes` and the list catching up.
+        removePie(id).catch((err: unknown) => onError?.(err));
+        unhide();
+      }, undoMs);
+
+      return () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        unhide();
+      };
+    },
+    [removePie],
+  );
+
   return {
     pies,
-    setPies,
+    warning,
     upsertPie,
     removePie,
     addPieMember,
     removePieMember,
     relocatePieMember,
     touchPieSeen,
+    removePieWithUndo,
   };
 }

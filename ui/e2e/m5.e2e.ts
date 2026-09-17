@@ -1,5 +1,5 @@
 // `pnpm -C ui e2e:m5` — M5's own acceptance checkpoint: a Claude Code
-// session's own transport, `Req::AddToPie` over `app.sock`, adds a file it
+// session's own transport, `Request::AddToPie` over `app.sock`, adds a file it
 // just wrote to "Pricing" WHILE the plate is open — the pill ticks, the row
 // lands on top, and the write is not lost against a concurrent UI
 // `touch_seen` — driven against the REAL debug macOS app. This harness
@@ -9,7 +9,8 @@
 //
 // launchDesktop({ skipBuild: false }): M5 changed Rust (skypie-ipc's
 // `Request::AddToPie`, app.rs's `add_to_pie_for`, ipc_server.rs's dispatch
-// arm).
+// arm). The DOM-input and state.json helpers come from `lib/state`, shared
+// with m2/m3; only the helpers this scenario alone needs live below.
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -17,39 +18,11 @@ import { click, evalIn, keys, launchDesktop, quit, waitFor } from "./lib/app";
 import type { LaunchedApp } from "./lib/app";
 import { cleanupFixtureWorkspace, makeFixtureWorkspace, setWorkspaceRoot } from "./lib/fixtureWorkspace";
 import { request } from "./lib/protocol";
-
-// ── Small helpers, repeated from m2/m3.e2e.ts rather than shared — this
-//    directory's own convention (each scenario stays a single,
-//    independently-readable file; ui/e2e/README.md). ──────────────────────
-
-async function typeIntoInput(app: LaunchedApp, selector: string, value: string): Promise<void> {
-  const js = `(function(){
-    var el = document.querySelector(${JSON.stringify(selector)});
-    if (!el) return false;
-    var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-    setter.call(el, ${JSON.stringify(value)});
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    return true;
-  })()`;
-  const ok = await evalIn(app, js);
-  if (!ok) throw new Error(`typeIntoInput: no element matches ${selector}`);
-}
-
-async function keyOnActiveElement(app: LaunchedApp, key: string): Promise<void> {
-  const js = `(function(){
-    var el = document.activeElement;
-    if (!el) return false;
-    el.dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(key)}, code: ${JSON.stringify(key)}, bubbles: true }));
-    return true;
-  })()`;
-  const ok = await evalIn(app, js);
-  if (!ok) throw new Error("keyOnActiveElement: document.activeElement is null");
-}
+import { keyOnActiveElement, typeIntoInput, waitForPersistedPies } from "./lib/state";
 
 /** `element.focus()` on the first match — real DOM focus, not just a click,
  *  so the band's own roving-tabindex bookkeeping (`onFocus`) runs the same
- *  way a Tab landing there would drive it. Copied from m2.e2e.ts's own
- *  helper of the same name — this directory's convention, ui/e2e/README.md. */
+ *  way a Tab landing there would drive it. */
 async function focusSelector(app: LaunchedApp, selector: string): Promise<void> {
   const js = `(function(){
     var el = document.querySelector(${JSON.stringify(selector)});
@@ -68,49 +41,6 @@ async function activeElementAttr(app: LaunchedApp, attr: string): Promise<string
   )) as string | null;
 }
 
-interface OnDiskMember {
-  path: string;
-  kind: string;
-  source?: string;
-  origin?: { session_id?: string; prompt_id?: string; cwd?: string };
-}
-interface OnDiskPies {
-  pies?: {
-    v?: number;
-    pies?: { id: string; name: string; seen_at?: number; members: OnDiskMember[] }[];
-  };
-}
-
-function readStateJson(stateDir: string): OnDiskPies | null {
-  const p = path.join(stateDir, "state.json");
-  if (!fs.existsSync(p)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(p, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForPersistedPies(
-  stateDir: string,
-  predicate: (doc: NonNullable<OnDiskPies["pies"]>) => boolean,
-  timeoutMs = 10_000,
-): Promise<NonNullable<OnDiskPies["pies"]>> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const doc = readStateJson(stateDir)?.pies;
-    if (doc && predicate(doc)) return doc;
-    if (Date.now() > deadline) {
-      throw new Error(`state.json's "pies" key never matched within ${timeoutMs}ms (last: ${JSON.stringify(doc)})`);
-    }
-    await sleep(150);
-  }
-}
-
 async function pieCount(app: LaunchedApp): Promise<number> {
   return (await evalIn(app, `document.querySelectorAll('.sky-pies [data-pie-id]').length`)) as number;
 }
@@ -122,8 +52,12 @@ async function main(): Promise<void> {
   console.log(`fixture workspace: ${fixture.dir}`);
   console.log(`scratch state dir: ${stateDir}`);
 
-  let app: LaunchedApp = await launchDesktop({ stateDir, skipBuild: false });
+  // Inside the try, and nullable: launched BEFORE it, a failing
+  // `launchDesktop` — this scenario builds Rust — skips the `finally`
+  // entirely and leaks both temp trees. Same shape m1/m2/m3/m4 use.
+  let app: LaunchedApp | null = null;
   try {
+    app = await launchDesktop({ stateDir, skipBuild: false });
     await waitFor(app, `document.querySelector(".toolbar") !== null`, 60_000);
     await setWorkspaceRoot(app, root);
 
@@ -186,28 +120,27 @@ async function main(): Promise<void> {
       path: absNewFile,
       origin: { session_id: "e2e-session", prompt_id: "e2e-prompt", cwd: root },
     });
-    if (
-      added.status !== "ok" ||
-      added.kind !== "added_to_pie" ||
-      added.created !== false ||
-      added.added !== true ||
-      added.members !== 1
-    ) {
+    if (added.status !== "ok" || added.kind !== "added_to_pie") {
+      throw new Error(`unexpected add_to_pie reply: ${JSON.stringify(added)}`);
+    }
+    if (added.created !== false || added.added !== true || added.members !== 1) {
       throw new Error(`unexpected add_to_pie reply: ${JSON.stringify(added)}`);
     }
     console.log(`ok: add_to_pie over app.sock replied ${JSON.stringify(added)}`);
 
     // ── Checkpoint 2b: re-sending the IDENTICAL request is idempotent and
     //     reports it — the brief's own "an existing member is left
-    //     untouched (report `added: false`)" outcome, otherwise unasserted
-    //     anywhere in this suite or in thin_client.rs (review, minor) ─────
+    //     untouched (report `added: false`)" outcome ────────────────────────
     const reAdded = await request(app.connect, {
       op: "add_to_pie",
       pie: "Pricing",
       path: absNewFile,
       origin: { session_id: "e2e-session", prompt_id: "e2e-prompt", cwd: root },
     });
-    if (reAdded.status !== "ok" || reAdded.created !== false || reAdded.added !== false || reAdded.members !== 1) {
+    if (reAdded.status !== "ok" || reAdded.kind !== "added_to_pie") {
+      throw new Error(`unexpected re-add reply: ${JSON.stringify(reAdded)}`);
+    }
+    if (reAdded.created !== false || reAdded.added !== false || reAdded.members !== 1) {
       throw new Error(`expected an idempotent re-add (added: false, members: 1), got ${JSON.stringify(reAdded)}`);
     }
     console.log(`ok: re-adding the same path is idempotent, replied ${JSON.stringify(reAdded)}`);
@@ -234,8 +167,7 @@ async function main(): Promise<void> {
 
     // The dot itself is `aria-hidden` — the row's accessible name (built
     // from its own text content, no `aria-label`) must still carry a
-    // "new" marker a screen reader actually announces (review:
-    // PiePlate.tsx:925, minor).
+    // "new" marker a screen reader actually announces.
     const firstRowText = await evalIn(
       app,
       `document.querySelector('[data-testid="pie-layers"] .start-row')?.textContent ?? null`,
@@ -256,8 +188,7 @@ async function main(): Promise<void> {
     // The pill itself is `aria-hidden` by design (Pie.tsx) — the only
     // accessible signal of the same outcome is the tile's own `aria-label`,
     // which folds the count in. Assistive tech never reads the pill, so
-    // this is the assertion that actually matters for a screen-reader user
-    // (review: m5.e2e.ts:210, minor).
+    // this is the assertion that actually matters for a screen-reader user.
     const tileAriaLabel = await evalIn(
       app,
       `document.querySelector('[data-pie-id=${JSON.stringify(pricingId)}]').getAttribute("aria-label")`,
@@ -296,8 +227,7 @@ async function main(): Promise<void> {
     // `readStateJson` here — a fresh read races the debounced writer with
     // no predicate to wait on, so it could still catch the FIRST open's
     // `touch_seen` before it flushes and hand back a stale baseline that
-    // the "no write lost" assertion below would then satisfy for free
-    // (review, m5.e2e.ts:241, minor).
+    // the "no write lost" assertion below would then satisfy for free.
     const priorSeenAt = persisted.pies?.find((p) => p.id === pricingId)?.seen_at ?? 0;
     // A same-id click while the plate is ALREADY open is a no-op in
     // Sky.tsx (`setOpenPieId` to the value it already holds never remounts
@@ -336,7 +266,7 @@ async function main(): Promise<void> {
     const absFreshFile = fs.realpathSync(freshFile);
     const priorCount = await pieCount(app);
     const freshReply = await request(app.connect, { op: "add_to_pie", pie: "Fresh Pie", path: absFreshFile });
-    if (freshReply.status !== "ok" || freshReply.created !== true) {
+    if (freshReply.status !== "ok" || freshReply.kind !== "added_to_pie" || !freshReply.created) {
       throw new Error(`expected a freshly-created pie, got ${JSON.stringify(freshReply)}`);
     }
     await waitFor(app, `document.querySelectorAll('.sky-pies [data-pie-id]').length === ${priorCount + 1}`, 10_000);
@@ -371,9 +301,9 @@ async function main(): Promise<void> {
     //     and leaves no orphan pie behind — checkpoint 9 above only ever
     //     named an EXISTING pie ("Pricing"), so it could not tell whether
     //     `add_to_pie_for` really stats the path BEFORE touching the pies
-    //     document (app.rs: `canonicalize` runs ahead of `find_or_create`)
+    //     document (app.rs: `canonicalize` runs ahead of `pies::add_to_pie`)
     //     or would leave a pie named "Orphan Pie" behind for a path that
-    //     was never written (review: m5.e2e.ts:296, minor) ─────────────────
+    //     was never written ────────────────────────────────────────────────
     const countBeforeOrphan = await pieCount(app);
     const orphanReply = await request(app.connect, { op: "add_to_pie", pie: "Orphan Pie", path: missingPath });
     if (orphanReply.status !== "err" || typeof orphanReply.message !== "string" || !orphanReply.message.includes(missingPath)) {
@@ -392,11 +322,10 @@ async function main(): Promise<void> {
 
     // ── Checkpoint 10: an `add_to_pie` that mints a pie while the tin holds
     //     keyboard focus must not desync the band's roving tabindex from
-    //     real DOM focus — the exact review scenario: focus the tin (End),
+    //     real DOM focus: focus the tin (End),
     //     let a socket add insert a pie ahead of it, then confirm exactly
     //     ONE option is both `tabindex="0"` and the live
-    //     `document.activeElement`, and that it is STILL the tin (review:
-    //     Sky.tsx:143, major) ───────────────────────────────────────────
+    //     `document.activeElement`, and that it is STILL the tin ─────────
     await focusSelector(app, tileSelector);
     await keyOnActiveElement(app, "End");
     let activeTestId = await activeElementAttr(app, "data-testid");
@@ -408,7 +337,7 @@ async function main(): Promise<void> {
     const absRaceFile = fs.realpathSync(raceFile);
     const priorTileCount = await pieCount(app);
     const raceReply = await request(app.connect, { op: "add_to_pie", pie: "Race Pie", path: absRaceFile });
-    if (raceReply.status !== "ok" || raceReply.created !== true) {
+    if (raceReply.status !== "ok" || raceReply.kind !== "added_to_pie" || !raceReply.created) {
       throw new Error(`expected a freshly-created pie, got ${JSON.stringify(raceReply)}`);
     }
     await waitFor(app, `document.querySelectorAll('.sky-pies [data-pie-id]').length === ${priorTileCount + 1}`, 10_000);
@@ -435,9 +364,18 @@ async function main(): Promise<void> {
 
     console.log("PASS");
   } finally {
-    await quit(app);
-    await cleanupFixtureWorkspace(fixture);
-    await fs.promises.rm(stateDir, { recursive: true, force: true });
+    // Each cleanup step guarded on its own: a failing `quit` must not mask
+    // the real error from the body above, nor skip the two removals under
+    // it.
+    if (app) {
+      await quit(app).catch((e: unknown) => console.error("cleanup: quit failed", e));
+    }
+    await cleanupFixtureWorkspace(fixture).catch((e: unknown) =>
+      console.error("cleanup: removing the fixture workspace failed", e),
+    );
+    await fs.promises
+      .rm(stateDir, { recursive: true, force: true })
+      .catch((e: unknown) => console.error("cleanup: removing the scratch state dir failed", e));
   }
 }
 

@@ -1,51 +1,42 @@
 import { describe, expect, it } from "vitest";
-import { BEARINGS, HAZE_THRESHOLD, kindOf } from "./kind";
-
-// router.tsx's own tables (kept independent here on purpose — if they ever
-// drift, this test is what notices the gap).
-const TEXT_EXTS = [
-  ".txt", ".md", ".markdown", ".ts", ".tsx", ".js", ".jsx", ".json",
-  ".move", ".rs", ".toml", ".yml", ".yaml", ".css", ".sh", ".py", ".go",
-  ".html", ".xml", ".svg",
-];
-const IMAGE_EXTS = [
-  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".avif",
-];
+import { BEARINGS, extOf, HAZE_THRESHOLD, kindOf } from "./kind";
+import type { FileKind } from "./kind";
 
 describe("kindOf", () => {
-  it("maps every ext in TEXT_EXTS ∪ IMAGE_EXTS to a kind other than 'other'", () => {
-    const all = new Set([...TEXT_EXTS, ...IMAGE_EXTS]);
-    for (const ext of all) {
+  // One exhaustive table: every extension the kind tables claim, with the
+  // kind it must map to. Every other assertion below is derived from it, so
+  // adding an extension here is the only edit a new kind needs.
+  const cases: Array<[string, FileKind]> = [
+    [".html", "html"], [".htm", "html"],
+    [".md", "md"], [".markdown", "md"],
+    [".ts", "code"], [".tsx", "code"], [".js", "code"], [".jsx", "code"],
+    [".move", "code"], [".rs", "code"], [".css", "code"], [".sh", "code"],
+    [".py", "code"], [".go", "code"],
+    [".txt", "text"],
+    [".png", "image"], [".jpg", "image"], [".jpeg", "image"], [".gif", "image"],
+    [".webp", "image"], [".svg", "image"], [".bmp", "image"], [".ico", "image"],
+    [".avif", "image"],
+    [".json", "data"], [".yml", "data"], [".yaml", "data"], [".toml", "data"],
+    [".xml", "data"],
+  ];
+
+  it("maps every known extension to exactly the kind the table claims", () => {
+    for (const [ext, kind] of cases) {
+      expect(kindOf(`f${ext}`), ext).toBe(kind);
+    }
+  });
+
+  it("maps no known extension to 'other' (.svg is image, .htm is html)", () => {
+    for (const [ext, kind] of cases) {
+      expect(kind, ext).not.toBe("other");
       expect(kindOf(`file${ext}`), ext).not.toBe("other");
     }
   });
 
-  it("maps .svg to image, not text — the router.tsx trap", () => {
-    expect(kindOf("a.svg")).toBe("image");
-  });
-
-  it("maps .htm to html — isHtmlPath accepts it though TEXT_EXTS never did", () => {
-    expect(kindOf("index.htm")).toBe("html");
-  });
-
-  it("maps every extension to exactly one kind (BEARINGS covers all of them)", () => {
-    const cases: Array<[string, string]> = [
-      [".html", "html"], [".htm", "html"],
-      [".md", "md"], [".markdown", "md"],
-      [".ts", "code"], [".tsx", "code"], [".js", "code"], [".jsx", "code"],
-      [".move", "code"], [".rs", "code"], [".css", "code"], [".sh", "code"],
-      [".py", "code"], [".go", "code"],
-      [".txt", "text"],
-      [".png", "image"], [".jpg", "image"], [".jpeg", "image"], [".gif", "image"],
-      [".webp", "image"], [".svg", "image"], [".bmp", "image"], [".ico", "image"],
-      [".avif", "image"],
-      [".json", "data"], [".yml", "data"], [".yaml", "data"], [".toml", "data"],
-      [".xml", "data"],
-    ];
-    for (const [ext, kind] of cases) {
-      expect(kindOf(`f${ext}`), ext).toBe(kind);
+  it("covers every kind it claims within BEARINGS", () => {
+    for (const [, kind] of cases) {
+      expect(BEARINGS, kind).toContain(kind);
     }
-    expect(new Set(cases.map(([, kind]) => kind)).size).toBeLessThanOrEqual(BEARINGS.length);
   });
 
   it("maps an unknown extension to 'other'", () => {
@@ -56,6 +47,9 @@ describe("kindOf", () => {
   it("maps an extension-less path to 'other' and never throws", () => {
     expect(kindOf("Makefile")).toBe("other");
     expect(kindOf("")).toBe("other");
+    // A leading dot is a NAME, not an extension (extOf's `dot > 0` rule).
+    expect(kindOf(".gitignore")).toBe("other");
+    expect(kindOf(".md")).toBe("other");
     expect(() => kindOf("no-dot-at-all")).not.toThrow();
   });
 
@@ -63,6 +57,19 @@ describe("kindOf", () => {
     expect(BEARINGS[0]).toBe("html");
     expect(new Set(BEARINGS).size).toBe(BEARINGS.length);
     expect(BEARINGS).toContain("other");
+  });
+
+  it("parses the BASENAME, not the whole path", () => {
+    // Every caller in derived-pies.ts passes an absolute path.
+    expect(extOf("/Users/me/report.HTML")).toBe(".html");
+    // A leading-dot basename is a NAME, even deep in a path.
+    expect(extOf("/Users/me/.md")).toBe("");
+    expect(kindOf("/Users/me/.md")).toBe("other");
+    expect(extOf("/Users/me/.gitignore")).toBe("");
+    // A dot in a DIRECTORY segment is not the file's extension.
+    expect(extOf("/Users/me/site.v2/README")).toBe("");
+    expect(kindOf("/Users/me/site.v2/README")).toBe("other");
+    expect(kindOf("/Users/me/site.v2/notes.md")).toBe("md");
   });
 
   it("HAZE_THRESHOLD is 4%", () => {

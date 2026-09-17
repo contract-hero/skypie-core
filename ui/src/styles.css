@@ -179,6 +179,24 @@
   --sky-ink-dim: #8c9bad;
   --sky-cloud: #213040;
   --sky-focus: #8b93e8;
+
+  /* Pie wedge tones — seven steps of ink between --sky-ink and --sky, one
+     slot per BEARINGS kind (render/kind.ts). Tones, not hues: the Single
+     Lamp Rule leaves warm ember as the only chromatic voice, so a pie
+     separates its kinds by value alone. Dusk is the day ramp reversed, so
+     the tone nearest the field stays nearest the field in both themes.
+     These are CSS custom properties because Pie.tsx feeds them straight to
+     an SVG `fill` — `fill="var(--sky-tone-3)"` resolves like any other
+     property, the same way the wedge separators already use
+     `stroke="var(--sky)"`. That keeps the theme swap in CSS with no JS
+     observer watching `<html data-theme>`. */
+  --sky-tone-1: #dbe4ef;
+  --sky-tone-2: #c2d0e2;
+  --sky-tone-3: #a6b8d1;
+  --sky-tone-4: #7f95b8;
+  --sky-tone-5: #5b729a;
+  --sky-tone-6: #3a4f75;
+  --sky-tone-7: #1f2f4d;
 }
 
 :root[data-theme="light"] {
@@ -235,6 +253,16 @@
   --sky-ink-dim: #5b6b7d;
   --sky-cloud: #eef5fb;
   --sky-focus: #3b45b8;
+
+  /* Pie wedge tones — day (see the dusk block above for why these are
+     tokens and not a JS ramp). */
+  --sky-tone-1: #1f2f4d;
+  --sky-tone-2: #3a4f75;
+  --sky-tone-3: #5b729a;
+  --sky-tone-4: #7f95b8;
+  --sky-tone-5: #a6b8d1;
+  --sky-tone-6: #c2d0e2;
+  --sky-tone-7: #dbe4ef;
 }
 
 * { box-sizing: border-box; }
@@ -1331,7 +1359,7 @@ html, body, #root {
 }
 /* Trailing mtime column — only PiePlate's layer list uses this today (the
    list is sorted newest-first, so the freshness the sort is based on stays
-   visible per row, not just implied by position — review: PiePlate.tsx:262). */
+   visible per row, not just implied by position). */
 .start-row-mtime {
   flex: 0 0 auto;
   color: var(--fg-dim);
@@ -2971,7 +2999,7 @@ pre[data-fallback] .line::before {
    it. A single SVG spanning the band with `preserveAspectRatio="none"` used
    to scale every ellipse horizontally by paneWidth/100 while the vertical
    scale stayed 1, flattening each cumulus into a smear on any pane wider
-   than the 100-unit viewBox it was authored at (review: Sky.tsx:104). */
+   than the 100-unit viewBox it was authored at. */
 .sky-cloud {
   position: absolute;
   pointer-events: none;
@@ -3037,7 +3065,13 @@ body.platform-macos .sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidd
   font-weight: 500;
   color: var(--sky-ink);
 }
-.sky-pie:focus-visible {
+/* One ring, two triggers (DESIGN.md): keyboard focus, and a live Finder
+   drag over the tile. The drag trigger is `data-drop-target`, set from
+   useFinderDrop's `over` stream (Sky.tsx) — never DOM `dragover`, which
+   does not fire for an OS-level drag while Tauri's own drag-drop handling
+   is enabled. Matches the tin too: `.sky-tin` also carries `.sky-pie`. */
+.sky-pie:focus-visible,
+.sky-pie[data-drop-target="true"] {
   outline: 2px solid var(--sky-focus);
   outline-offset: 2px;
   border-radius: var(--r-sm);
@@ -3083,7 +3117,7 @@ body.platform-macos .sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidd
 }
 /* The plate pie renders at its FINAL size (200px, or 120px under a short
    pane) and only its transform animates — scale(0.24) to scale(1), 240ms on
-   --ease-emphasis, will-change: transform — so WebKit paints the sharp SVG
+   --ease-emphasis — so WebKit paints the sharp SVG
    at final size throughout instead of rasterising a 48px bitmap and
    upscaling it (spec section 4). `transform-origin: top` approximates the
    band slot's position (the portrait sits at the top of the plate's left
@@ -3095,7 +3129,6 @@ body.platform-macos .sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidd
    above), so this is the only copy of the disc on screen while it runs. */
 .pie-plate-left .sky-pie-disc {
   transform-origin: top center;
-  will-change: transform;
   animation: pie-plate-disc-in 240ms var(--ease-emphasis);
 }
 @keyframes pie-plate-disc-in {
@@ -3109,7 +3142,7 @@ body.platform-macos .sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidd
   color: var(--fg-muted);
   text-align: center;
 }
-.pie-plate-last-opened {
+.pie-plate-recency {
   font-size: var(--text-caption);
   color: var(--fg-dim);
 }
@@ -3345,8 +3378,10 @@ body.platform-macos .sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidd
 /* Pie.tsx's +N pill (spec section 3) — top-right of the 48px disc, which
    sits centered in the 72px tile (12px inset each side); `right: 8px`
    lands it on the disc's own rim rather than the tile's outer edge. A
-   `<span role="button">`, not a nested `<button>` — see Pie.tsx's own doc
-   comment on `onOpenNewest` for why. */
+   plain `<span aria-hidden>`, with no role of its own: the tile root is
+   already a <button role="option">, and role="option" hides its children
+   from the accessibility tree — the tile's own aria-label carries the
+   count instead. See Pie.tsx's doc comment on `onOpenNewest`. */
 .sky-pie-fresh {
   position: absolute;
   top: 0;
@@ -3415,7 +3450,12 @@ body.platform-macos .sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidd
   font-size: var(--text-caption);
   color: var(--sky-ink-dim);
 }
-.pie-layer-caption button {
+/* Locate… / Forget / Forget — the three small inline actions on a layer
+   header and on a missing row. ONE class rather than two identical
+   descendant rules: the two used to be copies of each other, and a change
+   to one silently left the other behind. */
+.pie-mini-button {
+  flex: 0 0 auto;
   border: 1px solid var(--border);
   border-radius: var(--r-xs);
   background: transparent;
@@ -3426,7 +3466,7 @@ body.platform-macos .sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidd
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease);
 }
-.pie-layer-caption button:hover { background: var(--bg-row-hover); }
+.pie-mini-button:hover { background: var(--bg-row-hover); }
 
 /* "truncated · 20,000+" under the readout (spec section 4) when the census
    hit the 20,000-file cap. */
@@ -3443,14 +3483,29 @@ body.platform-macos .sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidd
    already (gradient, warm crust stroke, ink-step wedge tones, persisted
    posture, --sky-focus for FOCUS); filling a recency badge with the accent
    would have been an undocumented sixth job, and DESIGN.md's M3 paragraph
-   explicitly claims "no new departure is introduced" for this list (review,
-   minor: styles.css:3383). */
+   explicitly claims "no new departure is introduced" for this list. */
 .start-row-new {
   flex: 0 0 auto;
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--sky-ink);
+}
+
+/* Visually hidden, still announced. The row's "new" marker is a 6px dot
+   with no text, so a screen-reader user hears name/dir/mtime and is never
+   told which row is new. This carries that word without changing the
+   layout a sighted user sees. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* A missing FILE member's row (spec section 5) — dimmed, non-interactive
@@ -3462,40 +3517,11 @@ body.platform-macos .sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidd
   cursor: default;
 }
 .start-row-missing .start-row-dir { color: var(--fg-dim); }
-.start-row-missing button {
-  flex: 0 0 auto;
-  border: 1px solid var(--border);
-  border-radius: var(--r-xs);
-  background: transparent;
-  color: var(--fg-strong);
-  font: inherit;
-  font-size: var(--text-caption);
-  padding: 2px 6px;
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease);
-}
-.start-row-missing button:hover { background: var(--bg-row-hover); }
+/* ── Sky band — M4 additions (active-file mark, short/narrow plate) ───────
+   The drop-target ring lives with `.sky-pie:focus-visible` above, which it
+   shares a rule with. No new token here either: the active-file underline
+   spends --sky-focus on a second job rather than adding a color. */
 
-/* ── Sky band — M4 additions (Finder drop, reveal, short/narrow plate) ────
-   The drop-target ring and the passive active-file mark (spec section 6/3),
-   plus the plate's short/narrow-pane polish (this milestone's own 640×400
-   floor check). No new token: the ring reuses --sky-focus (the SAME shade
-   .sky-pie:focus-visible already draws), and the active-file underline
-   spends it on a second job rather than adding a color. */
-
-/* Driven by useFinderDrop's `over` stream (Sky.tsx's `dropTargetId`), never
-   DOM `dragover` (which does not fire for an OS-level drag while Tauri's
-   own drag-drop handling is enabled) — the same rule body as
-   `.sky-pie:focus-visible` above, duplicated rather than shared through a
-   class because a plain data-attribute selector is what this milestone's
-   own e2e checkpoint (ui/e2e/m4.e2e.ts) asserts against directly. Matches
-   the tin too (`.sky-pie.sky-tin` also carries `.sky-pie`) — a Finder drag
-   over the tin gets the same ring as a drag over any other pie. */
-.sky-pie[data-drop-target="true"] {
-  outline: 2px solid var(--sky-focus);
-  outline-offset: 2px;
-  border-radius: var(--r-sm);
-}
 /* The pie holding the active tab's file (spec section 3, "passive
    auto-reveal") — a 2px rule UNDER the label, not a box around the tile:
    this reads as an underline on the name, the same place the focus ring

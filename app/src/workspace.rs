@@ -215,12 +215,14 @@ pub fn list_files_recursive(root: &Path) -> Result<FileIndex, ScanError> {
 fn walk_files(root: &Path, cap: usize) -> Result<FileIndex, ScanError> {
     let canonical = canonicalize(root)?;
     let mut files = Vec::new();
-    let truncated = bfs_walk(&canonical, cap, &mut |path, _meta| {
+    let truncated = bfs_walk(&canonical, cap, &mut |entry| {
+        let path = entry.path();
         let rel = path
             .strip_prefix(&canonical)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| path.to_string_lossy().into_owned());
         files.push(rel);
+        true
     });
 
     Ok(FileIndex {
@@ -240,10 +242,20 @@ fn walk_files(root: &Path, cap: usize) -> Result<FileIndex, ScanError> {
 /// (canonical for `list_files_recursive`, a pie member's already-canonical
 /// path for `pie_census`) — this function does not canonicalize it.
 ///
-/// `visit` is called once per FILE found, in BFS order, until `cap` entries
-/// have been visited. Returns `true` iff the walk stopped because `cap` was
-/// reached — i.e. some entries under `root` were never visited.
-fn bfs_walk(root: &Path, cap: usize, visit: &mut impl FnMut(&Path, &std::fs::Metadata)) -> bool {
+/// `visit` is called once per FILE found, in BFS order, and is handed the
+/// raw `DirEntry` so it can decide for itself what it needs: the quick-open
+/// index reads only `entry.path()`, while the census also calls
+/// `entry.metadata()` for mtime/size. Handing over the entry rather than a
+/// pre-`stat`ed `Metadata` is what keeps `list_files_recursive` at ONE
+/// syscall per file — a second `stat` on all 20,000 quick-open entries was
+/// pure waste for a caller that never looks at the result.
+///
+/// `visit` returns whether the entry COUNTED against `cap`: the census
+/// answers `false` for a path it drops as a duplicate, so the budget always
+/// measures files actually reported, never work merely attempted. Returns
+/// `true` iff the walk stopped because `cap` was reached — i.e. some entries
+/// under `root` were never visited.
+fn bfs_walk(root: &Path, cap: usize, visit: &mut impl FnMut(&std::fs::DirEntry) -> bool) -> bool {
     use std::collections::VecDeque;
 
     let mut queue: VecDeque<PathBuf> = VecDeque::from([root.to_path_buf()]);
@@ -292,22 +304,9 @@ fn bfs_walk(root: &Path, cap: usize, visit: &mut impl FnMut(&Path, &std::fs::Met
                 truncated = true;
                 break 'walk;
             }
-            let path = raw.path();
-            // A second stat, beyond the file_type() above — the census
-            // needs mtime/size that DirEntry's cached file type doesn't
-            // carry. list_files_recursive pays this too now (its own
-            // `visit` ignores the metadata argument), which is the cost of
-            // one shared walker instead of a second copy of the policy
-            // above.
-            let meta = match std::fs::metadata(&path) {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("skypie: walk skip entry {:?}: {e}", path);
-                    continue;
-                }
-            };
-            visit(&path, &meta);
-            count += 1;
+            if visit(&raw) {
+                count += 1;
+            }
         }
     }
 
@@ -339,6 +338,16 @@ pub struct CensusFile {
 /// The result of walking one pie's members (spec section 9's `PieCensus`,
 /// with `outside_root` added — the spec text predates M3's "not live"
 /// caption for members outside the workspace root, spec section 6).
+///
+/// The spec also lists a `fresh` count, which this deliberately does NOT
+/// serve. Freshness is `mtime > seen_at`, and the CLIENT moves `seen_at`
+/// before the backend does: `usePies.touchPieSeen` bumps it to `Date.now()`
+/// optimistically the instant a plate opens, which is what clears the pill
+/// with no round trip. A server-computed count is therefore measured
+/// against whatever `seen_at` was true when the census ran, and can already
+/// be wrong by the time it is rendered — so `pie-census.ts`'s `freshCount`
+/// recomputes it from `files` against the pie's CURRENT `seen_at`, and one
+/// authority beats two that disagree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PieCensus {
     pub files: Vec<CensusFile>,
@@ -348,7 +357,25 @@ pub struct PieCensus {
     /// the OLD path only (`watcher.rs`), so from the census's point of view
     /// a renamed folder member is indistinguishable from a deleted one;
     /// both read as "folder not found" in the plate (Locate…/Forget).
+    ///
+    /// ONLY a `NotFound` error puts a member here. EACCES, ELOOP and every
+    /// other I/O failure mean the member may well still be there, and
+    /// offering "Locate…/Forget" for a permissions problem told the user to
+    /// repair something that is not broken — those land in `unreadable`
+    /// instead.
     pub missing: Vec<PathBuf>,
+    /// Member paths that exist (or may exist) but could not be read: the
+    /// metadata probe or, for a folder member, the `read_dir` probe on its
+    /// own root failed with something other than `NotFound`. Without this
+    /// the folder rendered as an EMPTY folder, which is a lie — `bfs_walk`
+    /// logs an unreadable directory and carries on, so an unreadable member
+    /// root produced zero rows and no diagnostic. The plate captions these
+    /// "can't read this folder".
+    ///
+    /// Omitted on the wire when empty (see `CensusFile::folder`), which is
+    /// the normal case.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreadable: Vec<PathBuf>,
     /// Member paths not under the canonical workspace root — captioned
     /// "not live" in the plate (spec section 6): these only refresh on sky
     /// show / plate open, never from the live watcher, which is
@@ -357,18 +384,25 @@ pub struct PieCensus {
     /// open) — nothing can be "live" with no workspace root to be live
     /// against.
     pub outside_root: Vec<PathBuf>,
+    /// How many individual files the walk found but could not `stat`. Such
+    /// a file is in none of the lists above: not in `files`, not counted
+    /// against the cap, not `missing`. Reporting the COUNT is what stops
+    /// the wedges, the readout and the freshness count from being silently
+    /// short — the plate shows "N files couldn't be read" beside the
+    /// truncated caption.
+    #[serde(default)]
+    pub skipped: usize,
     pub truncated: bool,
-    /// Index into the `members` slice of the member that was cut by the
-    /// 20,000 cap — the member being walked when the budget ran out, or
-    /// the first member never reached at all when an earlier member
-    /// exactly filled the budget. `None` unless `truncated`; omitted on
-    /// the wire rather than sent as `null` (see `CensusFile::folder`).
+    /// The canonical PATH of the member that was cut by the 20,000 cap —
+    /// the member being walked when the budget ran out, or the first member
+    /// never reached at all when an earlier member exactly filled the
+    /// budget. A path, not an index: the receiver holds its own member list
+    /// (`pies::list()` read at a different moment), and an index into a
+    /// list that may have changed under it names the wrong member. `None`
+    /// unless `truncated`; omitted on the wire rather than sent as `null`
+    /// (see `CensusFile::folder`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub truncated_at: Option<usize>,
-    /// Count of `files` whose mtime is strictly newer than `seen_at`.
-    /// Always 0 when `seen_at == 0` — a pie that has never been opened
-    /// must not read every file in it as new.
-    pub fresh: u32,
+    pub truncated_at: Option<PathBuf>,
 }
 
 fn mtime_ms(meta: &std::fs::Metadata) -> u64 {
@@ -392,8 +426,9 @@ fn is_under_root(path: &Path, root: Option<&Path>) -> bool {
     }
 }
 
-/// Walk a pie's members and report every file plus freshness — spec
-/// sections 6 and 9. Members are walked in STORED order; a folder member's
+/// Walk a pie's members and report every file — spec sections 6 and 9
+/// (freshness is the client's, see `PieCensus`). Members are walked in
+/// STORED order; a folder member's
 /// contents come from `bfs_walk` (the same per-entry policy
 /// `list_files_recursive` uses), so `DEFAULT_IGNORED`/hidden-dir/symlink
 /// rules are identical between ⌘P's index and a pie's folder layers. `root`
@@ -401,8 +436,13 @@ fn is_under_root(path: &Path, root: Option<&Path>) -> bool {
 /// used only to classify `outside_root`, never to refuse walking a member;
 /// a folder outside the root is still walked, just captioned differently by
 /// the UI (spec section 6: "not live", refreshed on show/plate-open only).
-pub fn pie_census(members: &[crate::pies::PieMember], seen_at: u64, root: Option<&Path>) -> PieCensus {
-    census_with_cap(members, seen_at, root, MAX_INDEX_ENTRIES)
+///
+/// `missing`, `unreadable` and `outside_root` are COMPLETE for every member
+/// even when `truncated` — they are classified in their own pass before any
+/// walking starts, so the 20,000-file cap cannot cut a member's caption off
+/// along with its rows. Only `files` is partial on a truncated census.
+pub fn pie_census(members: &[crate::pies::PieMember], root: Option<&Path>) -> PieCensus {
+    census_with_cap(members, root, MAX_INDEX_ENTRIES)
 }
 
 /// `pie_census` with an injectable cap — `census_tests` below exercises the
@@ -410,108 +450,195 @@ pub fn pie_census(members: &[crate::pies::PieMember], seen_at: u64, root: Option
 /// than actually writing 20,000 of them.
 fn census_with_cap(
     members: &[crate::pies::PieMember],
-    seen_at: u64,
     root: Option<&Path>,
     cap: usize,
 ) -> PieCensus {
-    let canonical_root = root.and_then(|r| r.canonicalize().ok());
+    // `.ok()` alone erased the difference between "no workspace open" and
+    // "the root exists but cannot be canonicalized" (an unmounted volume, a
+    // permissions change). Both answer `None`, which marks EVERY member
+    // `outside_root`, so every layer says "not live" and stops refreshing
+    // from the watcher — a large, silent behaviour change deserves a line
+    // in the log.
+    let canonical_root = root.and_then(|r| match r.canonicalize() {
+        Ok(c) => Some(c),
+        Err(e) => {
+            eprintln!("skypie: census cannot canonicalize root {r:?}: {e}");
+            None
+        }
+    });
 
     let mut files: Vec<CensusFile> = Vec::new();
     let mut missing: Vec<PathBuf> = Vec::new();
+    let mut unreadable: Vec<PathBuf> = Vec::new();
     let mut outside_root: Vec<PathBuf> = Vec::new();
+    let mut skipped = 0usize;
     let mut truncated = false;
-    let mut truncated_at: Option<usize> = None;
-    let mut fresh: u32 = 0;
+    let mut truncated_at: Option<PathBuf> = None;
 
-    // Every FOLDER member's path, computed once up front (independent of
-    // member order) — a FILE member whose path falls under any of them is
-    // skipped below rather than walked a second time. Without this, a file
-    // that is both a direct FILE member and inside a FOLDER member of the
-    // same pie was reported twice — once from the folder's own `bfs_walk`,
-    // once from the File-member branch — which double-counted the plate
-    // readout and `fresh`, and collided two rows onto one `navIndexOf` slot
-    // in the UI (review finding, workspace.rs:441).
-    let folder_paths: Vec<&Path> = members
-        .iter()
-        .filter(|m| m.kind == crate::pies::PieMemberKind::Folder)
-        .map(|m| m.path.as_path())
-        .collect();
-
-    for (idx, member) in members.iter().enumerate() {
+    // PASS 1 — classify EVERY member, before any walking. The walk below
+    // can stop early on the cap, and classification that happened inside it
+    // was therefore missing for every later member: on a truncated pie a
+    // folder outside the root silently lost its "not live" caption and a
+    // deleted folder lost its "folder not found" state. Both probes are one
+    // syscall per MEMBER (not per file), so a pie's whole classification
+    // costs a handful of stats even when the walk is cut at 20,000 files.
+    //
+    // The resolved `Metadata` is kept so the FILE branch below does not
+    // `stat` the same path a second time.
+    let mut resolved: Vec<Option<std::fs::Metadata>> = Vec::with_capacity(members.len());
+    for member in members.iter() {
         if !is_under_root(&member.path, canonical_root.as_deref()) {
             outside_root.push(member.path.clone());
         }
+        let meta = match std::fs::metadata(&member.path) {
+            Ok(meta) => {
+                let right_kind = match member.kind {
+                    crate::pies::PieMemberKind::File => meta.is_file(),
+                    crate::pies::PieMemberKind::Folder => meta.is_dir(),
+                };
+                if right_kind {
+                    Some(meta)
+                } else {
+                    // The path resolves but is the wrong THING (a file
+                    // member that is now a directory, or the reverse) —
+                    // "not found" is what the user has to act on, the same
+                    // as a deletion.
+                    missing.push(member.path.clone());
+                    None
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(member.path.clone());
+                None
+            }
+            Err(e) => {
+                eprintln!("skypie: census cannot stat member {:?}: {e}", member.path);
+                unreadable.push(member.path.clone());
+                None
+            }
+        };
+        // A folder whose own root cannot be read is NOT an empty folder.
+        // `bfs_walk` logs `read_dir` failures and carries on, so without
+        // this probe such a member rendered as a folder with zero files and
+        // nothing said why.
+        let meta = match (meta, member.kind) {
+            (Some(meta), crate::pies::PieMemberKind::Folder) => {
+                match std::fs::read_dir(&member.path) {
+                    Ok(_) => Some(meta),
+                    Err(e) => {
+                        eprintln!(
+                            "skypie: census cannot read folder member {:?}: {e}",
+                            member.path
+                        );
+                        unreadable.push(member.path.clone());
+                        None
+                    }
+                }
+            }
+            (meta, _) => meta,
+        };
+        resolved.push(meta);
+    }
 
+    // Every path already reported. One pie can reach the same file by more
+    // than one route, and this set is the only thing that keeps it to ONE
+    // row: a file that is both a direct FILE member and inside a FOLDER
+    // member of the same pie, and two OVERLAPPING folder members (a pie
+    // holding both `/x` and its own subfolder `/x/y` — `pies::add_member`
+    // dedupes exact member paths only), which no member-vs-member
+    // comparison catches because the second route is a nested directory,
+    // not a member. A duplicate double-counted the plate readout and
+    // collided two rows onto one navigation slot in the UI. The FIRST
+    // route to reach a file wins, so the row is tagged with the member the
+    // stored order reaches first.
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+    // PASS 2 — walk what resolved. Every `missing`/`unreadable`/
+    // `outside_root` answer is already complete at this point, so breaking
+    // out on the cap costs classification nothing.
+    for (idx, member) in members.iter().enumerate() {
         // Checked BEFORE processing this member (file or folder) — the cap
         // is a TOTAL across the whole pie, and once it is reached no later
         // member is walked at all (spec section 6).
         if files.len() >= cap {
             truncated = true;
-            truncated_at = Some(idx);
+            truncated_at = Some(member.path.clone());
             break;
         }
 
+        // Classified in pass 1 as missing or unreadable — nothing to walk.
+        let Some(meta) = resolved[idx].as_ref() else {
+            continue;
+        };
+
         match member.kind {
             crate::pies::PieMemberKind::File => {
-                if folder_paths.iter().any(|f| is_under_root(&member.path, Some(f))) {
-                    // Already covered by a folder member's own walk above —
-                    // skip entirely (not `missing`, not `files`) so it is
-                    // reported exactly once.
+                if seen.contains(&member.path) {
+                    // An earlier folder member's walk already reported it —
+                    // skip entirely (not `missing`, not `files`).
                     continue;
                 }
-                match std::fs::metadata(&member.path) {
-                    Ok(meta) if meta.is_file() => {
-                        let mtime = mtime_ms(&meta);
-                        if seen_at != 0 && mtime > seen_at {
-                            fresh += 1;
-                        }
-                        files.push(CensusFile {
-                            path: member.path.clone(),
-                            mtime,
-                            size: meta.len(),
-                            folder: None,
-                        });
+                seen.insert(member.path.clone());
+                files.push(CensusFile {
+                    path: member.path.clone(),
+                    mtime: mtime_ms(meta),
+                    size: meta.len(),
+                    folder: None,
+                });
+            }
+            crate::pies::PieMemberKind::Folder => {
+                // > 0: the cap check above already returned early when
+                // `files.len() >= cap`, so there is always budget left
+                // here.
+                let budget = cap - files.len();
+                let folder_path = member.path.clone();
+                let hit_cap = bfs_walk(&member.path, budget, &mut |entry| {
+                    let path = entry.path();
+                    if seen.contains(&path) {
+                        // Another member already reported this file —
+                        // `false` so it does not spend the budget either.
+                        return false;
                     }
-                    _ => missing.push(member.path.clone()),
+                    // The census is the only caller that needs more
+                    // than the path, so it is the only one that pays
+                    // for the extra stat.
+                    let meta = match entry.metadata() {
+                        Ok(m) => m,
+                        Err(e) => {
+                            eprintln!("skypie: census skip entry {path:?}: {e}");
+                            // Counted, not just logged: this file is in
+                            // none of the lists, so the pie is short by one
+                            // and only this number says so.
+                            skipped += 1;
+                            return false;
+                        }
+                    };
+                    files.push(CensusFile {
+                        path: path.clone(),
+                        mtime: mtime_ms(&meta),
+                        size: meta.len(),
+                        folder: Some(folder_path.clone()),
+                    });
+                    seen.insert(path);
+                    true
+                });
+                if hit_cap {
+                    truncated = true;
+                    truncated_at = Some(member.path.clone());
+                    break;
                 }
             }
-            crate::pies::PieMemberKind::Folder => match std::fs::metadata(&member.path) {
-                Ok(meta) if meta.is_dir() => {
-                    // > 0: the cap check above already returned early when
-                    // `files.len() >= cap`, so there is always budget left
-                    // here.
-                    let budget = cap - files.len();
-                    let folder_path = member.path.clone();
-                    let hit_cap = bfs_walk(&member.path, budget, &mut |path, meta| {
-                        let mtime = mtime_ms(meta);
-                        if seen_at != 0 && mtime > seen_at {
-                            fresh += 1;
-                        }
-                        files.push(CensusFile {
-                            path: path.to_path_buf(),
-                            mtime,
-                            size: meta.len(),
-                            folder: Some(folder_path.clone()),
-                        });
-                    });
-                    if hit_cap {
-                        truncated = true;
-                        truncated_at = Some(idx);
-                        break;
-                    }
-                }
-                _ => missing.push(member.path.clone()),
-            },
         }
     }
 
     PieCensus {
         files,
         missing,
+        unreadable,
         outside_root,
+        skipped,
         truncated,
         truncated_at,
-        fresh,
     }
 }
 
@@ -630,13 +757,14 @@ mod census_tests {
             added_at: 0,
             source: None,
             origin: None,
+            rest: Default::default(),
         }
     }
 
     /// Deterministic mtimes — real filesystem timestamps have too coarse a
     /// resolution (and a real `sleep` between writes is flaky in CI) to
-    /// assert ordering against, so every test that cares about `fresh`
-    /// stamps its fixture files explicitly instead.
+    /// assert against, so every test that reads an mtime back stamps its
+    /// fixture files explicitly instead.
     fn set_mtime(path: &Path, ms: u64) {
         let time = UNIX_EPOCH + Duration::from_millis(ms);
         std::fs::File::open(path).unwrap().set_modified(time).unwrap();
@@ -660,9 +788,9 @@ mod census_tests {
         // Cap smaller than folder_a's own file count: the walk stops
         // PARTWAY through the first member, which is the one truncated_at
         // must point at — the second member is never reached.
-        let census = census_with_cap(&members, 0, None, 2);
+        let census = census_with_cap(&members, None, 2);
         assert!(census.truncated);
-        assert_eq!(census.truncated_at, Some(0));
+        assert_eq!(census.truncated_at.as_deref(), Some(folder_a.as_path()));
         assert_eq!(census.files.len(), 2);
         assert!(
             census.files.iter().all(|f| f.folder.as_deref() == Some(folder_a.as_path())),
@@ -683,14 +811,63 @@ mod census_tests {
             member(PieMemberKind::Folder, &folder_a),
             member(PieMemberKind::Folder, &folder_b),
         ];
-        let census = census_with_cap(&members, 0, None, 2);
+        let census = census_with_cap(&members, None, 2);
         assert!(census.truncated);
         assert_eq!(
-            census.truncated_at,
-            Some(1),
+            census.truncated_at.as_deref(),
+            Some(folder_b.as_path()),
             "member 0 exactly filled the budget; member 1 is the one cut, not member 0",
         );
         assert_eq!(census.files.len(), 2);
+    }
+
+    #[test]
+    fn a_cut_file_member_is_named_by_truncated_at_and_still_classified() {
+        // The cap can fall on a FILE member, not only a folder one — and
+        // the asymmetry that matters: `outside_root` is complete for the
+        // cut member even though its own row never made it into `files`.
+        let workspace = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        let folder = workspace.path().join("a");
+        touch(&folder.join("f0.txt"));
+        let cut_file = elsewhere.path().join("out.txt");
+        touch(&cut_file);
+        let canonical_cut = std::fs::canonicalize(&cut_file).unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        let members = vec![
+            member(PieMemberKind::Folder, &std::fs::canonicalize(&folder).unwrap()),
+            member(PieMemberKind::File, &canonical_cut),
+        ];
+
+        let census = census_with_cap(&members, Some(&root), 1);
+
+        assert!(census.truncated);
+        assert_eq!(census.truncated_at.as_deref(), Some(canonical_cut.as_path()));
+        assert!(
+            census.files.iter().all(|f| f.path != canonical_cut),
+            "the cut member's own row must not be reported: {:?}",
+            census.files,
+        );
+        assert_eq!(
+            census.outside_root,
+            vec![canonical_cut],
+            "classification is complete even for a member the cap cut",
+        );
+    }
+
+    #[test]
+    fn an_untruncated_census_carries_no_truncated_at() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("a.md");
+        touch(&file);
+        let members = vec![member(PieMemberKind::File, &file)];
+
+        let census = census_with_cap(&members, None, MAX_INDEX_ENTRIES);
+
+        assert!(!census.truncated);
+        assert_eq!(census.truncated_at, None);
+        assert!(census.unreadable.is_empty());
+        assert_eq!(census.skipped, 0);
     }
 
     #[test]
@@ -699,7 +876,7 @@ mod census_tests {
         let missing = dir.path().join("gone");
         let members = vec![member(PieMemberKind::Folder, &missing)];
 
-        let census = census_with_cap(&members, 0, None, MAX_INDEX_ENTRIES);
+        let census = census_with_cap(&members, None, MAX_INDEX_ENTRIES);
 
         assert_eq!(census.missing, vec![missing]);
         assert!(census.files.is_empty());
@@ -708,10 +885,9 @@ mod census_tests {
 
     #[test]
     fn a_file_under_a_folder_member_of_the_same_pie_is_reported_once() {
-        // Review finding (workspace.rs:441): a file that is both a direct
-        // FILE member and inside a FOLDER member of the same pie used to be
-        // reported twice — once from the folder's `bfs_walk`, once from the
-        // File-member branch.
+        // A file that is both a direct FILE member and inside a FOLDER
+        // member of the same pie used to be reported twice — once from the
+        // folder's `bfs_walk`, once from the File-member branch.
         let dir = TempDir::new().unwrap();
         let folder = dir.path().join("docs");
         let nested = folder.join("readme.md");
@@ -721,7 +897,7 @@ mod census_tests {
             member(PieMemberKind::File, &nested),
         ];
 
-        let census = census_with_cap(&members, 0, None, MAX_INDEX_ENTRIES);
+        let census = census_with_cap(&members, None, MAX_INDEX_ENTRIES);
 
         assert_eq!(
             census.files.iter().filter(|f| f.path == nested).count(),
@@ -734,8 +910,14 @@ mod census_tests {
             member(PieMemberKind::File, &nested),
             member(PieMemberKind::Folder, &folder),
         ];
-        let census2 = census_with_cap(&reordered, 0, None, MAX_INDEX_ENTRIES);
-        assert_eq!(census2.files.iter().filter(|f| f.path == nested).count(), 1);
+        let census2 = census_with_cap(&reordered, None, MAX_INDEX_ENTRIES);
+        let rows: Vec<&CensusFile> = census2.files.iter().filter(|f| f.path == nested).collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].folder, None,
+            "the FIRST route wins: reached as a direct FILE member, the row carries no folder tag, \
+             so `layersOf` puts it in the trailing \"Files\" layer rather than under the folder",
+        );
     }
 
     #[test]
@@ -746,7 +928,7 @@ mod census_tests {
         set_mtime(&file, 1_700_000_000_000);
         let members = vec![member(PieMemberKind::File, &file)];
 
-        let census = census_with_cap(&members, 0, None, MAX_INDEX_ENTRIES);
+        let census = census_with_cap(&members, None, MAX_INDEX_ENTRIES);
 
         assert_eq!(census.files.len(), 1);
         let f = &census.files[0];
@@ -757,53 +939,83 @@ mod census_tests {
     }
 
     #[test]
-    fn fresh_counts_only_files_newer_than_a_seen_at_in_the_middle() {
+    fn a_folder_walked_file_carries_real_mtime_size_and_its_member_tag() {
+        // The folder branch reads its metadata from the `DirEntry` the walk
+        // already holds, a different code path from the FILE branch's own
+        // `std::fs::metadata` above — so it needs its own assertion that
+        // the numbers arrive intact.
         let dir = TempDir::new().unwrap();
-        let older = dir.path().join("old.txt");
-        let newer = dir.path().join("new.txt");
-        touch(&older);
-        touch(&newer);
-        set_mtime(&older, 1_000_000);
-        set_mtime(&newer, 2_000_000);
-        let members = vec![
-            member(PieMemberKind::File, &older),
-            member(PieMemberKind::File, &newer),
-        ];
+        let folder = dir.path().join("docs");
+        let nested = folder.join("note.txt");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&nested, "hello").unwrap();
+        set_mtime(&nested, 1_700_000_000_000);
+        let members = vec![member(PieMemberKind::Folder, &folder)];
 
-        let census = census_with_cap(&members, 1_500_000, None, MAX_INDEX_ENTRIES);
+        let census = census_with_cap(&members, None, MAX_INDEX_ENTRIES);
 
-        assert_eq!(census.fresh, 1, "only the file newer than seen_at counts");
+        assert_eq!(census.files.len(), 1);
+        let f = &census.files[0];
+        assert_eq!(f.path, nested);
+        assert_eq!(f.size, 5);
+        assert_eq!(f.mtime, 1_700_000_000_000);
+        assert_eq!(f.folder.as_deref(), Some(folder.as_path()));
     }
 
     #[test]
-    fn fresh_counts_folder_files_newer_than_seen_at_too() {
-        // The folder-walk `fresh` increment (the `bfs_walk` closure) had no
-        // coverage of its own with a non-zero `seen_at` — only FILE members
-        // were exercised above (review finding, workspace.rs:593).
+    fn two_overlapping_folder_members_report_each_shared_file_once() {
+        // `pies::add_member` dedupes exact member paths only, so a pie can
+        // hold both `/x` and its own subfolder `/x/y`. No member-vs-member
+        // comparison catches that overlap — only the census's own `seen`
+        // set does.
         let dir = TempDir::new().unwrap();
-        let folder = dir.path().join("docs");
-        let older = folder.join("old.txt");
-        let newer = folder.join("new.txt");
-        touch(&older);
-        touch(&newer);
-        set_mtime(&older, 1_000_000);
-        set_mtime(&newer, 2_000_000);
-        let members = vec![member(PieMemberKind::Folder, &folder)];
+        let outer = dir.path().join("outer");
+        let inner = outer.join("inner");
+        let shared = inner.join("a.txt");
+        touch(&shared);
+        let members = vec![
+            member(PieMemberKind::Folder, &outer),
+            member(PieMemberKind::Folder, &inner),
+        ];
 
-        let census = census_with_cap(&members, 1_500_000, None, MAX_INDEX_ENTRIES);
+        let census = census_with_cap(&members, None, MAX_INDEX_ENTRIES);
 
+        assert_eq!(census.files.len(), 1, "got {:?}", census.files);
         assert_eq!(
-            census.fresh, 1,
-            "only the folder-walked file newer than seen_at counts",
+            census.files[0].folder.as_deref(),
+            Some(outer.as_path()),
+            "the FIRST member to reach the file tags it",
         );
+    }
+
+    #[test]
+    fn a_deduped_file_does_not_spend_the_entry_budget() {
+        // `bfs_walk`'s budget must measure files REPORTED, not entries
+        // looked at: a cap of 2 over a pie whose two folder members overlap
+        // on one file still has room for the second member's own file.
+        let dir = TempDir::new().unwrap();
+        let outer = dir.path().join("outer");
+        let inner = outer.join("inner");
+        touch(&inner.join("shared.txt"));
+        let other = dir.path().join("other");
+        touch(&other.join("b.txt"));
+        let members = vec![
+            member(PieMemberKind::Folder, &outer),
+            member(PieMemberKind::Folder, &inner),
+            member(PieMemberKind::Folder, &other),
+        ];
+
+        let census = census_with_cap(&members, None, 2);
+
+        assert_eq!(census.files.len(), 2, "got {:?}", census.files);
+        assert!(!census.truncated);
     }
 
     #[test]
     fn a_missing_or_wrong_type_file_member_is_reported_missing() {
         // A `kind: File` member whose path is gone, or resolves to a
         // directory, must land in `missing` and never in `files` — only the
-        // missing-FOLDER case had coverage before (review finding,
-        // workspace.rs:593).
+        // missing-FOLDER case had coverage before.
         let dir = TempDir::new().unwrap();
         let gone = dir.path().join("gone.txt");
         let a_directory = dir.path().join("actually-a-dir");
@@ -813,26 +1025,10 @@ mod census_tests {
             member(PieMemberKind::File, &a_directory),
         ];
 
-        let census = census_with_cap(&members, 0, None, MAX_INDEX_ENTRIES);
+        let census = census_with_cap(&members, None, MAX_INDEX_ENTRIES);
 
         assert_eq!(census.missing, vec![gone, a_directory]);
         assert!(census.files.is_empty());
-    }
-
-    #[test]
-    fn seen_at_zero_never_counts_anything_fresh() {
-        let dir = TempDir::new().unwrap();
-        let file = dir.path().join("a.txt");
-        touch(&file);
-        set_mtime(&file, 1_700_000_000_000);
-        let members = vec![member(PieMemberKind::File, &file)];
-
-        let census = census_with_cap(&members, 0, None, MAX_INDEX_ENTRIES);
-
-        assert_eq!(
-            census.fresh, 0,
-            "a never-opened pie (seen_at == 0) must not show every file as new",
-        );
     }
 
     #[test]
@@ -851,7 +1047,7 @@ mod census_tests {
             member(PieMemberKind::File, &canonical_inside),
             member(PieMemberKind::File, &canonical_outside),
         ];
-        let census = census_with_cap(&members, 0, Some(&root), MAX_INDEX_ENTRIES);
+        let census = census_with_cap(&members, Some(&root), MAX_INDEX_ENTRIES);
 
         assert_eq!(census.outside_root, vec![canonical_outside]);
     }
@@ -864,7 +1060,7 @@ mod census_tests {
         let canonical = std::fs::canonicalize(&file).unwrap();
         let members = vec![member(PieMemberKind::File, &canonical)];
 
-        let census = census_with_cap(&members, 0, None, MAX_INDEX_ENTRIES);
+        let census = census_with_cap(&members, None, MAX_INDEX_ENTRIES);
 
         assert_eq!(census.outside_root, vec![canonical]);
     }

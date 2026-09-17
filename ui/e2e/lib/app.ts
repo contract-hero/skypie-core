@@ -2,12 +2,13 @@
 // it over its `app.sock` (the same socket `skypie-mcp` uses), and script its
 // actual webview via `Request::E2eEval` (crates/skypie-ipc, app/src/e2e.rs)
 // rather than re-implementing the UI's behaviour in the test.
-import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { request } from "./protocol";
+import { run, sleep, waitUntilConnectable } from "./proc";
 import { parseCombo } from "../../src/keyboard/shortcuts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -37,17 +38,6 @@ export interface LaunchedApp extends AppHandle {
   readonly stateDir: string;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Run a build step, streaming its output — a silent multi-minute build is
- *  indistinguishable from a hang. */
-function runBuild(cmd: string, args: string[], cwd: string): void {
-  console.log(`$ ${cmd} ${args.join(" ")}`);
-  execFileSync(cmd, args, { cwd, stdio: "inherit" });
-}
-
 export interface LaunchDesktopOptions {
   /** Scratch `SKYPIE_STATE_DIR` — isolates `app.sock`, `state.json`,
    *  `identity.key` etc. from the developer's real install. */
@@ -75,21 +65,32 @@ const DEV_URL = "http://localhost:1420";
  * own `pnpm dev`) is reused and left running.
  */
 export async function launchDesktop(opts: LaunchDesktopOptions): Promise<LaunchedApp> {
-  if (!opts.skipBuild) {
-    runBuild(
-      "cargo",
-      ["build", "--manifest-path", path.join(SHELL_DIR, "src-tauri", "Cargo.toml")],
-      SHELL_DIR,
-    );
+  // The dev server and `cargo build` need nothing from each other, and both
+  // take real time — so the server boots while the crate compiles.
+  const devServerStarting = ensureDevServer();
+  try {
+    if (!opts.skipBuild) {
+      run(
+        "cargo",
+        ["build", "--manifest-path", path.join(SHELL_DIR, "src-tauri", "Cargo.toml")],
+        SHELL_DIR,
+      );
+    }
+    if (!fs.existsSync(DESKTOP_BIN)) {
+      throw new Error(`built, but the binary is not at ${DESKTOP_BIN}`);
+    }
+  } catch (e) {
+    // The build failed, but the server may already be up: stop it rather
+    // than leave an orphan behind (and never leave the promise unhandled).
+    const stray = await devServerStarting.catch(() => null);
+    if (stray) await quitProcess(stray, { group: true });
+    throw e;
   }
-  if (!fs.existsSync(DESKTOP_BIN)) {
-    throw new Error(`built, but the binary is not at ${DESKTOP_BIN}`);
-  }
-  const devServer = await ensureDevServer();
+  const devServer = await devServerStarting;
 
   fs.mkdirSync(opts.stateDir, { recursive: true });
   const sockPath = path.join(opts.stateDir, "app.sock");
-  // A stale socket from a previous crashed run would make `waitForSocket`
+  // A stale socket from a previous crashed run would make the wait below
   // connect to nothing and hang for the full timeout instead of the fresh
   // one `claim_socket` is about to bind.
   if (fs.existsSync(sockPath)) fs.rmSync(sockPath);
@@ -105,7 +106,28 @@ export async function launchDesktop(opts: LaunchDesktopOptions): Promise<Launche
     console.log(`[skypie] exited (code=${code}, signal=${signal})`);
   });
 
-  await waitForSocket(sockPath, 30_000);
+  // Two things can go wrong from here, and both used to be silent.
+  // (1) The app exits at start (a missing dylib, a panic in `setup`): the
+  //     socket never appears and the only report would be a 30 s timeout,
+  //     so the child's own exit races the wait and wins with its code.
+  // (2) Either way, `proc` and a dev server THIS call started would be left
+  //     running — and the next run would "reuse" that orphan dev server and
+  //     test against it. So the failure path stops both before it rethrows.
+  const death = exited(proc);
+  // The loser of the race stays pending; a rejection nobody is awaiting is
+  // an unhandled rejection in node, so it is claimed here once.
+  void death.catch(() => undefined);
+  try {
+    await Promise.race([
+      waitUntilConnectable(() => net.createConnection(sockPath), `app.sock at ${sockPath}`, 30_000),
+      death,
+    ]);
+  } catch (e) {
+    await quitProcess(proc);
+    if (devServer) await quitProcess(devServer, { group: true });
+    throw e;
+  }
+  death.settle();
 
   const app: LaunchedApp = {
     proc,
@@ -113,7 +135,7 @@ export async function launchDesktop(opts: LaunchDesktopOptions): Promise<Launche
     connect: () => net.createConnection(sockPath),
     quit: async () => {
       await quitProcess(proc);
-      if (devServer) await quitProcess(devServer);
+      if (devServer) await quitProcess(devServer, { group: true });
     },
   };
   return app;
@@ -155,18 +177,48 @@ async function isUp(url: string): Promise<boolean> {
   }
 }
 
+/** Rejects when `proc` exits, and never resolves. Raced against a wait, so
+ *  a process that dies at start is reported as what it is rather than as
+ *  whatever the wait was going to time out on. */
+function exited(proc: ChildProcess): Promise<never> & { settle(): void } {
+  let launched = false;
+  const p = new Promise<never>((_resolve, reject) => {
+    proc.once("exit", (code, signal) => {
+      // A normal `quit` later in the run is not a launch failure.
+      if (launched) return;
+      reject(new Error(`the app exited before it bound its socket (code=${code}, signal=${signal})`));
+    });
+  }) as Promise<never> & { settle(): void };
+  p.settle = () => {
+    launched = true;
+  };
+  return p;
+}
+
 /** Terminate a child process and wait for it to exit (SIGKILL after a
- *  grace period, so a hung process never leaves a script hanging). */
-async function quitProcess(proc: ChildProcess): Promise<void> {
+ *  grace period, so a hung process never leaves a script hanging).
+ *
+ *  `group` signals the whole process group instead of the process. Only
+ *  the dev server wants it: it is spawned `detached`, so it leads its own
+ *  group and vite dies with pnpm. A plain child does NOT lead a group — it
+ *  sits in the runner's — so signalling `-pid` there would either throw
+ *  `ESRCH` or, worse, SIGKILL an unrelated group that happens to carry
+ *  that id. */
+async function quitProcess(
+  proc: ChildProcess,
+  opts: { group?: boolean } = {},
+): Promise<void> {
   if (proc.exitCode !== null || proc.signalCode !== null) return;
-  // A detached child (the dev server) is its own process group: signal the
-  // group so vite dies with pnpm. A plain child has pid === pgid anyway.
   const signal = (sig: NodeJS.Signals) => {
-    try {
-      process.kill(-proc.pid!, sig);
-    } catch {
-      proc.kill(sig);
+    if (opts.group && proc.pid !== undefined) {
+      try {
+        process.kill(-proc.pid, sig);
+        return;
+      } catch {
+        // The group is already gone; fall through to the process itself.
+      }
     }
+    proc.kill(sig);
   };
   signal("SIGTERM");
   await new Promise<void>((resolve) => {
@@ -181,28 +233,6 @@ async function quitProcess(proc: ChildProcess): Promise<void> {
   });
 }
 
-async function waitForSocket(sockPath: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (fs.existsSync(sockPath) && (await canConnect(sockPath))) return;
-    if (Date.now() > deadline) {
-      throw new Error(`app.sock never came up at ${sockPath} within ${timeoutMs}ms`);
-    }
-    await sleep(200);
-  }
-}
-
-function canConnect(sockPath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const s = net.createConnection(sockPath);
-    s.once("connect", () => {
-      s.end();
-      resolve(true);
-    });
-    s.once("error", () => resolve(false));
-  });
-}
-
 /**
  * Evaluate `js` — a single JS EXPRESSION, which may `await` — in the app's
  * main webview, and return whatever it resolves to. `js` throwing, or the
@@ -213,6 +243,12 @@ export async function evalIn(app: AppHandle, js: string): Promise<unknown> {
   if (res.status === "err") {
     throw new Error(`evalIn failed: ${res.message}\n  js: ${js}`);
   }
+  // `Response`'s ok side is discriminated by `kind`, so the reply to an
+  // `e2e_eval` must say so before its `value` can be read. Any other kind
+  // here is the app answering a question it was not asked.
+  if (res.kind !== "e2e_result") {
+    throw new Error(`evalIn: expected an e2e_result reply, got ${res.kind}\n  js: ${js}`);
+  }
   return res.value;
 }
 
@@ -222,6 +258,12 @@ export async function evalIn(app: AppHandle, js: string): Promise<unknown> {
  * `src/keyboard/shortcuts.ts` bindings use, parsed with its own
  * `parseCombo` so this can never drift from what the app's registry
  * actually matches on (`e.code`, not `e.key`).
+ *
+ * `key` below is filled with the CODE, since the combo syntax carries no
+ * key value. So a component handler that reads `e.key` matches only where
+ * the two spellings coincide; a letter combo (`mod+p` → code `KeyP`) does
+ * not reach one. The app's own registry reads `e.code`, which is why this
+ * is enough for it.
  */
 export async function keys(app: AppHandle, combo: string): Promise<void> {
   const p = parseCombo(combo);
@@ -241,8 +283,10 @@ export async function keys(app: AppHandle, combo: string): Promise<void> {
 }
 
 /** Click the first element matching `selector`, via the real
- *  `HTMLElement.click()` — a trusted click, so React's delegated handlers
- *  fire exactly as they would for a person. Throws if nothing matches. */
+ *  `HTMLElement.click()`. The event bubbles, so React's delegated handlers
+ *  run exactly as they would for a person — but it carries
+ *  `isTrusted === false`, so a handler that checks that flag is NOT
+ *  exercised here. Throws if nothing matches. */
 export async function click(app: AppHandle, selector: string): Promise<void> {
   const js = `(function(){
     var el = document.querySelector(${JSON.stringify(selector)});
@@ -290,6 +334,23 @@ export async function waitFor(
     }
     await sleep(150);
   }
+}
+
+/**
+ * Open `absPath` through the app's own ⌘P quick-open palette, and wait for
+ * the resulting tab to become active. Typed on `AppHandle`, not on
+ * `LaunchedApp`, so an iOS scenario can drive it too.
+ *
+ * Shared here rather than copied per scenario: populating a scenario's
+ * Recent history is the common setup step for every Sky/pie checkpoint.
+ */
+export async function openViaQuickOpen(app: AppHandle, absPath: string): Promise<void> {
+  await keys(app, "mod+p");
+  await waitFor(app, `document.querySelector('[data-testid="quick-open"]') !== null`, 10_000);
+  const rowSelector = `li[title=${JSON.stringify(absPath)}]`;
+  await waitFor(app, `document.querySelector(${JSON.stringify(rowSelector)}) !== null`, 10_000);
+  await click(app, rowSelector);
+  await waitFor(app, `document.querySelector(".tab.active .tab-label") !== null`, 10_000);
 }
 
 /** Stop the app. Desktop kills the child process; `launchIos`'s handle

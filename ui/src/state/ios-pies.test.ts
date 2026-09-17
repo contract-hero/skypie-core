@@ -31,10 +31,9 @@ describe("receivedPie", () => {
     expect(receivedPie(entries).files[0].kind).toBe("html");
   });
 
-  it("leaves fresh/newestFreshPath/census unset — no freshness pill on a derived pie", () => {
+  it("leaves fresh/census unset — no freshness pill on a derived pie", () => {
     const pie = receivedPie([{ path: "/a", name: "a.md", size: 1, received_at: 1 }]);
     expect(pie.fresh).toBeUndefined();
-    expect(pie.newestFreshPath).toBeUndefined();
     expect(pie.census).toBeUndefined();
   });
 

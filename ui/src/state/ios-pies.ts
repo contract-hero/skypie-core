@@ -28,7 +28,7 @@ function secsToMs(secs: number): number {
 }
 
 /** The band's Received pie — every past beam under the phone's own
- *  `received/` tree. `fresh`/`newestFreshPath`/`census` are left
+ *  `received/` tree. `fresh`/`census` are left
  *  `undefined` forever (never set below): a derived pie has no `seen_at`,
  *  so `Pie.tsx` never draws a `+N` pill on it — the M6 brief's own "no
  *  pill" decision, enforced by construction rather than a runtime check. */

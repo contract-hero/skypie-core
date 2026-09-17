@@ -705,6 +705,24 @@ borrows more from the surface language than any other part of the product,
 so this section names every departure and the limit that keeps it from
 spreading.
 
+M2 adds the user's own pies to the same band, and they reuse the surface
+above rather than introducing a second one. The **tin** — the band's last
+slot, a dashed hairline circle labelled "New pie" — is the only new glyph,
+and it is hand-drawn for the same reason `FileGlyph` is: no icon set carries
+an "empty pie". Creating and **renaming** both happen in place, swapping the
+tile's label for a text input inside the same listbox option, so the band's
+roving focus and its option count never change shape mid-edit. **Delete**
+is optimistic with a 5-second undo offered through the app's one notice
+toast; nothing new is drawn for it. Each tile carries a **tooltip** after a
+400ms delay whose content is the share summary alone ("html 58% · md 25% ·
+code 17%") — the name is already the tile's visible label. The **picker**
+(⌘D, "Add to pie…") is a centred popover over a transparent backdrop, not a
+scrim: it is a one-shot action, and dimming the whole window for one click
+would read as a modal the product does not have. `--sky-focus` does one more
+job here than the bullet below states: it is also the 2px stroke on the cut
+wedge in the plate, so "the thing you chose" reads the same whether it is a
+focused tile or a cut slice.
+
 - **A gradient.** The top 32px of the band is a linear gradient from
   `{colors.bg-chrome}` into `--sky` — the one exception to "Don't add
   atmospheric gradients" (line 690). The limit is exactly those 32px: below
@@ -736,16 +754,23 @@ spreading.
   `--sky` field. Same job as the one accent's focus role, a shade chosen per
   surface rather than a second color.
 - **A window-height breakpoint.** Below a 480px pane (`usePaneShort`,
-  `PiePlate.tsx`) the plate's pie drops from 200px to 120px and the legend
-  scrolls — the one exception to "Don't let chrome grow with the window, and
-  don't add breakpoints" (line 693). The limit is exactly that one
-  threshold, on the plate's pie diameter only: the 120px band height never
-  changes, and no other Sky band surface reflows with the window. Owner
-  decision: below a 480px pane the plate uses this floor geometry.
+  `PiePlate.tsx`) the plate's pie drops from 200px to 120px — the one
+  exception to "Don't let chrome grow with the window, and don't add
+  breakpoints" (line 693). The limit is ONE threshold: the pie diameter is
+  the only thing it switches, and the 120px band height never changes. The
+  plate's own box does track the window continuously (`width: min(720px,
+  100% − 32px)`, `height: clamp(280px, 100vh − 232px, 440px)`), and its layer
+  list scrolls at every height — but nothing else in the band reflows, and
+  no second breakpoint is added. Owner decision: below a 480px pane the
+  plate uses this floor geometry.
 
 The plate's mono readout uses `{colors.fg-muted}`, not `{colors.fg-dim}`
-(line 674's "keep fg-dim off anything a user has to read") — no further
-departure is needed there.
+(line 674's "keep fg-dim off anything a user has to read"). Two labels in
+the plate are a scoped exception and do use `{colors.fg-dim}`:
+`.pie-plate-recency` and the layer rows' `.start-row-mtime`. Both are
+secondary timestamps beside the name they qualify, never the only text in
+their row, and the exception stops there — no other Sky band text takes
+`fg-dim`.
 
 **M3 — the layer list becomes a tree.** When a pie has any folder member,
 the layer list (spec section 5) switches from a flat `role="listbox"` to
@@ -755,10 +780,13 @@ order the band itself uses. A pie with no folder members keeps the flat
 listbox unchanged — the tree is additive, not a replacement shape. This is
 an accessibility floor, not a new visual language: the header is set in
 `{typography.mono}` on `--sky-ink-dim`, the same ink-ladder rule
-every other Sky band label already follows, and the "folder not found" /
-"not live" captions next to it are plain text plus two small buttons
-(Locate…, Forget) styled like every other secondary control in the
-product — no new departure is introduced. The one exception already
+every other Sky band label already follows, and the captions next to it are
+plain text. "folder not found" adds two small buttons (Locate…, Forget)
+styled like every other secondary control in the product; "can't read this
+folder" adds Forget alone, since a folder that has not moved has nothing to
+be re-pointed at; "not live" adds no button at all — it states a refresh
+policy, and there is nothing for the reader to act on. No new departure is
+introduced. The one exception already
 covered above stays the limit: no gradient, no fill, no per-kind hue
 anywhere in the tree either.
 
@@ -783,20 +811,27 @@ plate.** Four additions, none a new departure — every color below is
   (`skypie-remote://…`) never match — a pie's file paths are always local.
 - **Finder drop.** `getCurrentWebview().onDragDropEvent()` — a dropped
   path keeps its exact basename as the new pie's name (via `uniqueName`),
-  a member's kind (file/folder) comes from probing `ipc.listDir` (resolves
-  for a directory, rejects for a file — not gated by the root set, so a
-  folder outside the workspace is a legal drop per spec line 217), and
-  every member is stored with `source: "finder"`. A drop on Pinned/Recent
+  a member's kind (file/folder) is resolved in Rust from the canonical
+  path `add_pie_member` already holds (`is_dir()` — `kind` is OPTIONAL on
+  that command, and only a caller that already knows its answer, the
+  picker or "Add folder…", still sends one), and every member is stored
+  with `source: "finder"`. That canonicalisation gate is not restricted to
+  the root set, so a folder outside the workspace is a legal drop per spec
+  line 217. A drop on Pinned/Recent
   is refused with a notice; a drop with no hit under it is ignored
   silently — both M4 owner decisions, not new visual language.
 - **The plate's short/narrow floor.** `usePaneShort` (M3, pane height
-  `< 480px`, the pie itself drops to 120px) is joined by `usePaneNarrow`
-  (WINDOW width `<= 760px` — `window.innerWidth`, not the narrower pane
-  the sidebar leaves once it is open; same `matchMedia` shape, a SEPARATE threshold —
-  a short-but-wide window and a narrow-but-tall one overflow at different
-  points): the legend scrolls in its own box instead of pushing the layer
-  list off the bottom, and the left rail (pie + readout) narrows from
-  240px to 140px so the right column keeps room to read a filename. Both
+  `< 480px`) is joined by `usePaneNarrow` (WINDOW width `<= 760px` —
+  `window.innerWidth`, not the narrower pane the sidebar leaves once it is
+  open; same `matchMedia` shape, a SEPARATE threshold — a short-but-wide
+  window and a narrow-but-tall one overflow at different points): the
+  legend scrolls in its own box instead of pushing the layer list off the
+  bottom, and the left rail (pie + readout) narrows from 240px to 140px so
+  the right column keeps room to read a filename. EITHER posture drops the
+  plate's pie disc from 200px to 120px — `narrow`, not only `short`: the
+  rail it sits in is 140px wide under `.pie-plate-narrow`, and `narrow` can
+  be true while `short` is false (a narrow-but-tall window), where a 200px
+  disc would overflow its own rail. Both
   are the SAME "window-height breakpoint" exception the spec already
   grants the plate's pie diameter (line 733 above) — a width axis added to
   the same one exception, not a second one. Floor verified at 640×400 (the

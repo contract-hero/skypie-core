@@ -5,14 +5,61 @@
 // linking a Rust one), just the same wire shape kept in sync by hand.
 import type { Socket } from "node:net";
 
-export interface Request {
-  op: string;
-  [key: string]: unknown;
+/** The verbs the harness sends. Spelled out rather than `{ op: string }`,
+ *  so a typo is a compile error here instead of a "malformed message" reply
+ *  from the app. Mirrors `skypie_ipc::Request`. */
+export type Request =
+  | { op: "e2e_eval"; js: string }
+  | { op: "status" }
+  /** M5 (agent reach): what an agent client sends. `pie` is a name or an id;
+   *  an unmatched NAME creates the pie. Mirrors `Request::AddToPie`. */
+  | {
+      op: "add_to_pie";
+      pie: string;
+      path: string;
+      origin?: { session_id?: string; prompt_id?: string; cwd?: string };
+    };
+
+/** The `Reply::AddedToPie` fields, flattened into their own ok arm below. */
+export interface AddedToPie {
+  pie: string;
+  pie_id: string;
+  path: string;
+  members: number;
+  created: boolean;
+  added: boolean;
 }
 
+/** Mirrors `skypie_ipc::Response`: tagged by `status`, with `Reply`
+ *  flattened into the ok arm (hence `kind` and the reply's own fields).
+ *  A discriminated union, not an index signature: an index signature makes
+ *  a reply with no `status` at all pass the cast, and `evalIn` would then
+ *  return `undefined` as a success. */
 export type Response =
-  | ({ status: "ok" } & Record<string, unknown>)
+  /** The `added_to_pie` reply, as its own arm with a LITERAL `kind`, placed
+   *  before the general one. `status === "ok" && kind === "added_to_pie"`
+   *  then narrows to the real fields, so a caller reads `created`/`added`
+   *  directly instead of as `| undefined`. The general arm's `kind` must
+   *  exclude that literal for the narrowing to eliminate it, which is why it
+   *  names the two reply kinds this harness actually receives rather than
+   *  an open `string`. */
+  | ({ status: "ok"; kind: "added_to_pie" } & AddedToPie)
+  | { status: "ok"; kind: "e2e_result" | "status"; value?: unknown }
   | { status: "err"; message: string };
+
+/** Accept only the two shapes above. A reply that is neither is the app
+ *  speaking a protocol this file does not know, which must be an error, not
+ *  a silent `undefined`. */
+function parseResponse(line: string): Response {
+  const parsed: unknown = JSON.parse(line);
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error(`reply is not an object: ${line}`);
+  }
+  const { status, message } = parsed as { status?: unknown; message?: unknown };
+  if (status === "ok") return parsed as Response;
+  if (status === "err" && typeof message === "string") return { status: "err", message };
+  throw new Error(`reply has no known status: ${line}`);
+}
 
 /**
  * Connect (via `connect`), write one JSON line, read one JSON line, close —
@@ -25,7 +72,11 @@ export type Response =
 export function request(
   connect: () => Socket,
   req: Request,
-  timeoutMs = 20_000,
+  // Longer than the app's own `READY_TIMEOUT` (60 s, app/src/e2e.rs): a
+  // request that races the page load is held that long on purpose, and
+  // giving up first would replace the app's specific answer with a bare
+  // client timeout.
+  timeoutMs = 70_000,
 ): Promise<Response> {
   return new Promise((resolve, reject) => {
     const socket = connect();
@@ -58,9 +109,9 @@ export function request(
       finish(() => {
         socket.end();
         try {
-          resolve(JSON.parse(line) as Response);
-        } catch {
-          reject(new Error(`malformed reply line: ${line}`));
+          resolve(parseResponse(line));
+        } catch (e) {
+          reject(new Error(`malformed reply line: ${line} (${String(e)})`));
         }
       });
     });

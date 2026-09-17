@@ -78,8 +78,9 @@ pub struct AddToPieArgs {
     /// the call fails and lists their ids; call again with one of those ids.
     pub pie: String,
     /// Absolute path of the file or folder to add. A relative path resolves
-    /// against the server's working directory. Use the path you just wrote
-    /// or the folder you just produced output into.
+    /// against the server's working directory, and a leading `~` expands
+    /// against the user's home directory. Use the path you just wrote or the
+    /// folder you just produced output into.
     pub path: String,
     /// Your own identifier for this Claude Code session, if you have one.
     /// Stored on the member for the user's own reference; never used to
@@ -141,32 +142,6 @@ pub fn validate_device_query(raw: &str) -> Result<&str, String> {
         return Err("device must not be empty — call list_devices to see the paired names".to_string());
     }
     Ok(trimmed)
-}
-
-/// Cap on `session_id`/`prompt_id` (add_to_pie): provenance, not content —
-/// long enough for any real identifier, short enough that a model cannot
-/// stuff a paragraph into a field the UI renders as a short tag.
-const MAX_ORIGIN_FIELD_LEN: usize = 128;
-
-/// Trim `raw`, drop it to `None` if empty, and refuse a control character
-/// (a raw ID pasted from a log line has none; something else stuffed into
-/// this field to smuggle a newline into `state.json` would). Caps length
-/// rather than truncating silently — a value that gets cut short reads as
-/// though it round-tripped correctly when it did not. Used for BOTH
-/// `session_id` and `prompt_id`: neither has a shape to validate beyond
-/// "short, printable, or absent".
-pub fn validate_origin_field(raw: &str) -> Result<Option<String>, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    if trimmed.chars().any(|c| c.is_control()) {
-        return Err("must not contain control characters".to_string());
-    }
-    if trimmed.chars().count() > MAX_ORIGIN_FIELD_LEN {
-        return Err(format!("must be {MAX_ORIGIN_FIELD_LEN} characters or fewer"));
-    }
-    Ok(Some(trimmed.to_string()))
 }
 
 /// An annotation id, as the hook's context block printed it.
@@ -312,23 +287,6 @@ mod tests {
         assert_eq!(validate_device_query("  MacBook  ").unwrap(), "MacBook");
         assert!(validate_device_query("").is_err());
         assert!(validate_device_query("\t \n").is_err());
-    }
-
-    #[test]
-    fn origin_fields_trim_drop_empty_and_refuse_control_characters() {
-        assert_eq!(validate_origin_field("  sess-42  ").unwrap().as_deref(), Some("sess-42"));
-        assert_eq!(validate_origin_field("").unwrap(), None, "empty becomes absent, not an error");
-        assert_eq!(validate_origin_field("   ").unwrap(), None, "whitespace-only is also absent");
-        assert!(validate_origin_field("line1\nline2").unwrap_err().contains("control"));
-        assert!(validate_origin_field("bell\x07").unwrap_err().contains("control"));
-    }
-
-    #[test]
-    fn origin_fields_cap_at_128_characters() {
-        let ok = "a".repeat(128);
-        assert_eq!(validate_origin_field(&ok).unwrap().as_deref(), Some(ok.as_str()));
-        let too_long = "a".repeat(129);
-        assert!(validate_origin_field(&too_long).unwrap_err().contains("128"));
     }
 
     #[test]
