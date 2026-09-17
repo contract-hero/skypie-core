@@ -19,6 +19,7 @@ import type { IpcSurface } from "./ipc";
 import { useDeepLink } from "./hooks/useDeepLink";
 import type { OpenFilePayload, DeepLinkErrorPayload } from "./hooks/useDeepLink";
 import { useTheme } from "./hooks/useTheme";
+import { useE2eBridge } from "./hooks/useE2eBridge";
 import { WorkspaceProvider, useWorkspace } from "./state/workspace";
 import { WatcherProvider } from "./state/watcher-bus";
 import { BookmarksProvider } from "./state/bookmarks-context";
@@ -108,14 +109,40 @@ export default function App({ ipc: injectedIpc }: AppProps = {}): React.ReactEle
   const ipc = injectedIpc ?? tauriIpc;
   // Drives <html data-theme="…"> via side-effect; must mount at the root.
   useTheme();
+  // The E2E harness's Rust→JS channel. Inert in every build a person runs —
+  // see the hook's own comment for the runtime gate that keeps it that way.
+  const e2eReady = useE2eBridge();
 
   return (
     <PlatformProvider ipc={ipc}>
       <WorkspaceProvider ipc={ipc}>
+        {e2eReady ? <E2eSeam /> : null}
         <ProviderShell ipc={ipc} />
       </WorkspaceProvider>
     </PlatformProvider>
   );
+}
+
+/**
+ * The one test-only surface the harness needs that no DOM primitive can
+ * reach. A `KeyboardEvent` dispatched on `document` already drives the app's
+ * keyboard registry from outside, and `HTMLElement.click()` already drives
+ * its handlers — but there is no such primitive for "move the workspace
+ * root", which lives in React context. So this publishes `setRoot` itself,
+ * and only once `useE2eBridge` reported the bridge armed, which happens only
+ * in a debug build (see the hook). Production renders nothing at all, and
+ * `WorkspaceProvider` stays free of any harness-shaped listener.
+ */
+function E2eSeam(): null {
+  const { setRoot } = useWorkspace();
+  React.useEffect(() => {
+    const w = window as typeof window & { __skypieE2e?: { setWorkspaceRoot: (p: string) => void } };
+    w.__skypieE2e = { setWorkspaceRoot: setRoot };
+    return () => {
+      delete w.__skypieE2e;
+    };
+  }, [setRoot]);
+  return null;
 }
 
 function ProviderShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {

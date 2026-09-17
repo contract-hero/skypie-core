@@ -74,5 +74,9 @@ iroh = "=1.0.3"
 iroh-blobs = "=0.103.0"
 
 [features]
-# E2E test hooks (echo log etc.); default OFF — gated to prevent prod abuse.
-e2e-hooks = []
+# E2E test hooks (echo log, E2eEval, the iOS loopback listener); default OFF
+# — gated to prevent prod abuse. A plain `cargo build` (dev profile) already
+# has all of it via `debug_assertions`; this feature is what a RELEASE build
+# would enable to carry the hook along, so it also flips skypie-ipc's own
+# gate — otherwise `Request::E2eEval` would not exist there to receive.
+e2e-hooks = ["skypie-ipc/e2e-hooks"]

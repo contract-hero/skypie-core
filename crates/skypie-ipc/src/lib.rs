@@ -145,6 +145,21 @@ pub enum Request {
         #[serde(default = "yes")]
         addressed: bool,
     },
+
+    // ── E2E harness ─────────────────────────────────────────────────────
+    // A debug-only hook: an E2E driver scripts the REAL app it is testing
+    // instead of a stand-in. Absent from this enum entirely in a release
+    // build with the feature off, so `{"op":"e2e_eval",...}` there fails to
+    // parse as `Request` (an "unknown variant" `serde_json` error, which
+    // `read_line` turns into the same "malformed message" reply any other
+    // garbage line gets) rather than being silently accepted by a build that
+    // must not run it.
+    /// Evaluate `js` as an async expression in the app's main webview and
+    /// return its JSON-serialised result. `js` may `await` — the app wraps
+    /// it in an async IIFE — so a driver can wait on the UI settling before
+    /// reading it back.
+    #[cfg(any(feature = "e2e-hooks", debug_assertions))]
+    E2eEval { js: String },
 }
 
 fn yes() -> bool {
@@ -290,6 +305,12 @@ pub enum Reply {
         /// whether it is done with this file.
         remaining: usize,
     },
+
+    /// Reply to `E2eEval`: whatever the JS expression resolved to. A `js`
+    /// that throws, or that never reports back, surfaces as `Response::Err`
+    /// instead — this variant only ever carries a success value.
+    #[cfg(any(feature = "e2e-hooks", debug_assertions))]
+    E2eResult { value: serde_json::Value },
 }
 
 /// One row of the feedback index.
@@ -464,10 +485,36 @@ mod tests {
                 device: "phone".into(),
             },
             Request::Status,
+            #[cfg(any(feature = "e2e-hooks", debug_assertions))]
+            Request::E2eEval {
+                js: "document.title".into(),
+            },
         ];
         for r in all {
             assert_eq!(round_trip(&r), r);
         }
+    }
+
+    #[cfg(any(feature = "e2e-hooks", debug_assertions))]
+    #[test]
+    fn e2e_eval_is_tagged_by_op_and_its_result_round_trips() {
+        let s = serde_json::to_string(&Request::E2eEval { js: "1+1".into() }).unwrap();
+        assert_eq!(s, r#"{"op":"e2e_eval","js":"1+1"}"#);
+
+        let ok = Response::ok(Reply::E2eResult { value: serde_json::json!({ "n": 2 }) });
+        assert_eq!(round_trip(&ok), ok);
+    }
+
+    /// The release safety claim, executed. Without the feature and without
+    /// `debug_assertions` the variant is not in the enum at all, so the line
+    /// an E2E driver would send cannot parse as a `Request`. Run by
+    /// `cargo test -p skypie-ipc --release` (see `scripts/verify.sh`).
+    #[cfg(not(any(feature = "e2e-hooks", debug_assertions)))]
+    #[test]
+    fn a_release_build_cannot_even_parse_an_e2e_eval_line() {
+        let e = serde_json::from_str::<Request>(r#"{"op":"e2e_eval","js":"1+1"}"#)
+            .expect_err("a release build must not accept this verb");
+        assert!(e.to_string().contains("unknown variant"), "{e}");
     }
 
     #[test]

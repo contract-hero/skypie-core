@@ -27,9 +27,16 @@ pub mod bookmarks;
 pub mod watcher;
 pub mod remote;
 // macOS-only: the Unix socket `skypie-mcp` drives the app through. The MCP
-// server runs beside the desktop app; the phone has no such neighbour.
-#[cfg(target_os = "macos")]
+// server runs beside the desktop app; the phone has no such neighbour — so
+// the unix LISTENER inside is `cfg(target_os = "macos")`, while the request
+// dispatcher and the connection handler it exports compile everywhere: the
+// E2E harness's loopback TCP listener serves the very same dispatcher.
 pub mod ipc_server;
+// The E2E harness hook: `Request::E2eEval` served over the macOS unix socket
+// above AND, for iOS (which has none), an optional loopback TCP listener.
+// Debug-only — see the module doc comment for the full gate rationale.
+#[cfg(any(feature = "e2e-hooks", debug_assertions))]
+pub mod e2e;
 
 /// Intent kind surfaced to the webview as a lowercase string in JSON
 /// (`"open"` or `"reveal"`).
@@ -280,10 +287,12 @@ pub fn dispatch_deep_link(
     }))
 }
 
-/// Handle a deep-link URL: parse it and (when the `e2e-hooks` feature is
-/// enabled AND `SKYPIE_E2E_ECHO_LOG` is set) write a content snippet to
-/// that log file. The feature gate ensures production builds cannot use
-/// the env var as a write-anywhere primitive (B3 / R6-001 fix).
+/// Handle a deep-link URL: parse it and (in a debug build OR one with the
+/// `e2e-hooks` feature, AND with `SKYPIE_E2E_ECHO_LOG` set) write a content
+/// snippet to that log file. The gate is `any(feature = "e2e-hooks",
+/// debug_assertions)` — a debug build echoes without the feature — which is
+/// still enough that a RELEASE build without the feature cannot use the env
+/// var as a write-anywhere primitive (B3 / R6-001 fix).
 pub fn handle_deep_link(url: &str) {
     let intent = match deeplink::parse(url) {
         Ok(i) => i,
