@@ -1196,7 +1196,13 @@ html, body, #root {
 .start-page-inner {
   max-width: 560px;
   margin: 0 auto;
-  padding: 56px var(--space-6) var(--space-6);
+  /* `--start-pad-top` is read back by `body.platform-ios .sky-band`'s own
+     pull-out below (`margin-top: calc(-1 * var(--start-pad-top))`) — a
+     custom property instead of two copies of `56px`, so the two stay in
+     sync and a future edit here cannot silently reopen the gap that rule's
+     own comment says it closes (review: styles.css:2077, minor). */
+  --start-pad-top: 56px;
+  padding: var(--start-pad-top) var(--space-6) var(--space-6);
   animation: start-rise 360ms var(--ease);
 }
 @keyframes start-rise {
@@ -2069,12 +2075,26 @@ body.platform-ios .start-row {
    between a toolbar and a tab view. */
 body.platform-ios .sky-band {
   flex: none;
-  /* .start-page-inner's own padding (56px top, --space-6 the sides) would
-     otherwise inset the band and break the glaze's continuity with
-     .phone-titlebar directly above it — pulling it out by exactly that
-     padding is what "flush" means here; the bottom margin restores the
-     usual gap before the wordmark that follows it. */
-  margin: -56px calc(-1 * var(--space-6)) var(--space-5);
+  /* .start-page-inner's own top padding would otherwise inset the band and
+     break the glaze's continuity with .phone-titlebar directly above it —
+     pulling it out by exactly that padding (the shared `--start-pad-top`
+     custom property, set on `.start-page-inner` above, so the two can
+     never drift apart again — review: styles.css:2077, minor) is what
+     "flush" means here; the bottom margin restores the usual gap before
+     the wordmark that follows it. The side margins pull the band past
+     `.start-page-inner`'s own horizontal padding only — they do not reach
+     past its `max-width: 560px` column, so on an iPad-width viewport
+     (`guessPlatformOs` matches `iPad`, platform.tsx) the band still stops
+     short of the physical screen edges; `width: 100vw` plus the negative
+     `50vw` margins below break it out of that centered column too, the
+     same full-bleed trick `.tab-strip`-less phone chrome does not need
+     because the phone viewport never exceeds the column width in the
+     first place (review: styles.css:2070, minor). */
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+  margin-right: calc(50% - 50vw);
+  margin-top: calc(-1 * var(--start-pad-top));
+  margin-bottom: var(--space-5);
 }
 
 .phone-shell {
@@ -3001,8 +3021,13 @@ pre[data-fallback] .line::before {
    scale, so showing both at once would double it (spec section 4,
    "Motion": "The band disc hides for the duration and reappears on
    close"). Scoped to `.sky-pies` so it never touches the plate's own
-   portrait disc, which also carries `.sky-pie-disc`. */
-.sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidden; }
+   portrait disc, which also carries `.sky-pie-disc`.
+   `body.platform-macos` only: the phone's PhonePieSheet.tsx is a bottom
+   sheet, not a plate that animates out of the band's own slot, so there is
+   no second copy of the disc to avoid doubling — hiding it there just made
+   the tapped tile's disc vanish behind the sheet for as long as it stayed
+   open (review: styles.css:3005, major). */
+body.platform-macos .sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidden; }
 .sky-pie-label {
   max-width: 96px;
   overflow: hidden;

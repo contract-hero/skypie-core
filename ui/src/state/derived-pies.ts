@@ -13,6 +13,14 @@ export interface DerivedPieFile {
   path: string;
   kind: FileKind;
   mtime: number; // ms epoch — see the *1000 conversions below
+  /** M6: the SENDER-supplied filename (`ios-pies.ts`'s `receivedPie`/
+   *  `sharedPie`), when it differs from `path`'s own basename — a beam's
+   *  landed path can carry a disambiguating `-2`/`-3` suffix (`beam.rs`'s
+   *  `unique_name`) that the "Received" list above `PhonePieSheet.tsx` on
+   *  the same start page does not show, so the row would otherwise read a
+   *  different name for the same file (review: PhonePieSheet.tsx:70,
+   *  minor). Absent for every non-iOS pie, which has no such rename step. */
+  name?: string;
   /** M3: the folder MEMBER this file was found under (a census file) —
    *  absent for a direct file member, a built-in pie's file, or any file
    *  from before the census resolves. `pie-census.ts`'s `layersOf` groups

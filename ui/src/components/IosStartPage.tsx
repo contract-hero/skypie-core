@@ -43,6 +43,59 @@ export default function IosStartPage({ onOpenSettings }: IosStartPageProps): Rea
   // it here.
   const { pies, sharedEntries, openPieId, setOpenPieId } = useIosPies();
 
+  // M6 review (major): the band declared role="listbox" but implemented
+  // none of the listbox keyboard contract — every tile stayed natively
+  // tabbable and arrow keys did nothing. Sky.tsx's own band (same role/
+  // aria-label) owns a roving tabindex plus arrows/Home/End/Esc (spec
+  // line 118); the iOS carve-out (spec line 154) drops the tin, drops,
+  // persistence, census and the ⌘ chords, not the listbox pattern itself.
+  // This mirrors Sky.tsx's `focusedIndex` shape at the smaller scale iOS
+  // needs: no tin slot to clamp against, no Enter/Delete chords (both stay
+  // out per the M6 brief — Enter already works for free, since every tile
+  // is a real `<button>` and a native Enter/Space keypress fires its own
+  // `onClick`).
+  const [focusedIndex, setFocusedIndex] = React.useState(0);
+  const pieTileRefs = React.useRef<Array<HTMLElement | null>>([]);
+  const setPieTileRef = (i: number) => (el: HTMLElement | null) => {
+    pieTileRefs.current[i] = el;
+  };
+  React.useEffect(() => {
+    setFocusedIndex((i) => Math.min(i, Math.max(0, pies.length - 1)));
+  }, [pies.length]);
+  const focusPieTile = (index: number): void => {
+    const clamped = Math.max(0, Math.min(pies.length - 1, index));
+    setFocusedIndex(clamped);
+    pieTileRefs.current[clamped]?.focus();
+  };
+  const onBandKeyDown = (e: React.KeyboardEvent): void => {
+    switch (e.key) {
+      case "ArrowRight":
+        e.preventDefault();
+        focusPieTile(focusedIndex + 1);
+        break;
+      case "ArrowLeft":
+        e.preventDefault();
+        focusPieTile(focusedIndex - 1);
+        break;
+      case "Home":
+        e.preventDefault();
+        focusPieTile(0);
+        break;
+      case "End":
+        e.preventDefault();
+        focusPieTile(pies.length - 1);
+        break;
+      case "Escape":
+        // Leaves the band without closing anything else — same "blur, do
+        // not close a sheet" split Sky.tsx's own Esc branch draws between
+        // the band and the plate (the plate/sheet owns its own Esc).
+        (document.activeElement as HTMLElement | null)?.blur();
+        break;
+      default:
+        break;
+    }
+  };
+
   const openShared = React.useCallback(
     (peer: string, path: string) => {
       // Same route the `open-remote` deep link takes: a remote address whose
@@ -72,15 +125,24 @@ export default function IosStartPage({ onOpenSettings }: IosStartPageProps): Rea
           // would hold no pie — a bare 120px strip with nothing in it earns
           // no place on a screen this small, and it must appear whether or
           // not the phone has ever been paired (Received needs no peer).
-          <div data-testid="ios-sky" className="sky-band" role="listbox" aria-label="Pies">
+          <div
+            data-testid="ios-sky"
+            className="sky-band"
+            role="listbox"
+            aria-label="Pies"
+            onKeyDown={onBandKeyDown}
+          >
             <div className="sky-glaze" aria-hidden />
             <SkyClouds />
             <div className="sky-pies" role="presentation">
-              {pies.map((pie) => (
+              {pies.map((pie, i) => (
                 <Pie
                   key={pie.id}
+                  ref={setPieTileRef(i)}
                   pie={pie}
                   selected={pie.id === openPieId}
+                  tabIndex={i === focusedIndex ? 0 : -1}
+                  onFocus={() => setFocusedIndex(i)}
                   onOpen={() => setOpenPieId(pie.id)}
                 />
               ))}

@@ -196,13 +196,20 @@ async function main(): Promise<void> {
         var sheet = document.querySelector('[data-testid="pie-sheet"]');
         var dialog = sheet.closest('[role="dialog"]');
         var svg = document.querySelector('.phone-sheet .sky-pie-portrait svg');
+        // review (major, styles.css:3005): the M1 rule that hides the band
+        // tile's OWN disc while its plate is open is desktop-only — the
+        // phone has no plate animating out of that slot, so the tile the
+        // user just tapped must keep its disc for as long as the sheet
+        // stays open.
+        var bandDisc = document.querySelector('[data-testid="ios-sky"] [data-pie-id="builtin:received"] .sky-pie-disc');
         return {
           dialogAriaLabel: dialog ? dialog.getAttribute("aria-label") : null,
           hasScrim: document.querySelector(".phone-scrim") !== null,
           portraitWidth: svg ? svg.getAttribute("width") : null,
+          bandDiscVisibility: bandDisc ? getComputedStyle(bandDisc).visibility : null,
         };
       })()`,
-    )) as { dialogAriaLabel: string | null; hasScrim: boolean; portraitWidth: string | null };
+    )) as { dialogAriaLabel: string | null; hasScrim: boolean; portraitWidth: string | null; bandDiscVisibility: string | null };
     if (sheetFacts.dialogAriaLabel !== "Received") {
       throw new Error(`expected the enclosing dialog's aria-label to be "Received", got ${JSON.stringify(sheetFacts.dialogAriaLabel)}`);
     }
@@ -210,7 +217,10 @@ async function main(): Promise<void> {
     if (sheetFacts.portraitWidth !== "200") {
       throw new Error(`expected the portrait pie's svg width to be "200", got ${JSON.stringify(sheetFacts.portraitWidth)}`);
     }
-    console.log("ok: the pie sheet is open — dialog aria-label=Received, scrim present, 200px portrait");
+    if (sheetFacts.bandDiscVisibility !== "visible") {
+      throw new Error(`expected the tapped band tile's disc to stay visible while the sheet is open, got ${JSON.stringify(sheetFacts.bandDiscVisibility)}`);
+    }
+    console.log("ok: the pie sheet is open — dialog aria-label=Received, scrim present, 200px portrait, tapped tile's disc stays visible");
 
     // ── Checkpoint 7: three 44px rows, newest first ─────────────────────
     const rowFacts = (await evalIn(

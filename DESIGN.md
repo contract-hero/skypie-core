@@ -723,7 +723,13 @@ spreading.
   for reader mode's transient chrome. The band is not that: like
   `panes.sidebar_visible` moving the reading field sideways, it is a layout
   choice the user sets once and the app never toggles on its own. Reader
-  mode still strips it with the rest of the chrome.
+  mode still strips it with the rest of the chrome. The phone has no
+  toggle at all (M6, below): there `panes.sky_visible` is not read, and the
+  band's presence follows content — it shows whenever the derived Received/
+  Shared pies hold at least one file and is gone otherwise. The limit that
+  matters there is narrower than "the app never toggles on its own": the
+  band may come and go on its own, but it never moves an OPEN artifact —
+  only the phone's own start page, which is not reading chrome.
 - **A per-theme accent shade.** `--sky-focus` does the focus ring's job with
   its own value per theme (`#3b45b8` day, `#8b93e8` dusk), because
   `{colors.accent-focus}` falls under 3:1 non-text contrast on the day
@@ -819,7 +825,7 @@ plate.** Four additions, none a new departure — every color below is
   back for both themes.
 
 **M6 — the phone band.** The iOS companion has no toolbar to toggle the
-band with, so `IosStartPage.tsx` renders it unconditionally at the top of
+band with, so `IosStartPage.tsx` renders it, with no toggle, at the top of
 the start page instead — SAME `.sky-band`/`.sky-glaze`/`.sky-cloud`/
 `.sky-pies` markup as the macOS band (`SkyClouds.tsx` is the two cumulus,
 shared verbatim between both), still exactly 120px and never elastic, just

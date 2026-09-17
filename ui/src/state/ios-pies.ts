@@ -14,8 +14,9 @@
 // by `Pie.tsx`/`PhonePieSheet.tsx` unchanged) — never its two pie BUILDERS.
 import type { BeamReceivedEntry, SharedEntry } from "../ipc";
 import { kindOf } from "../render/kind";
+import { formatAgo } from "../utils/beam-format";
 import { formatRemoteAddress } from "../utils/remote-address";
-import type { DerivedPie } from "./derived-pies";
+import type { DerivedPie, DerivedPieFile } from "./derived-pies";
 
 /** Both `beam_list_received` and `remote_list_shared` report their
  *  timestamps in UNIX SECONDS (`beam.rs`'s `ReceivedEntry`/`SharedEntry`,
@@ -45,6 +46,11 @@ export function receivedPie(entries: BeamReceivedEntry[]): DerivedPie {
       // remote address is not.
       kind: kindOf(e.name),
       mtime: secsToMs(e.received_at),
+      // Carried through so a row can show the same name the "Received"
+      // list directly below it on the start page already shows, rather
+      // than the on-disk (possibly `-2`/`-3`-suffixed) basename of `path`
+      // (review: PhonePieSheet.tsx:70, minor).
+      name: e.name,
     })),
   };
 }
@@ -68,8 +74,32 @@ export function sharedPie(peer: string, device: string, entries: SharedEntry[]):
       // own doc comment) — the host path in `e.path` is not a hint to trust.
       kind: kindOf(e.name),
       mtime: secsToMs(e.shared_at),
+      name: e.name,
     })),
   };
+}
+
+/** `PhonePieSheet.tsx`'s row order — newest first, the same order
+ *  `PiePlate.tsx`'s own layer list uses, so the row a beam or a share just
+ *  added is always on top. Pulled out of that component (review:
+ *  PhonePieSheet.tsx:43, minor): there is no jsdom in `ui/`, so a pure
+ *  sort with an equal-mtime tie-break is only reachable from e2e while it
+ *  lives inside a component; here it is a plain export `ios-pies.test.ts`
+ *  can call directly. */
+export function pieRows(pie: DerivedPie): DerivedPieFile[] {
+  return [...pie.files].sort((a, b) => b.mtime - a.mtime);
+}
+
+/** `PhonePieSheet.tsx`'s row age string, e.g. "5 min ago", "just now" —
+ *  pulled out for the same testability reason as `pieRows` above (review:
+ *  PhonePieSheet.tsx:27, minor). `formatAgo` already returns the whole
+ *  phrase "just now" for anything under 60s, so appending " ago"
+ *  unconditionally would read "just now ago"; `nowSecsValue` is threaded
+ *  in rather than read from `Date.now()` here so a test can pick a fixed
+ *  "now" and exercise the under-60s branch deterministically. */
+export function mtimeAgo(mtimeMs: number, nowSecsValue: number): string {
+  const ago = formatAgo(Math.floor(mtimeMs / 1000), nowSecsValue);
+  return ago === "just now" ? ago : `${ago} ago`;
 }
 
 /** One peer's shared-list fetch, already resolved to a display label —
