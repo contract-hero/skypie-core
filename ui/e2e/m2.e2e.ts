@@ -16,6 +16,7 @@ import { click, evalIn, keys, launchDesktop, openViaQuickOpen, quit, text, waitF
 import type { LaunchedApp } from "./lib/app";
 import { cleanupFixtureWorkspace, makeFixtureWorkspace, setWorkspaceRoot } from "./lib/fixtureWorkspace";
 import { sleep } from "./lib/proc";
+import { keyOnActiveElement, readStateJson, typeIntoInput, waitForPersistedPies } from "./lib/state";
 
 /** Run `bodyJs` in the webview against the first element matching
  *  `selector`, bound as `el`, and throw `what` when there is no match (or
@@ -36,41 +37,6 @@ async function onSelector(
   })()`;
   const ok = await evalIn(app, js);
   if (!ok) throw new Error(`${what} (selector: ${selector})`);
-}
-
-/** Type into a React-controlled `<input>` the native-setter way — a bare
- *  `el.value = "…"` never fires React's own change handler, since React
- *  patches the DOM property setter itself (`ui/e2e/README.md`'s own
- *  documented technique, also in the M2 brief). */
-async function typeIntoInput(app: LaunchedApp, selector: string, value: string): Promise<void> {
-  await onSelector(
-    app,
-    selector,
-    `var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-     setter.call(el, ${JSON.stringify(value)});
-     el.dispatchEvent(new Event("input", { bubbles: true }));`,
-    "typeIntoInput: no such input",
-  );
-}
-
-/** Dispatch a keydown on `document.activeElement` — component-level arrow/
- *  Enter handling (the plate's radiogroup) is driven this way, not via
- *  `keys()`, which dispatches on `document` and only App's window-capture
- *  registry sees (M2 brief).
- *
- *  Targets `document.activeElement` rather than a selector because the
- *  harness drives a window that does not hold OS focus: the `:focus`
- *  pseudo-class matches nothing even while `document.activeElement` is the
- *  right input. */
-async function keyOnActiveElement(app: LaunchedApp, key: string): Promise<void> {
-  const js = `(function(){
-    var el = document.activeElement;
-    if (!el) return false;
-    el.dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(key)}, code: ${JSON.stringify(key)}, bubbles: true }));
-    return true;
-  })()`;
-  const ok = await evalIn(app, js);
-  if (!ok) throw new Error("keyOnActiveElement: document.activeElement is null");
 }
 
 /** `element.focus()` on the first match — real DOM focus, not just a click,
@@ -137,45 +103,6 @@ async function createPie(app: LaunchedApp, name: string): Promise<void> {
     `Array.from(document.querySelectorAll(".sky-pies .sky-pie-label")).some(function(el){ return el.textContent === ${JSON.stringify(name)}; })`,
     10_000,
   );
-}
-
-interface OnDiskPies {
-  pies?: {
-    v?: number;
-    pies?: { id: string; name: string; seen_at?: number; members: { path: string }[] }[];
-  };
-}
-
-function readStateJson(stateDir: string): OnDiskPies | null {
-  const p = path.join(stateDir, "state.json");
-  if (!fs.existsSync(p)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(p, "utf8"));
-  } catch (err) {
-    // A torn read of the debounced writer's tmp+rename is expected and the
-    // poll below just retries — but a document that never parses would
-    // otherwise time out with no hint of why.
-    console.warn(`readStateJson: ${p} did not parse: ${String(err)}`);
-    return null;
-  }
-}
-
-/** Poll the on-disk state document (the debounced writer, ~250ms) until
- *  `predicate` is true of the parsed `pies` document. */
-async function waitForPersistedPies(
-  stateDir: string,
-  predicate: (doc: NonNullable<OnDiskPies["pies"]>) => boolean,
-  timeoutMs = 5_000,
-): Promise<NonNullable<OnDiskPies["pies"]>> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const doc = readStateJson(stateDir)?.pies;
-    if (doc && predicate(doc)) return doc;
-    if (Date.now() > deadline) {
-      throw new Error(`state.json's "pies" key never matched within ${timeoutMs}ms (last: ${JSON.stringify(doc)})`);
-    }
-    await sleep(150);
-  }
 }
 
 async function main(): Promise<void> {

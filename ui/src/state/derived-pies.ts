@@ -10,12 +10,22 @@ import { BEARINGS, HAZE_THRESHOLD, kindOf } from "../render/kind";
 import type { FileKind } from "../render/kind";
 import { isRemoteAddress } from "../utils/remote-address";
 
-/** The two built-in pies' fixed ids. Exported because two other modules
- *  (`pies.ts`'s `isUserPieId`, `PiePlate.tsx`'s Pinned wording) branch on
- *  them — a bare `"builtin:pinned"` literal repeated per call site drifts
- *  the moment one of them is renamed. */
+/** The two built-in pies' fixed ids. Exported because other modules
+ *  (`PiePlate.tsx`'s Pinned wording) branch on them — a bare
+ *  `"builtin:pinned"` literal repeated per call site drifts the moment one
+ *  of them is renamed. */
 export const BUILTIN_PINNED_ID = "builtin:pinned";
 export const BUILTIN_RECENT_ID = "builtin:recent";
+
+/** True for a user pie's id — the built-in pies are exactly the two fixed
+ *  ids above, and no user pie can ever carry one (`uuid::Uuid::now_v7()`
+ *  never produces them). Lives HERE, beside the ids it is the predicate
+ *  for, so `pie-census.ts` can use it without importing `pies.ts` — which
+ *  imports `pie-census.ts` back. `pies.ts` re-exports it for its existing
+ *  callers. */
+export function isUserPieId(id: string): boolean {
+  return id !== BUILTIN_PINNED_ID && id !== BUILTIN_RECENT_ID;
+}
 
 export interface DerivedPieFile {
   path: string;
@@ -26,6 +36,12 @@ export interface DerivedPieFile {
    *  from before the census resolves. `pie-census.ts`'s `layersOf` groups
    *  rows by this field. */
   folder?: string;
+  /** M3: this row stands for a MEMBER that no longer resolves on disk
+   *  (`census.missing`), not for a real file — it renders dimmed, with
+   *  "not found" and a Forget button, and cannot be opened. Modelling it
+   *  as a row rather than as a second list is what keeps the plate to ONE
+   *  row list, one slice filter and one keyboard-navigation sequence. */
+  missing?: true;
 }
 
 export interface DerivedPie {
@@ -38,9 +54,6 @@ export interface DerivedPie {
    *  the freshness pill only when this is a positive number, so a built-in
    *  pie keeps having no pill exactly as it did before M3. */
   fresh?: number;
-  /** M3: the path the freshness pill / band ⌘Enter open in one click —
-   *  `undefined` under the same conditions as `fresh`. */
-  newestFreshPath?: string;
   /** M3: the resolved census behind `files`, when there is one — carried
    *  through so `PiePlate.tsx` can build folder layers (`layersOf`) and the
    *  truncated/not-live captions without a second lookup by id. */

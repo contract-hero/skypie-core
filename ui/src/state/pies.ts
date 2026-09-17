@@ -3,10 +3,14 @@
 // lives here (vitest here has no jsdom, no testing-library — every export
 // below is a plain function over plain data).
 import type { Pie, PieCensus } from "../ipc";
-import { BUILTIN_PINNED_ID, BUILTIN_RECENT_ID } from "./derived-pies";
 import type { DerivedPie, DerivedPieFile } from "./derived-pies";
 import { kindOf } from "../render/kind";
-import { censusToFiles, freshCount, newestPath } from "./pie-census";
+import { censusToFiles, freshCount } from "./pie-census";
+
+/** Re-exported from `derived-pies.ts`, where it now lives beside the two
+ *  built-in ids it tests against — `pie-census.ts` needs the predicate and
+ *  cannot import this module, which imports `pie-census.ts` back. */
+export { isUserPieId } from "./derived-pies";
 
 /** A user pie's FILE members, adapted to the same shape a derived pie's
  *  `files` already has, so `wedgesOf`/`groupByWedge` (derived-pies.ts) and
@@ -24,21 +28,19 @@ export function pieFiles(pie: Pie): DerivedPieFile[] {
 /** Adapts a persisted `Pie` to `DerivedPie`'s shape — the one interface
  *  `Pie.tsx`/`PiePlate.tsx` already render against. `census`, when given
  *  (M3), REPLACES `pieFiles`'s pre-census fallback with real files (folder
- *  contents plus real mtimes) and adds `fresh`/`newestFreshPath`/`census`;
- *  omitted (or before the pie's first census resolves), this is exactly
- *  M2's behavior — `added_at`-keyed direct-file members only, no pill. */
+ *  contents plus real mtimes) and adds `fresh`/`census`; omitted (or before
+ *  the pie's first census resolves), this is exactly M2's behavior —
+ *  `added_at`-keyed direct-file members only, no pill. */
 export function toDerivedPie(pie: Pie, census?: PieCensus): DerivedPie {
   if (!census) {
     return { id: pie.id, name: pie.name, files: pieFiles(pie) };
   }
   const files = censusToFiles(census, pie.members);
-  const fresh = freshCount(files, pie.seen_at);
   return {
     id: pie.id,
     name: pie.name,
     files,
-    fresh,
-    newestFreshPath: fresh > 0 ? newestPath(files) ?? undefined : undefined,
+    fresh: freshCount(files, pie.seen_at),
     census,
   };
 }
@@ -47,16 +49,21 @@ export function toDerivedPie(pie: Pie, census?: PieCensus): DerivedPie {
  *  pies in their stored order — `userPies` arrives already in that order
  *  (`pies::list()` never sorts), so this is a plain concatenation, not a
  *  sort. The tin is NOT part of this list; Sky.tsx appends it as its own
- *  trailing element. `censusFor` (M3, `usePieCensus().censusFor`) is
- *  optional — omitted, every user pie falls back to `toDerivedPie`'s own
- *  pre-census behavior, which is what lets a bare `IpcSurface` test double
- *  or an older `bandOrder(derived, userPies)` call site keep compiling. */
+ *  trailing element.
+ *
+ *  `derive` is REQUIRED, and is normally `usePieCensus().derive`: that one
+ *  memoizes per pie id, so a census landing for ONE pie re-derives only
+ *  that pie instead of the whole band. It used to be an optional
+ *  `censusFor`, which silently fell back to the pre-census shape — a
+ *  caller that forgot to pass it got a band with no freshness pills and no
+ *  folder layers, and nothing said so. A caller with no census at all
+ *  passes `toDerivedPie` itself. */
 export function bandOrder(
   derived: DerivedPie[],
   userPies: Pie[],
-  censusFor?: (id: string) => PieCensus | undefined,
+  derive: (pie: Pie) => DerivedPie,
 ): DerivedPie[] {
-  return [...derived, ...userPies.map((p) => toDerivedPie(p, censusFor?.(p.id)))];
+  return [...derived, ...userPies.map(derive)];
 }
 
 /** Adds `id` to a pending-delete set, returning a NEW set (React state must
@@ -137,11 +144,4 @@ export function uniqueName(pies: Pie[], wanted: string): string {
   let n = 2;
   while (taken.has(`${trimmed} ${n}`)) n += 1;
   return `${trimmed} ${n}`;
-}
-
-/** True for a user pie's id — the built-in pies are exactly the two fixed
- *  ids `derived-pies.ts` exports, and no user pie can ever carry one
- *  (`uuid::Uuid::now_v7()` never produces them). */
-export function isUserPieId(id: string): boolean {
-  return id !== BUILTIN_PINNED_ID && id !== BUILTIN_RECENT_ID;
 }

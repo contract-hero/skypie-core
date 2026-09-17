@@ -3,7 +3,6 @@ import {
   affectsPie,
   censusToFiles,
   freshCount,
-  isUnder,
   layersOf,
   newestPath,
 } from "./pie-census";
@@ -18,7 +17,6 @@ function census(overrides: Partial<PieCensus> = {}): PieCensus {
     missing: [],
     outside_root: [],
     truncated: false,
-    fresh: 0,
     ...overrides,
   };
 }
@@ -54,41 +52,6 @@ describe("censusToFiles", () => {
     expect(censusToFiles(c, [])).toEqual([{ path: "/w/a.md", kind: "md", mtime: 1, folder: undefined }]);
   });
 
-  it("dedupes by path, keeping the first occurrence — two overlapping folder members", () => {
-    // `pies::add_member` dedupes exact paths only, so a pie can hold both
-    // `/w/dir` and its own subfolder `/w/dir/sub`; each walks the same file
-    // independently and tags it with a different `folder` (review:
-    // PiePlate.tsx:290/293).
-    const c = census({
-      files: [
-        { path: "/w/dir/sub/a.html", mtime: 100, size: 1, folder: "/w/dir" },
-        { path: "/w/dir/sub/a.html", mtime: 100, size: 1, folder: "/w/dir/sub" },
-      ],
-    });
-    const members: PieMember[] = [
-      { kind: "folder", path: "/w/dir", added_at: 0 },
-      { kind: "folder", path: "/w/dir/sub", added_at: 0 },
-    ];
-    const files = censusToFiles(c, members);
-    expect(files).toHaveLength(1);
-    expect(files[0]).toEqual({ path: "/w/dir/sub/a.html", kind: "html", mtime: 100, folder: "/w/dir" });
-  });
-});
-
-describe("isUnder", () => {
-  it("is true for the folder itself and anything inside it", () => {
-    expect(isUnder("/w/dir", "/w/dir")).toBe(true);
-    expect(isUnder("/w/dir/a.txt", "/w/dir")).toBe(true);
-    expect(isUnder("/w/dir/sub/b.txt", "/w/dir")).toBe(true);
-  });
-
-  it("is false for a sibling that merely shares the prefix string", () => {
-    expect(isUnder("/w/dir-other/a.txt", "/w/dir")).toBe(false);
-  });
-
-  it("is false for a path outside the folder entirely", () => {
-    expect(isUnder("/w/other/a.txt", "/w/dir")).toBe(false);
-  });
 });
 
 function treeChange(path: string): FsChange {
@@ -101,25 +64,30 @@ describe("affectsPie", () => {
     { kind: "file", path: "/w/direct.md", added_at: 0 },
   ];
 
-  it("is true for a tree change under a folder member", () => {
-    expect(affectsPie(treeChange("/w/dir/new.html"), members)).toBe(true);
+  it("returns the folder member a tree change falls under", () => {
+    expect(affectsPie(treeChange("/w/dir/new.html"), members)).toBe(members[0]);
   });
 
-  it("is false for a change outside every folder member", () => {
-    expect(affectsPie(treeChange("/w/elsewhere/new.html"), members)).toBe(false);
+  it("matches on a SEGMENT boundary, not a bare string prefix", () => {
+    expect(affectsPie(treeChange("/w/dir-other/a.txt"), members)).toBeNull();
+    expect(affectsPie(treeChange("/w/dir"), members)).toBe(members[0]);
   });
 
-  it("is false for a change under what merely LOOKS like a direct file member's own path", () => {
+  it("is null for a change outside every folder member", () => {
+    expect(affectsPie(treeChange("/w/elsewhere/new.html"), members)).toBeNull();
+  });
+
+  it("is null for a change on a direct FILE member's own path", () => {
     // A FILE member's own mtime change is out of scope for M3's live
     // refresh (see the function's own doc comment) — only folder members
     // trigger a bus-driven refresh.
-    expect(affectsPie(treeChange("/w/direct.md"), members)).toBe(false);
+    expect(affectsPie(treeChange("/w/direct.md"), members)).toBeNull();
   });
 
-  it("is false for an EXTERNAL-source change even when the path is under a folder member", () => {
-    expect(affectsPie({ kind: "modify", path: "/w/dir/new.html", source: "external" }, members)).toBe(
-      false,
-    );
+  it("is null for an EXTERNAL-source change even under a folder member", () => {
+    expect(
+      affectsPie({ kind: "modify", path: "/w/dir/new.html", source: "external" }, members),
+    ).toBeNull();
   });
 });
 
@@ -182,7 +150,7 @@ describe("layersOf", () => {
     expect(filesLayer.rows.map((r) => r.path)).toEqual(["/w/direct.md"]);
   });
 
-  it("omits the 'Files' layer entirely when the pie has no direct file members", () => {
+  it("omits the 'Files' layer when a pie with folder members has no direct-file rows", () => {
     const folderOnly = members.filter((m) => m.kind === "folder");
     const layers = layersOf(
       files.filter((f) => f.folder !== undefined),
@@ -190,6 +158,22 @@ describe("layersOf", () => {
       undefined,
     );
     expect(layers.some((l) => l.id === "files")).toBe(false);
+  });
+
+  it("always returns at least one layer — an empty pie gets the 'files' one", () => {
+    // The plate renders from `layers` alone; returning none would make an
+    // empty pie a third case to handle rather than an empty list.
+    expect(layersOf([], [], undefined).map((l) => l.id)).toEqual(["files"]);
+  });
+
+  it("puts a missing FILE member's row in the 'files' layer, after the live rows", () => {
+    const withMissing: DerivedPieFile[] = [
+      { path: "/w/gone.md", kind: "md", mtime: 0, missing: true },
+      file("/w/direct.md", { mtime: 50 }),
+    ];
+    const layers = layersOf(withMissing, [members[2]], undefined);
+    const filesLayer = layers.find((l) => l.id === "files") as PieLayer;
+    expect(filesLayer.rows.map((r) => r.path)).toEqual(["/w/direct.md", "/w/gone.md"]);
   });
 
   it("flags a folder layer missing when its member is in census.missing", () => {

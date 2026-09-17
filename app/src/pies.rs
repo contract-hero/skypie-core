@@ -221,6 +221,27 @@ pub fn list() -> PiesList {
     }
 }
 
+/// One pie by id, or `None` when no pie carries it. Resolves the entry
+/// under the SAME single lock+parse `list` uses, then clones only that one
+/// pie — `list()` followed by a `.find()` allocated a `Vec` of every pie,
+/// with every member of every pie, to keep one of them.
+pub fn find(id: &str) -> Option<Pie> {
+    let pies_val = {
+        let global = crate::state_store::global_state()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        global.get("pies")?.clone()
+    };
+    // A document this build cannot read answers `None`, exactly as `list`
+    // answers an empty list: no pie is findable in a document whose shape
+    // is unknown.
+    readable_doc(pies_val)
+        .ok()?
+        .pies
+        .into_iter()
+        .find(|p| p.id == id)
+}
+
 /// Run `f` over the `pies` document under the store's single lock
 /// (`update_state_field`) — and, critically, leave the value COMPLETELY
 /// UNTOUCHED whenever `readable_doc` refuses it, both for an unrecognised

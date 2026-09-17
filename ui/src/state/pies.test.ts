@@ -65,14 +65,13 @@ describe("pieFiles / toDerivedPie", () => {
       missing: [],
       outside_root: [],
       truncated: false,
-      fresh: 0,
     };
     const derived = toDerivedPie(p, c);
     expect(derived.files).toEqual([{ path: "/w/a.md", kind: "md", mtime: 999, folder: undefined }]);
     expect(derived.census).toBe(c);
   });
 
-  it("toDerivedPie's fresh/newestFreshPath follow the pie's seen_at", () => {
+  it("toDerivedPie's fresh follows the pie's seen_at", () => {
     const p = pie({
       id: "abc",
       name: "Pricing",
@@ -87,25 +86,21 @@ describe("pieFiles / toDerivedPie", () => {
       missing: [],
       outside_root: [],
       truncated: false,
-      fresh: 0,
     };
     const derived = toDerivedPie(p, c);
     expect(derived.fresh).toBe(1);
-    expect(derived.newestFreshPath).toBe("/w/new.md");
   });
 
-  it("toDerivedPie: seen_at === 0 (never opened) yields fresh 0 and no newestFreshPath", () => {
+  it("toDerivedPie: seen_at === 0 (never opened) yields fresh 0", () => {
     const p = pie({ id: "abc", name: "Pricing", seen_at: 0, members: [] });
     const c: PieCensus = {
       files: [{ path: "/w/a.md", mtime: 1_700_000_000_000, size: 1 }],
       missing: [],
       outside_root: [],
       truncated: false,
-      fresh: 0,
     };
     const derived = toDerivedPie(p, c);
     expect(derived.fresh).toBe(0);
-    expect(derived.newestFreshPath).toBeUndefined();
   });
 });
 
@@ -121,9 +116,8 @@ describe("bandOrder with a census", () => {
       missing: [],
       outside_root: [],
       truncated: false,
-      fresh: 0,
     };
-    const order = bandOrder(derived, userPies, (id) => (id === "u1" ? c : undefined));
+    const order = bandOrder(derived, userPies, (p) => toDerivedPie(p, p.id === "u1" ? c : undefined));
     expect(order[0].fresh).toBeUndefined();
     expect(order[1].fresh).toBeUndefined();
     expect(order.find((p) => p.id === "u1")?.census).toBe(c);
@@ -137,13 +131,13 @@ describe("bandOrder", () => {
       { id: "builtin:recent", name: "Recent", files: [] },
     ];
     const userPies = [pie({ id: "u1", name: "Pricing" }), pie({ id: "u2", name: "Roadmap" })];
-    const order = bandOrder(derived, userPies).map((p) => p.id);
+    const order = bandOrder(derived, userPies, (p) => toDerivedPie(p)).map((p) => p.id);
     expect(order).toEqual(["builtin:pinned", "builtin:recent", "u1", "u2"]);
   });
 
   it("is a plain concatenation — it does not re-sort user pies", () => {
     const userPies = [pie({ id: "z" }), pie({ id: "a" })];
-    const order = bandOrder([], userPies).map((p) => p.id);
+    const order = bandOrder([], userPies, (p) => toDerivedPie(p)).map((p) => p.id);
     expect(order).toEqual(["z", "a"]);
   });
 });

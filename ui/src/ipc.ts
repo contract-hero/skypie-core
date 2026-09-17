@@ -126,9 +126,12 @@ export interface PieCensus {
   truncated: boolean;
   /** Index into the pie's `members` of the member cut by the 20,000 cap. */
   truncated_at?: number;
-  /** Count of `files` newer than the pie's `seen_at`; 0 when `seen_at ==
-   *  0` (never-opened). */
-  fresh: number;
+  // No `fresh`: spec section 9 lists one, but the server cannot compute it
+  // correctly. `touchPieSeen` moves `seen_at` OPTIMISTICALLY on the client
+  // the instant a plate opens, so a count measured against the server's
+  // `seen_at` is already stale when it arrives — `pie-census.ts`'s
+  // `freshCount` derives it from `files` instead. See `PieCensus` in
+  // app/src/workspace.rs.
 }
 
 /** The persisted `pies` document (`state.json`'s `"pies"` key). An unknown

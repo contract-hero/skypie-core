@@ -4,24 +4,18 @@
 // unit a test touches must be a plain function over plain data), then the
 // REACT provider that owns the live cache and its refresh triggers.
 import * as React from "react";
-import type { IpcSurface, PieCensus, PieMember } from "../ipc";
-import type { DerivedPieFile } from "./derived-pies";
+import type { IpcSurface, Pie, PieCensus, PieMember } from "../ipc";
+import type { DerivedPie, DerivedPieFile } from "./derived-pies";
+import { isUserPieId } from "./derived-pies";
+import { toDerivedPie } from "./pies";
 import { kindOf } from "../render/kind";
+import { isUnderRoot } from "../utils/path";
 import { usePiesContext } from "./pies-context";
 import { useWorkspace } from "./workspace";
 import { useWatcherBus } from "./watcher-bus";
 import type { FsChange } from "./watcher-bus";
 
 // ── Pure ─────────────────────────────────────────────────────────────────
-
-/** Same rule as `pies.ts`'s `isUserPieId` (every built-in pie's id is a
- *  fixed `"builtin:…"` literal), reimplemented here rather than imported —
- *  `pies.ts`'s own `toDerivedPie(pie, census?)` needs this module's
- *  `censusToFiles`/`freshCount`/`newestPath`, and importing `isUserPieId`
- *  back from `pies.ts` would make the two files import each other. */
-function isUserPie(id: string): boolean {
-  return !id.startsWith("builtin:");
-}
 
 /**
  * Adapts a resolved `PieCensus` into the `DerivedPieFile[]` shape every
@@ -40,53 +34,38 @@ function isUserPie(id: string): boolean {
  * every folder layer, but a direct-file row (`folder` absent) needs no such
  * check, since a removed FILE member has nothing else to match against.
  *
- * Also dedupes by absolute path, keeping the FIRST occurrence in
- * `census.files` order. The Rust side (`workspace.rs::census_with_cap`)
- * already skips a FILE member covered by a FOLDER member of the same pie,
- * but two overlapping FOLDER members (a pie holding both `/x` and its
- * subfolder `/x/y`, which `pies::add_member` allows — it dedupes exact
- * paths only) still walk the same file twice, once per member, with a
- * different `folder` tag each time. Without this, a duplicate path became
- * two `DerivedPieFile`s: double-counted in `wedgesOf`/`freshCount`/the
- * readout, and two DOM rows colliding onto one `navIndexOf` slot in
- * `PiePlate.tsx` (review: PiePlate.tsx:290).
+ * No per-path dedupe: `workspace.rs::census_with_cap` reports each path at
+ * most once for the whole pie, covering both a FILE member inside a FOLDER
+ * member and two OVERLAPPING folder members. A second pass here would only
+ * hide a regression on that side.
  */
 export function censusToFiles(census: PieCensus, members: PieMember[]): DerivedPieFile[] {
   const memberPaths = new Set(members.map((m) => m.path));
-  const seen = new Set<string>();
   const out: DerivedPieFile[] = [];
   for (const f of census.files) {
     if (f.folder !== undefined && !memberPaths.has(f.folder)) continue;
-    if (seen.has(f.path)) continue;
-    seen.add(f.path);
     out.push({ path: f.path, kind: kindOf(f.path), mtime: f.mtime, folder: f.folder });
   }
   return out;
 }
 
-/** `path` is `folder` itself, or inside it, on a SEGMENT boundary — the
- *  same rule `utils/path.ts`'s `isUnderRoot` applies to the workspace root,
- *  reimplemented here (rather than imported) because the two compare
- *  against different kinds of "root": a workspace root is never `null`
- *  once resolved, while a folder member here is always a concrete string,
- *  so `isUnderRoot`'s `null`-tolerant signature would be the wrong shape
- *  for every call site below. */
-export function isUnder(path: string, folder: string): boolean {
-  return path === folder || path.startsWith(`${folder}/`);
-}
-
 /**
- * True iff `change` is a workspace-TREE event (not an external-file event —
- * the external watcher covers individually opened out-of-root tabs, not a
- * pie's folder members) whose path falls under one of `members`' FOLDER
- * paths. A direct FILE member's own mtime change is deliberately not
- * "affecting" here: M3's live-refresh budget goes to folder census
- * (the milestone's own name), and a file member's freshness still updates
- * on the next sky-show/plate-open census, same as before M3.
+ * The FOLDER member `change` falls under, or `null` when the change does
+ * not touch this pie at all. Returns the member rather than a bare boolean
+ * because every caller needs it next: the bus subscriber has to ask whether
+ * THAT member is outside the workspace root before it schedules a refresh,
+ * and finding it a second time is a search the match already did.
+ *
+ * Only a workspace-TREE event counts (the external watcher covers
+ * individually opened out-of-root tabs, not a pie's folder members). A
+ * direct FILE member's own mtime change is deliberately not "affecting":
+ * M3's live-refresh budget goes to folder census (the milestone's own
+ * name), and a file member's freshness still updates on the next
+ * sky-show/plate-open census, same as before M3.
  */
-export function affectsPie(change: FsChange, members: PieMember[]): boolean {
-  if (change.source !== "tree") return false;
-  return members.some((m) => m.kind === "folder" && isUnder(change.path, m.path));
+export function affectsPie(change: FsChange, members: PieMember[]): PieMember | null {
+  if (change.source !== "tree") return null;
+  return members.find((m) => m.kind === "folder" && isUnderRoot(change.path, m.path)) ?? null;
 }
 
 /** Freshness recomputed CLIENT-SIDE against the pie's CURRENT `seenAt`,
@@ -141,15 +120,30 @@ export interface PieLayer {
   rows: DerivedPieFile[];
 }
 
+/** Newest file first — the agent's last write on top, the same order the
+ *  flat M1/M2 layer list used. A `missing: true` row stands for a member
+ *  with no file behind it and therefore no meaningful mtime, so those sink
+ *  to the bottom of their layer instead of sorting as "1970". */
+function byRow(a: DerivedPieFile, b: DerivedPieFile): number {
+  if (Boolean(a.missing) !== Boolean(b.missing)) return a.missing ? 1 : -1;
+  return b.mtime - a.mtime;
+}
+
 /**
- * Groups a pie's files into ordered layers (spec section 5): one per FOLDER
+ * Groups a pie's rows into ordered layers (spec section 5): one per FOLDER
  * member, in STORED member order, each with the member-relative mono
- * header; every direct FILE member's row (no `folder`) shares one trailing
- * `"Files"` layer. Rows within a layer sort newest-first — the agent's last
- * file on top, same as the flat M1/M2 layer list. `census` is optional so a
- * pie whose first census hasn't resolved yet still renders folder headers
- * (with `missing`/`live` defaulted, see `PieLayer`'s own doc comments)
- * rather than nothing at all.
+ * header; every row with no `folder` (a direct FILE member) shares one
+ * trailing `"Files"` layer. `census` is optional so a pie whose first
+ * census hasn't resolved yet still renders folder headers (with
+ * `missing`/`live` defaulted, see `PieLayer`'s own doc comments) rather
+ * than nothing at all.
+ *
+ * ALWAYS returns at least one layer: a pie with no folder members — and
+ * even a pie with no members at all — gets the single `"files"` layer. The
+ * plate then has exactly one shape to render, and decides separately
+ * whether to PAINT the headers (it does not, for a lone `"files"` layer),
+ * which is what keeps the M1/M2 flat list and the M3 tree as one code path
+ * instead of two.
  */
 export function layersOf(
   files: DerivedPieFile[],
@@ -158,7 +152,17 @@ export function layersOf(
 ): PieLayer[] {
   const missing = new Set(census?.missing ?? []);
   const outsideRoot = new Set(census?.outside_root ?? []);
-  const byMtimeDesc = (a: DerivedPieFile, b: DerivedPieFile) => b.mtime - a.mtime;
+
+  // One pass over the rows, not one filter pass per layer: a pie with many
+  // folder members used to re-scan the whole row list once per member.
+  // `undefined` is the bucket key for the trailing "Files" layer.
+  const buckets = new Map<string | undefined, DerivedPieFile[]>();
+  for (const f of files) {
+    const bucket = buckets.get(f.folder);
+    if (bucket) bucket.push(f);
+    else buckets.set(f.folder, [f]);
+  }
+  for (const rows of buckets.values()) rows.sort(byRow);
 
   const layers: PieLayer[] = [];
   for (const m of members) {
@@ -170,15 +174,16 @@ export function layersOf(
       kind: "folder",
       missing: missing.has(m.path),
       live: !outsideRoot.has(m.path),
-      rows: files.filter((f) => f.folder === m.path).sort(byMtimeDesc),
+      rows: buckets.get(m.path) ?? [],
     });
   }
 
-  // The trailing "Files" layer exists whenever the pie has at least one
-  // direct FILE member — even one that currently resolves to nothing (a
-  // missing file still needs a layer to render its own dimmed "not found"
-  // row in), so this checks membership, not just `files.length`.
-  if (members.some((m) => m.kind === "file")) {
+  // The trailing "Files" layer is worth a header only when it holds
+  // something; `layers.length === 0` is the pie with no folder members at
+  // all, where it IS the whole list (and where the plate paints no header
+  // for it — see this function's own doc comment).
+  const fileRows = buckets.get(undefined) ?? [];
+  if (fileRows.length > 0 || layers.length === 0) {
     layers.push({
       id: "files",
       label: "Files",
@@ -186,7 +191,7 @@ export function layersOf(
       kind: "files",
       missing: false,
       live: true,
-      rows: files.filter((f) => f.folder === undefined).sort(byMtimeDesc),
+      rows: fileRows,
     });
   }
 
@@ -203,21 +208,50 @@ export function layersOf(
  *  clear both. */
 const REFRESH_DEBOUNCE_MS = 500;
 
+/** Whether two member lists name the same members, in the same order, with
+ *  the same kinds — the only difference between two `Pie` snapshots that
+ *  can change what a census reports. `added_at`/`source`/`origin` are
+ *  metadata about the ADD, not about what is on disk, so they are
+ *  deliberately not compared. `undefined` (a pie seen for the first time)
+ *  never matches. */
+function sameMembers(a: PieMember[] | undefined, b: PieMember[]): boolean {
+  if (!a || a.length !== b.length) return false;
+  return a.every((m, i) => m.path === b[i].path && m.kind === b[i].kind);
+}
+
+/** One pie's cached census, plus the derived lookups that would otherwise
+ *  be rebuilt on every read. `outside_root` arrives as an array (it is a
+ *  wire shape) but is only ever asked "does it contain this member", once
+ *  per filesystem event — a linear scan per event over an array that never
+ *  changes between fetches. */
+interface CacheEntry {
+  census: PieCensus;
+  outsideRoot: Set<string>;
+}
+
 export interface PieCensusValue {
   /** `undefined` before the first successful census for `pieId` — never a
    *  placeholder empty `PieCensus`, so a caller can tell "not fetched yet"
    *  from "fetched, empty pie" (`layersOf`'s own `missing`/`live` defaults
    *  lean on exactly this distinction). */
   censusFor(pieId: string): PieCensus | undefined;
+  /** `toDerivedPie(pie, censusFor(pie.id))`, memoized per pie id: the same
+   *  `DerivedPie` object comes back until either the `Pie` or its census
+   *  changes identity. Without it, one census response — which replaces
+   *  the whole cache Map and so re-identifies `censusFor` — re-ran
+   *  `censusToFiles` for EVERY user pie in the band, not just the one that
+   *  answered. */
+  derive(pie: Pie): DerivedPie;
   /** Force a re-fetch for one pie — called on plate open. */
   refresh(pieId: string): void;
   /** Force a re-fetch for every USER pie — called on Sky mount (sky show)
-   *  and, internally, whenever the `pies` list's identity changes. */
+   *  and, internally, whenever some pie's MEMBERS change. */
   refreshAll(): void;
 }
 
 const PieCensusContext = React.createContext<PieCensusValue>({
   censusFor: () => undefined,
+  derive: (pie) => toDerivedPie(pie, undefined),
   refresh: () => {},
   refreshAll: () => {},
 });
@@ -244,7 +278,7 @@ export function PieCensusProvider({ ipc, children }: PieCensusProviderProps): Re
   const { root } = useWorkspace();
   const bus = useWatcherBus();
 
-  const [cache, setCache] = React.useState<Map<string, PieCensus>>(() => new Map());
+  const [cache, setCache] = React.useState<Map<string, CacheEntry>>(() => new Map());
   // Read inside the bus subscriber without making the subscribe effect
   // depend on (and therefore resubscribe on) every cache update — the same
   // "ref mirrors the latest value for an otherwise-stable callback" shape
@@ -275,7 +309,7 @@ export function PieCensusProvider({ ipc, children }: PieCensusProviderProps): Re
           if (rootRef.current !== requestRoot) return;
           setCache((prev) => {
             const next = new Map(prev);
-            next.set(pieId, census);
+            next.set(pieId, { census, outsideRoot: new Set(census.outside_root) });
             return next;
           });
         })
@@ -294,22 +328,31 @@ export function PieCensusProvider({ ipc, children }: PieCensusProviderProps): Re
 
   const refreshAll = React.useCallback(() => {
     for (const pie of pies) {
-      if (isUserPie(pie.id)) fetchCensus(pie.id);
+      if (isUserPieId(pie.id)) fetchCensus(pie.id);
     }
   }, [pies, fetchCensus]);
 
   // `usePies.ts` replaces the whole `pies` array on every
-  // `skypie://pies-updated` (a create, a member add/remove/relocate, a
-  // rename, a touch_seen from ANY writer) — array identity is exactly the
-  // "something about a pie may have changed" signal, so refreshing on it
-  // covers every one of those without each op having to say so itself.
+  // `skypie://pies-updated`, and MOST of those events cannot change what a
+  // census would report: a rename, and above all `touch_seen` — which the
+  // plate fires on every single open, and which the pill's own optimistic
+  // bump fires again. Refreshing the whole band on array identity therefore
+  // re-walked every folder member of every pie each time a plate opened.
+  // Only a MEMBERSHIP change can change a census, so this compares the
+  // previous list member by member and refetches exactly the pies whose
+  // members moved. A pie that is new to the list has no previous entry and
+  // so always counts as changed.
+  const prevMembersRef = React.useRef(new Map<string, PieMember[]>());
   React.useEffect(() => {
-    refreshAll();
-    // refreshAll already depends on `pies` (see its own deps) — re-running
-    // this effect on anything else would refetch without the list having
-    // changed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pies]);
+    const prev = prevMembersRef.current;
+    const next = new Map<string, PieMember[]>();
+    for (const pie of pies) {
+      next.set(pie.id, pie.members);
+      if (!isUserPieId(pie.id)) continue;
+      if (!sameMembers(prev.get(pie.id), pie.members)) fetchCensus(pie.id);
+    }
+    prevMembersRef.current = next;
+  }, [pies, fetchCensus]);
 
   const scheduleRefresh = React.useCallback(
     (pieId: string) => {
@@ -326,23 +369,15 @@ export function PieCensusProvider({ ipc, children }: PieCensusProviderProps): Re
   React.useEffect(() => {
     const unsubscribe = bus.subscribe((change: FsChange) => {
       for (const pie of pies) {
-        if (!isUserPie(pie.id)) continue;
-        if (!affectsPie(change, pie.members)) continue;
-        // `affectsPie` already proved some folder member contains
-        // `change.path` — find that SAME member again (cheap; a pie holds
-        // at most a handful of members) to check whether IT specifically
-        // is outside the workspace root.
-        const folderMember = pie.members.find(
-          (m) => m.kind === "folder" && isUnder(change.path, m.path),
-        );
+        if (!isUserPieId(pie.id)) continue;
+        const folderMember = affectsPie(change, pie.members);
+        if (!folderMember) continue;
         // A folder OUTSIDE the workspace root never refreshes from the
         // bus — the external watcher (`watch_external_paths`) is
         // NonRecursive and does not cover it in the first place (spec
         // section 6); it only refreshes on refresh()/refreshAll() (sky
         // show, plate open).
-        if (folderMember && cacheRef.current.get(pie.id)?.outside_root.includes(folderMember.path)) {
-          continue;
-        }
+        if (cacheRef.current.get(pie.id)?.outsideRoot.has(folderMember.path)) continue;
         scheduleRefresh(pie.id);
       }
     });
@@ -365,15 +400,42 @@ export function PieCensusProvider({ ipc, children }: PieCensusProviderProps): Re
   // root may now be inside the new one, or vice versa. The next
   // refresh()/refreshAll() (sky show, plate open) rebuilds the cache
   // against the new root.
+  //
+  // Skipped on the FIRST run: the cache is already empty at mount, and
+  // `setCache(new Map())` there replaced it with a second empty Map, which
+  // is a fresh identity — so every consumer of `censusFor`/`derive`
+  // re-rendered once for a change that did not happen. On a real root
+  // change the flush still runs.
+  const rootFlushedRef = React.useRef(false);
   React.useEffect(() => {
+    if (!rootFlushedRef.current) {
+      rootFlushedRef.current = true;
+      return;
+    }
     setCache(new Map());
   }, [root]);
 
-  const censusFor = React.useCallback((pieId: string) => cache.get(pieId), [cache]);
+  const censusFor = React.useCallback((pieId: string) => cache.get(pieId)?.census, [cache]);
+
+  // Keyed by pie id, holding the inputs alongside the result so a hit can
+  // prove itself still valid. A ref, not state: it is a pure cache of a
+  // pure function, so writing to it must never schedule a render.
+  const derivedRef = React.useRef(new Map<string, { pie: Pie; census: PieCensus | undefined; derived: DerivedPie }>());
+  const derive = React.useCallback(
+    (pie: Pie): DerivedPie => {
+      const census = cache.get(pie.id)?.census;
+      const hit = derivedRef.current.get(pie.id);
+      if (hit && hit.pie === pie && hit.census === census) return hit.derived;
+      const derived = toDerivedPie(pie, census);
+      derivedRef.current.set(pie.id, { pie, census, derived });
+      return derived;
+    },
+    [cache],
+  );
 
   const value = React.useMemo<PieCensusValue>(
-    () => ({ censusFor, refresh, refreshAll }),
-    [censusFor, refresh, refreshAll],
+    () => ({ censusFor, derive, refresh, refreshAll }),
+    [censusFor, derive, refresh, refreshAll],
   );
 
   // `React.createElement`, not JSX — this file is `.ts`, not `.tsx` (the

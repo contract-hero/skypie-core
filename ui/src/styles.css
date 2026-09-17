@@ -3310,8 +3310,10 @@ pre[data-fallback] .line::before {
 /* Pie.tsx's +N pill (spec section 3) — top-right of the 48px disc, which
    sits centered in the 72px tile (12px inset each side); `right: 8px`
    lands it on the disc's own rim rather than the tile's outer edge. A
-   `<span role="button">`, not a nested `<button>` — see Pie.tsx's own doc
-   comment on `onOpenNewest` for why. */
+   plain `<span aria-hidden>`, with no role of its own: the tile root is
+   already a <button role="option">, and role="option" hides its children
+   from the accessibility tree — the tile's own aria-label carries the
+   count instead. See Pie.tsx's doc comment on `onOpenNewest`. */
 .sky-pie-fresh {
   position: absolute;
   top: 0;
@@ -3380,7 +3382,12 @@ pre[data-fallback] .line::before {
   font-size: var(--text-caption);
   color: var(--sky-ink-dim);
 }
-.pie-layer-caption button {
+/* Locate… / Forget / Forget — the three small inline actions on a layer
+   header and on a missing row. ONE class rather than two identical
+   descendant rules: the two used to be copies of each other, and a change
+   to one silently left the other behind. */
+.pie-mini-button {
+  flex: 0 0 auto;
   border: 1px solid var(--border);
   border-radius: var(--r-xs);
   background: transparent;
@@ -3391,7 +3398,7 @@ pre[data-fallback] .line::before {
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease);
 }
-.pie-layer-caption button:hover { background: var(--bg-row-hover); }
+.pie-mini-button:hover { background: var(--bg-row-hover); }
 
 /* "truncated · 20,000+" under the readout (spec section 4) when the census
    hit the 20,000-file cap. */
@@ -3427,16 +3434,3 @@ pre[data-fallback] .line::before {
   cursor: default;
 }
 .start-row-missing .start-row-dir { color: var(--fg-dim); }
-.start-row-missing button {
-  flex: 0 0 auto;
-  border: 1px solid var(--border);
-  border-radius: var(--r-xs);
-  background: transparent;
-  color: var(--fg-strong);
-  font: inherit;
-  font-size: var(--text-caption);
-  padding: 2px 6px;
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease);
-}
-.start-row-missing button:hover { background: var(--bg-row-hover); }

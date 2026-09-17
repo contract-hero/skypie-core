@@ -75,7 +75,7 @@ export interface PieProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElem
   /** M2: the band tile's own right-click menu (Rename / Add folder… /
    *  Delete pie — `Sky.tsx`). Only meaningful with `interactive`. */
   onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
-  /** M3: the freshness pill's click handler — opens `pie.newestFreshPath`
+  /** M3: the freshness pill's click handler — opens the pie's newest file
    *  in one click, no zoom. Only rendered (and only meaningful) when
    *  `interactive && pie.fresh > 0` — a built-in pie's `fresh` is always
    *  `undefined`, so it never gets a pill regardless of whether this is
