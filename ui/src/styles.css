@@ -1353,7 +1353,7 @@ html, body, #root {
 }
 /* Trailing mtime column — only PiePlate's layer list uses this today (the
    list is sorted newest-first, so the freshness the sort is based on stays
-   visible per row, not just implied by position — review: PiePlate.tsx:262). */
+   visible per row, not just implied by position). */
 .start-row-mtime {
   flex: 0 0 auto;
   color: var(--fg-dim);
@@ -2942,7 +2942,7 @@ pre[data-fallback] .line::before {
    it. A single SVG spanning the band with `preserveAspectRatio="none"` used
    to scale every ellipse horizontally by paneWidth/100 while the vertical
    scale stayed 1, flattening each cumulus into a smear on any pane wider
-   than the 100-unit viewBox it was authored at (review: Sky.tsx:104). */
+   than the 100-unit viewBox it was authored at. */
 .sky-cloud {
   position: absolute;
   pointer-events: none;
@@ -3073,7 +3073,7 @@ pre[data-fallback] .line::before {
   color: var(--fg-muted);
   text-align: center;
 }
-.pie-plate-last-opened {
+.pie-plate-recency {
   font-size: var(--text-caption);
   color: var(--fg-dim);
 }

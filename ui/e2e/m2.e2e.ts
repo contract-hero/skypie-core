@@ -4,8 +4,10 @@
 // picker, zoom the pie, rotate the wedge selection by bearing and cut the
 // HTML wedge, open a file from the layer list, race a real UI write
 // (touch_seen) against a second, independent writer with neither lost,
-// rename and delete a pie through its 5-second undo (both taken and let to
-// elapse), and confirm the persisted document (and its member
+// rename and delete a pie through its 5-second undo (taken, and then a
+// second delete whose permanent half is driven straight through the backend
+// — step 7c explains why the real wall-clock window is not waited out), and
+// confirm the persisted document (and its member
 // canonicalization) survives a relaunch. See ui/e2e/README.md.
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -56,9 +58,10 @@ async function typeIntoInput(app: LaunchedApp, selector: string, value: string):
  *  `keys()`, which dispatches on `document` and only App's window-capture
  *  registry sees (M2 brief).
  *
- *  The one helper here that does NOT go through `onSelector`: the harness
- *  drives a window that does not hold OS focus, so the `:focus` pseudo-class
- *  matches nothing even while `document.activeElement` is the right input. */
+ *  Targets `document.activeElement` rather than a selector because the
+ *  harness drives a window that does not hold OS focus: the `:focus`
+ *  pseudo-class matches nothing even while `document.activeElement` is the
+ *  right input. */
 async function keyOnActiveElement(app: LaunchedApp, key: string): Promise<void> {
   const js = `(function(){
     var el = document.activeElement;
@@ -148,7 +151,11 @@ function readStateJson(stateDir: string): OnDiskPies | null {
   if (!fs.existsSync(p)) return null;
   try {
     return JSON.parse(fs.readFileSync(p, "utf8"));
-  } catch {
+  } catch (err) {
+    // A torn read of the debounced writer's tmp+rename is expected and the
+    // poll below just retries — but a document that never parses would
+    // otherwise time out with no hint of why.
+    console.warn(`readStateJson: ${p} did not parse: ${String(err)}`);
     return null;
   }
 }
@@ -291,8 +298,7 @@ async function main(): Promise<void> {
     // every band pie tile via `cloneElement(child, { ref })` — React 18
     // REPLACES a ref, it does not merge one — so `itemRefs.current` stayed
     // null for every pie and ←/→/Home/End moved `focusedIndex`/`tabIndex`
-    // but never real DOM focus (review: Tooltip.tsx:60/61, three duplicate
-    // blocker reports). Nothing exercised an arrow key on the band before
+    // but never real DOM focus. Nothing exercised an arrow key on the band before
     // this test.
     await focusSelector(app, `[data-pie-id=${JSON.stringify(pieIds[0])}]`);
     await keyOnActiveElement(app, "ArrowRight");
@@ -322,7 +328,7 @@ async function main(): Promise<void> {
     // Pie.tsx never forwarded onMouseEnter/onMouseLeave/onBlur to its
     // <button> — Tooltip's cloned handlers landed in props Pie's explicit
     // destructure never read, so the bubble never opened and, once opened
-    // by keyboard focus, never closed on blur either (review: Pie.tsx:199).
+    // by keyboard focus, never closed on blur either.
     await focusSelector(app, `[data-pie-id=${JSON.stringify(pricingId)}]`);
     await waitFor(app, `document.querySelector(".sky-tooltip") !== null`, 2_000);
     const tooltipText = await text(app, ".sky-tooltip");
@@ -355,9 +361,9 @@ async function main(): Promise<void> {
     // focus on the CHECKED legend radio (PiePlate.tsx's own mount effect).
     // This assertion is the regression test for that fix: it used to focus
     // the PLATE CONTAINER instead, which no key handler is bound to, so ←/→
-    // did nothing until several Tabs landed inside (review: PiePlate.tsx:220
-    // — "ui/e2e/m2.e2e.ts:231-235 masks this by calling .focus() on the
-    // first radio through evalIn before sending ArrowRight").
+    // did nothing until several Tabs landed inside. This test also used to
+    // mask the bug by calling `.focus()` on the first radio itself before
+    // sending ArrowRight; it no longer does.
     const firstRadioSelector = '[data-testid="pie-legend"][role="radiogroup"] [role="radio"]';
     await waitFor(
       app,
@@ -559,6 +565,23 @@ async function main(): Promise<void> {
     await waitForPersistedPies(stateDir, (d) => !(d.pies ?? []).some((p) => p.id === scratchId));
     console.log("ok: once removal actually reaches the backend, the pie is gone from state.json too");
 
+    // And Undo AFTER the window has closed does nothing at all — the undo
+    // callback is one-shot (`settled` in usePies.removePieWithUndo), so a
+    // late click must not resurrect a pie the backend has already forgotten.
+    const noticeStillUp = await evalIn(app, `document.querySelector(".app-notice-action") !== null`);
+    if (noticeStillUp) await click(app, ".app-notice-action");
+    await sleep(500);
+    const resurrected = await evalIn(
+      app,
+      `Array.from(document.querySelectorAll(".sky-pies .sky-pie-label")).some(function(el){ return el.textContent === "Scratch Renamed"; })`,
+    );
+    if (resurrected) throw new Error("Undo after the window closed brought the pie back");
+    const afterLateUndo = readStateJson(stateDir)?.pies?.pies ?? [];
+    if (afterLateUndo.some((p) => p.id === scratchId)) {
+      throw new Error("Undo after the window closed rewrote the pie to state.json");
+    }
+    console.log("ok: Undo after the window has closed is a no-op, in the band and on disk");
+
     // ── Step 8: relaunch (Rust changed in M2) — Pricing is still there ─────
     await quit(app);
     app = await launchDesktop({ stateDir, skipBuild: false });
@@ -573,9 +596,19 @@ async function main(): Promise<void> {
 
     console.log("PASS");
   } finally {
-    await quit(app);
-    await cleanupFixtureWorkspace(fixture);
-    await fs.promises.rm(stateDir, { recursive: true, force: true });
+    // Each cleanup step guarded on its own: a failing `quit` must not mask
+    // the real error from the body above, nor leak the two temp trees.
+    for (const [what, step] of [
+      ["quit", () => quit(app)],
+      ["fixture workspace", () => cleanupFixtureWorkspace(fixture)],
+      ["state dir", () => fs.promises.rm(stateDir, { recursive: true, force: true })],
+    ] as [string, () => Promise<unknown>][]) {
+      try {
+        await step();
+      } catch (err) {
+        console.warn(`cleanup: ${what} failed: ${String(err)}`);
+      }
+    }
   }
 }
 

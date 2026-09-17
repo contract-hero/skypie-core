@@ -20,6 +20,7 @@ import type { IpcSurface } from "./ipc";
 import { useDeepLink } from "./hooks/useDeepLink";
 import type { OpenFilePayload, DeepLinkErrorPayload } from "./hooks/useDeepLink";
 import { useTheme } from "./hooks/useTheme";
+import { useTauriEvent } from "./hooks/useTauriEvent";
 import { useE2eBridge } from "./hooks/useE2eBridge";
 import { WorkspaceProvider, useWorkspace } from "./state/workspace";
 import { WatcherProvider } from "./state/watcher-bus";
@@ -300,6 +301,15 @@ function AppShell({
   });
   const addressBarRef = React.useRef<HTMLInputElement | null>(null);
   const noticeTimer = React.useRef<number | null>(null);
+
+  // The debounced state writer's last failure (`skypie://state-write-failed`,
+  // state_store.rs). PERSISTENT, not a timed toast: while it is up, nothing
+  // the user changes is reaching disk, and that stays true until they fix
+  // the cause. It is its own notice rather than a `showNotice` call so a
+  // 5-second undo toast cannot replace it.
+  const [writeFailure, setWriteFailure] = React.useState<string | null>(null);
+  useTauriEvent<string>("skypie://state-write-failed", setWriteFailure);
+  const dismissWriteFailure = React.useCallback(() => setWriteFailure(null), []);
 
   const dismissNotice = React.useCallback(() => {
     if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
@@ -654,6 +664,12 @@ function AppShell({
           onPickWorkspace={handlePickWorkspace}
           workspaceRoot={root}
         />
+        {writeFailure ? (
+          <AppNotice
+            text={`Settings aren't being saved — ${writeFailure}. Changes made now may be lost.`}
+            onDismiss={dismissWriteFailure}
+          />
+        ) : null}
         {notice ? <AppNotice text={notice.text} action={notice.action} onDismiss={dismissNotice} /> : null}
         {overlays}
       </div>
@@ -719,6 +735,12 @@ function AppShell({
               reason — the artifact stays the protagonist. */}
           {skyVisible && !readerMode ? (
             <Sky ipc={ipc} onOpenFile={openFile} onNotice={showNotice} />
+          ) : null}
+          {writeFailure ? (
+            <AppNotice
+              text={`Settings aren't being saved — ${writeFailure}. Changes made now may be lost.`}
+              onDismiss={dismissWriteFailure}
+            />
           ) : null}
           {notice ? <AppNotice text={notice.text} action={notice.action} onDismiss={dismissNotice} /> : null}
           <div

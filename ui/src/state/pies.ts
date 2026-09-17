@@ -35,6 +35,49 @@ export function bandOrder(derived: DerivedPie[], userPies: Pie[]): DerivedPie[] 
   return [...derived, ...userPies.map(toDerivedPie)];
 }
 
+/** Adds `id` to a pending-delete set, returning a NEW set (React state must
+ *  not be mutated in place). Paired with `withoutPending` so the two
+ *  overlapping-delete transitions are one testable pair rather than two
+ *  inline `new Set(prev)` closures inside `usePies`. */
+export function withPending(pending: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(pending);
+  next.add(id);
+  return next;
+}
+
+/** Removes `id` from a pending-delete set. Returns a new set, and leaves the
+ *  OTHER ids alone — two deletes whose undo windows overlap must not clear
+ *  each other, which is what a plain `setPendingDeletes(NO_PENDING)` did. */
+export function withoutPending(pending: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(pending);
+  next.delete(id);
+  return next;
+}
+
+/** What `PiesProvider.openPicker` should do with a caller-supplied path,
+ *  decided without touching React or the IPC surface so all three outcomes
+ *  are testable directly.
+ *
+ *  - `refuse`: a `skypie-remote://` address — M2 has no remote pie members.
+ *  - `canonicalize`: the normal path, resolved before the picker renders so
+ *    `holdsPath`'s exact-string compare lines up with the stored members.
+ *  - `open`: no `canonicalizePath` on this IPC surface (a test double, an
+ *    older build) — open uncanonicalized rather than hang on a promise that
+ *    will never resolve. */
+export type PickerPathPlan =
+  | { action: "refuse"; reason: string }
+  | { action: "canonicalize"; path: string }
+  | { action: "open"; path: string };
+
+export function pickerPathPlan(
+  path: string,
+  canCanonicalize: boolean,
+  isRemote: (p: string) => boolean,
+): PickerPathPlan {
+  if (isRemote(path)) return { action: "refuse", reason: "Can't add a pulled file to a pie yet" };
+  return canCanonicalize ? { action: "canonicalize", path } : { action: "open", path };
+}
+
 /** Hides every pie whose delete is still inside its undo window
  *  (`usePies`'s `pendingDeletes`). The hook applies this to EVERY list it
  *  reconciles, including one that arrives on a `skypie://pies-updated`
@@ -49,7 +92,10 @@ export function subtractPending(pies: Pie[], pending: ReadonlySet<string>): Pie[
 }
 
 /** Whether `pie` already holds `path` as a member — the picker's check
- *  mark (spec section 6). */
+ *  mark (spec section 6). An EXACT string compare against the stored
+ *  (always canonical) member paths, which is why `openPicker` canonicalizes
+ *  before the picker renders: a non-canonical form of the very same file
+ *  answers false here. */
 export function holdsPath(pie: Pie, path: string): boolean {
   return pie.members.some((m) => m.path === path);
 }

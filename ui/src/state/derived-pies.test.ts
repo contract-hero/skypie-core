@@ -91,8 +91,7 @@ describe("wedgesOf", () => {
 
 // PiePlate's legend filter and the wedge tones both rely on this grouping —
 // only the e2e (m1.e2e.ts) exercised it before, which stays green even if
-// the merge loop drops a file or the "other" guard regresses (review:
-// derived-pies.ts:76).
+// the merge loop drops a file or the "other" guard regresses.
 describe("groupByWedge", () => {
   it("folds a haze-merged kind's files into the 'other' group", () => {
     const html: DerivedPieFile[] = Array.from({ length: 97 }, (_, i) => ({

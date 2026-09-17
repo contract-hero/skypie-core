@@ -18,7 +18,7 @@ export interface PiePickerProps {
   /** The path being added — already canonicalized by `PiesProvider.openPicker`
    *  before this component ever mounts, so `holdsPath`'s exact-string
    *  compare lines up with the canonical member paths `pies::add_member`
-   *  stores (review: pies.ts:57). A file today; M4's Finder drop is the
+   *  stores. A file today; M4's Finder drop is the
    *  only other add path, and it goes straight through `addPieMember`, not
    *  this component. */
   path: string;
@@ -33,7 +33,7 @@ export interface PiePickerProps {
   upsertPie: (id: string | null, name: string) => Promise<Pie | null>;
   /** Cleans up a pie `commitCreate` just minted when the follow-up
    *  `addPieMember` for it fails, so a refused add never leaves an empty
-   *  pie behind (review: PiePicker.tsx:75). */
+   *  pie behind. */
   removePie: (id: string) => Promise<void>;
   onNotice?: NoticeFn;
   onClose: () => void;
@@ -72,10 +72,10 @@ export default function PiePicker({
   }, [creating]);
 
   // Save + restore focus across the picker's whole lifetime (PiePlate's
-  // own open effect does the same) — `role="dialog" aria-modal="true"`
+  // own open effect does the same) — `role="dialog"` with `aria-modal="false"`
   // here traps no Tab, so without this a keyboard user who opened the
   // picker from a tree row or a tab lost their place in the tree/tab strip
-  // on close, landing on <body> instead (review: PiePicker.tsx:90).
+  // on close, landing on <body> instead.
   React.useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
     return () => {
@@ -107,7 +107,7 @@ export default function PiePicker({
   // `remove_member` can both reject (a path that stopped resolving between
   // ⌘D and the click) — the picker used to `await` those bare, so a
   // rejection skipped `onClose()` and left the picker open with no
-  // explanation (review: PiePicker.tsx:75); `finally` guarantees the close
+  // explanation; `finally` guarantees the close
   // happens either way, and the catch surfaces WHY through the notice
   // channel `Sky.tsx`'s own delete-undo already uses.
   const toggle = async (pie: Pie): Promise<void> => {
@@ -129,13 +129,25 @@ export default function PiePicker({
     let created: Pie | null = null;
     try {
       created = await upsertPie(null, name);
-      if (created) await addPieMember(created.id, path, "file", "picker");
+      // `upsertPie` resolves `null` when the backend has no `upsert_pie`
+      // command at all. Closing the picker on that looked exactly like a
+      // successful create, so say so instead of silently doing nothing.
+      if (!created) throw new Error("this build cannot create pies");
+      await addPieMember(created.id, path, "file", "picker");
     } catch (err) {
       // The create step itself succeeded but the add failed — undo the
-      // create rather than leaving an empty, unreachable pie behind
-      // (review: PiePicker.tsx:75, "leaves a newly created empty pie
-      // behind").
-      if (created) void removePie(created.id);
+      // create rather than leaving an empty, unreachable pie behind. AWAIT
+      // the rollback: fire-and-forget left the empty pie behind whenever
+      // the rollback itself was refused, with nothing said about it.
+      if (created) {
+        try {
+          await removePie(created.id);
+        } catch (rollbackErr) {
+          onNotice?.(
+            `Couldn't clean up the empty pie "${name}" — ${errorMessage(rollbackErr)}`,
+          );
+        }
+      }
       onNotice?.(`Couldn't add this file to a new pie — ${errorMessage(err)}`);
     } finally {
       onClose();
@@ -150,8 +162,7 @@ export default function PiePicker({
         // Not a real trap — Tab can still walk out into the toolbar/tab
         // strip behind it — so this is explicitly "false" rather than a
         // claim `aria-modal="true"` doesn't back up, the same call
-        // `PiePlate.tsx` makes for its own non-trapping dialog (review:
-        // PiePicker.tsx:90).
+        // `PiePlate.tsx` makes for its own non-trapping dialog.
         aria-modal="false"
         aria-label="Add to pie"
         data-testid="pie-picker"

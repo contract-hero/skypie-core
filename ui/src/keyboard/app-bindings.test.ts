@@ -102,3 +102,21 @@ describe("appBindings", () => {
     }
   });
 });
+
+describe("mod+d", () => {
+  it("invokes addActiveFileToPie and nothing else", () => {
+    // The pie picker's only keyboard entry point (spec section 2/6). A
+    // binding table edit that pointed ⌘D at a neighbouring action would
+    // otherwise still satisfy every coverage test above.
+    const fired: string[] = [];
+    const actions: AppBindingActions = Object.fromEntries(
+      Object.keys(noopActions).map((name) => [name, () => fired.push(name)]),
+    ) as unknown as AppBindingActions;
+    const binding = appBindings(actions, { isMacos: true, commentTool: false, readerMode: false }, 0.1).find(
+      (b) => b.combo === "mod+d",
+    );
+    expect(binding, "mod+d is bound on macOS").toBeDefined();
+    binding?.handler({ key: "d", code: "KeyD", metaKey: true, ctrlKey: false, shiftKey: false, altKey: false });
+    expect(fired).toEqual(["addActiveFileToPie"]);
+  });
+});

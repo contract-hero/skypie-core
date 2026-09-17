@@ -13,7 +13,7 @@
 // and no wrapper either. It portals to `document.body` rather than
 // rendering as a sibling of `children`: an earlier version rendered inline,
 // which (for a band tile) put a non-`option` node inside `.sky-pies`'s
-// `role="listbox"` while open (review: Tooltip.tsx:87).
+// `role="listbox"` while open.
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { useEscape } from "../hooks/useEscape";
@@ -38,7 +38,7 @@ type AnchorHandlers = {
  *  (`setItemRef(i)`) on every band `<Pie>` and then wraps it in `<Tooltip>`,
  *  so the old single-`ref` clone silently zeroed out `itemRefs.current` for
  *  every pie tile — `focusTile()` moved `focusedIndex`/`tabIndex` but never
- *  real DOM focus (review: Tooltip.tsx:60/61, three duplicate reports).
+ *  real DOM focus.
  *  This calls BOTH the child's own ref and this component's anchor callback
  *  from one merged callback ref instead of overwriting either. */
 function mergeRefs<T>(...refs: Array<React.Ref<T> | null | undefined>): (instance: T | null) => void {

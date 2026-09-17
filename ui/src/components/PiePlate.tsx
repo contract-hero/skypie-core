@@ -17,6 +17,7 @@ import { isUserPieId } from "../state/pies";
 import type { FileKind } from "../render/kind";
 import { FileGlyph } from "./FileIcon";
 import { basename, displayDir } from "../utils/path";
+import { messageOf } from "../utils/error-message";
 import { formatAgo } from "../utils/beam-format";
 import { useEscape } from "../hooks/useEscape";
 import { useContextMenu } from "./ContextMenu";
@@ -77,8 +78,8 @@ function usePaneShort(): boolean {
 
 /** `formatAgo` already returns the complete phrase "just now" for anything
  *  under 60s — appending " ago" unconditionally used to read "just now ago"
- *  for the normal case of a file opened or bookmarked in the last minute
- *  (review: PiePlate.tsx:229). One helper, both call sites below. */
+ *  for the normal case of a file opened or bookmarked in the last minute.
+ *  One helper, both call sites below. */
 export function mtimeAgo(mtimeMs: number): string {
   const ago = formatAgo(Math.floor(mtimeMs / 1000), Math.floor(Date.now() / 1000));
   return ago === "just now" ? ago : `${ago} ago`;
@@ -88,11 +89,10 @@ export function lastOpenedLabel(pie: DerivedPie): string {
   const { files } = pie;
   // Pinned's mtime is bookmarked_at (derived-pies.ts), i.e. when the file
   // was starred, not when it was opened — "Last opened" claimed something
-  // the data does not support (review: PiePlate.tsx:59). A user pie's
+  // the data does not support. A user pie's
   // `mtime` is `added_at` (pies.ts's `pieFiles` doc comment — there is no
   // real file mtime without M3's census), i.e. when the file was ADDED to
-  // the pie, not when it changed — the same category of mislabel
-  // (review: pies.ts:19).
+  // the pie, not when it changed — the same category of mislabel.
   const isPinned = pie.id === BUILTIN_PINNED_ID;
   const isUser = isUserPieId(pie.id);
   if (files.length === 0) return isPinned ? "Never pinned" : isUser ? "No files added" : "Never opened";
@@ -114,8 +114,7 @@ export function dominantWedge(wedges: Wedge[]): Wedge | null {
 /** The mono readout, e.g. `HTML · 60% · 9 files`. The count is the READOUT
  *  KIND's file count, not the pie's total — the spec's own example only
  *  works if 9 is the count behind the 60% (9/15, say); the pie total made
- *  the two figures disagree for any pie that is not 100% one kind (review:
- *  PiePlate.tsx:93). */
+ *  the two figures disagree for any pie that is not 100% one kind. */
 export function readoutLabel(wedge: Wedge | null): string {
   if (!wedge) return "No files";
   const files = `${wedge.count} file${wedge.count === 1 ? "" : "s"}`;
@@ -155,7 +154,14 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   // is a harmless no-op on the Rust side, but there is nothing to stamp for
   // it, so this skips the call entirely rather than relying on that).
   React.useEffect(() => {
-    if (isUserPie) void piesCtx.touchPieSeen(pie.id);
+    if (isUserPie) {
+      // Nothing to show the user for a failed stamp — `seen_at` drives the
+      // M3 freshness pill, not anything on screen now — but a dropped
+      // rejection here would hide a store that refuses every write.
+      piesCtx.touchPieSeen(pie.id).catch((err: unknown) => {
+        console.warn("skypie: touchPieSeen failed", err);
+      });
+    }
     // Only on open (mount) / when the plate switches to a different pie —
     // not on every render, which would hammer the debounced writer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -178,7 +184,7 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   // "Remove from pie" left `focusedKindState` naming a kind with no radio
   // at all, so `checked` was false for every row, every radio got
   // `tabIndex={-1}`, and the radiogroup fell out of the tab order entirely
-  // (review: PiePlate.tsx:119). Validating the cursor HERE, at render, is
+  //. Validating the cursor HERE, at render, is
   // the same correction without the extra state round trip an effect
   // needed — the bad frame that effect had to repair never renders.
   const focusedKind =
@@ -218,8 +224,7 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   // in the global registry would. Guarded the same way App.tsx's reader-mode
   // Esc binding is: an open context menu (a layer row's "Copy Path" /
   // "Bookmark" / ...) still owns Esc and closes itself on the same window
-  // event, so one keypress must not ALSO close the plate underneath it
-  // (review: PiePlate.tsx:108).
+  // event, so one keypress must not ALSO close the plate underneath it.
   useEscape(() => {
     if (document.querySelector(".context-menu")) return;
     onClose();
@@ -235,7 +240,7 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
       // ContextMenuProvider renders the row context menu at the app root,
       // outside plateRef — without this, a pointerdown on one of its own
       // items ("Copy Path", "Bookmark", ...) reads as an outside click and
-      // closes the plate the menu belongs to (review: PiePlate.tsx:115).
+      // closes the plate the menu belongs to.
       if (target instanceof Element && target.closest(".context-menu")) return;
       onClose();
     };
@@ -269,7 +274,7 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   // role="dialog" with no focus move, no aria-modal and no focus restore
   // meant a screen-reader user heard nothing open on Enter (the tile stayed
   // focused) and the layer list's own ↑/↓/Home/End did nothing until several
-  // Tabs landed inside (review: PiePlate.tsx:193). The plate does not trap
+  // Tabs landed inside. The plate does not trap
   // focus — Tab can still leave it — so aria-modal is explicitly "false"
   // rather than dropping role="dialog": that is what the attribute already
   // defaults to, made non-ambiguous here.
@@ -277,8 +282,7 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   // one level above every key handler that matters: `onLegendKeyDown` is
   // bound on `.pie-legend`, `onLayerKeyDown` on `.pie-layers`, and a keydown
   // whose target is the plate div reaches neither — ←/→ did nothing on
-  // open, until a Tab (or several) landed inside (review: PiePlate.tsx:220,
-  // reported against the spec's own M2 acceptance demo). Focus the CHECKED
+  // open, until a Tab (or several) landed inside. Focus the CHECKED
   // legend radio instead — `legendRefs` is already populated by the time
   // this effect runs (refs attach during commit, before effects), so the
   // radiogroup's own keydown handler is live from the very first keypress.
@@ -429,7 +433,7 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
           onWedgeClick={activateRadio}
         />
         <div className="pie-plate-readout">{readout}</div>
-        <div className="pie-plate-last-opened">{lastOpened}</div>
+        <div className="pie-plate-recency">{lastOpened}</div>
       </div>
       <div className="pie-plate-right">
         {/* role="radiogroup": the legend rows AND the portrait's wedge
@@ -496,8 +500,7 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
           // The filter's only documented ways out besides re-clicking the
           // same legend row (spec section 5): this chip, or Backspace while
           // the layer list has focus (onLayerKeyDown above). Neither shipped
-          // before, so nothing told the user how to leave the filtered view
-          // (review: PiePlate.tsx:223).
+          // before, so nothing told the user how to leave the filtered view.
           <button
             type="button"
             className="pie-slice-chip"
@@ -533,8 +536,7 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
                 // React's onClick never fires for the middle button — the
                 // same .start-row shape in StartPage.tsx handles it this
                 // way, and spec section 5 gives middle-click the same
-                // background-tab-plate-stays behaviour as ⌘-click (review:
-                // PiePlate.tsx:257).
+                // background-tab-plate-stays behaviour as ⌘-click.
                 onAuxClick={(e) => {
                   if (e.button === 1) openRow(file, e);
                 }}
@@ -550,7 +552,18 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
                       {
                         label: "Remove from pie",
                         icon: <XCircle size={13} strokeWidth={2} />,
-                        onSelect: () => void piesCtx.removePieMember(pie.id, file.path),
+                        // `removePieMember` removes the row optimistically
+                        // and rolls back on a refusal; without this catch
+                        // the rejection was dropped, so the row vanished,
+                        // the removal never landed, and the row came back
+                        // on the next unrelated event.
+                        onSelect: () => {
+                          piesCtx.removePieMember(pie.id, file.path).catch((err: unknown) => {
+                            piesCtx.notice?.(
+                              `Couldn't remove "${basename(file.path)}" — ${messageOf(err, "the member could not be removed")}`,
+                            );
+                          });
+                        },
                       },
                       {
                         label: "Add to another pie…",

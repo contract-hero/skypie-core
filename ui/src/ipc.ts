@@ -105,6 +105,16 @@ export interface PiesDoc {
   pies: Pie[];
 }
 
+/** What `listPies` and `skypie://pies-updated` carry: the pies, plus the
+ *  reason there are none when this build cannot read the document. An empty
+ *  `pies` array alone is ambiguous — "you have no pies" and "your pies are
+ *  on disk and unreadable by this build" looked identical in the band.
+ *  `usePies` raises `warning` as one notice (`pies::PiesList`). */
+export interface PiesList {
+  pies: Pie[];
+  warning?: string;
+}
+
 export interface SettingsState {
   schema_version: number;
   roots: string[];
@@ -306,15 +316,17 @@ export interface IpcSurface {
   removeBookmark?(path: string): Promise<void>;
   reorderBookmarks?(paths: string[]): Promise<void>;
 
-  /** User pies, in stored (band) order. */
-  listPies?(): Promise<Pie[]>;
+  /** User pies, in stored (band) order, plus a `warning` when the document
+   *  could not be read at all — see `PiesList`. */
+  listPies?(): Promise<PiesList>;
   /** Create (`id` omitted) or rename (`id` given) a pie; resolves to the
    *  resulting `Pie` so a fresh create's real (server-minted) id comes
    *  back. */
   upsertPie?(id: string | null, name: string): Promise<Pie>;
   removePie?(id: string): Promise<void>;
   /** Adds `path` to pie `id`. Rejects if `path` cannot be canonicalized
-   *  (i.e. does not exist) — `pies::add_member`'s own contract. */
+   *  (i.e. does not exist), and also when `id` names no pie — a file added
+   *  to a pie another window just deleted is an error, not a silent drop. */
   addPieMember?(id: string, path: string, kind: "file" | "folder", source?: PieMemberSource): Promise<void>;
   removePieMember?(id: string, path: string): Promise<void>;
   relocatePieMember?(id: string, oldPath: string, newPath: string): Promise<void>;
@@ -323,8 +335,9 @@ export interface IpcSurface {
   /** Resolves `path` to its canonical form (`std::fs::canonicalize`) —
    *  called before comparing a caller-supplied path (a tab entry, a tree
    *  row) against a pie's stored (always-canonical) members, e.g.
-   *  `PiePicker`'s checkmark. Rejects the same way `addPieMember` does when
-   *  the path cannot be resolved (review: pies.ts:57 / PiePicker.tsx:75). */
+   *  `PiePicker`'s checkmark. Runs the same canonicalisation gate the add
+   *  itself runs, and rejects the same way when the path cannot be
+   *  resolved. */
   canonicalizePath?(path: string): Promise<string>;
 
   listFilesRecursive?(root: string): Promise<FileIndex>;
@@ -518,8 +531,8 @@ class TauriIpc implements IpcSurface {
     await invoke<void>("reorder_bookmarks", { paths });
   }
 
-  async listPies(): Promise<Pie[]> {
-    return await invoke<Pie[]>("list_pies");
+  async listPies(): Promise<PiesList> {
+    return await invoke<PiesList>("list_pies");
   }
 
   async upsertPie(id: string | null, name: string): Promise<Pie> {

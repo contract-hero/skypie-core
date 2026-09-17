@@ -10,7 +10,7 @@ import { BEARINGS, HAZE_THRESHOLD, kindOf } from "../render/kind";
 import type { FileKind } from "../render/kind";
 import { isRemoteAddress } from "../utils/remote-address";
 
-/** The two built-in pies' fixed ids. Exported because three other modules
+/** The two built-in pies' fixed ids. Exported because two other modules
  *  (`pies.ts`'s `isUserPieId`, `PiePlate.tsx`'s Pinned wording) branch on
  *  them — a bare `"builtin:pinned"` literal repeated per call site drifts
  *  the moment one of them is renamed. */

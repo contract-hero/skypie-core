@@ -124,12 +124,28 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
     itemRefs.current[clamped]?.focus();
   };
 
+  /** Commit the tin's name field. The input is closed only AFTER the write
+   *  lands: closing first and `void`-ing the promise threw away both the
+   *  typed name and the refusal message, so a refused create looked exactly
+   *  like a create that worked and then vanished. `upsert` can be refused
+   *  for a document this build cannot read, and those messages exist
+   *  precisely to be shown. Returns nothing; the caller does not wait. */
   const commitNewPie = async (): Promise<void> => {
     const name = newPieName.trim();
-    setCreatingNew(false);
-    setNewPieName("");
-    if (!name) return;
-    await piesCtx.upsertPie(null, uniqueName(piesCtx.pies, name));
+    if (!name) {
+      setCreatingNew(false);
+      setNewPieName("");
+      return;
+    }
+    try {
+      await piesCtx.upsertPie(null, uniqueName(piesCtx.pies, name));
+      setCreatingNew(false);
+      setNewPieName("");
+    } catch (err) {
+      // Keep the field open with the name still in it, so the user can
+      // retry or copy it out rather than retype it.
+      onNotice(`Couldn't create "${name}" — ${messageOf(err, "the pie could not be created")}`);
+    }
   };
 
   // The hide/defer/undo mechanics live in `usePies` (`removePieWithUndo`,
@@ -137,7 +153,12 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
   // and not here). Sky owns only the toast that offers the undo.
   const deletePieWithUndo = (pie: DerivedPie) => {
     if (openPieId === pie.id) setOpenPieId(null);
-    const undo = piesCtx.removePieWithUndo(pie.id, UNDO_MS);
+    // The third argument reports a delete the backend refused after the
+    // undo window closed: the toast already said "Deleted", so silence left
+    // the user believing a pie was gone that is still on disk.
+    const undo = piesCtx.removePieWithUndo(pie.id, UNDO_MS, (err: unknown) => {
+      onNotice(`Couldn't delete "${pie.name}" — ${messageOf(err, "the pie could not be deleted")}`);
+    });
     onNotice(`Deleted "${pie.name}"`, { label: "Undo", onClick: undo }, UNDO_MS);
   };
 
@@ -173,8 +194,7 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
       // one surface over (PiePlate.tsx's onLayerKeyDown clears the slice
       // filter on it, per spec section 5), and it is the reflex "go back"
       // key; binding it here too made an accidental destructive delete
-      // easier, with a 5s toast as the only safety net (review: Sky.tsx:179,
-      // reported twice).
+      // easier, with a 5s toast as the only safety net.
       case "Delete": {
         const pie = focusedIndex < tinIndex ? pies[focusedIndex] : null;
         if (pie && isUserPieId(pie.id)) {
@@ -218,9 +238,8 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
               if (!picked) return;
               // A bare `void` here used to swallow `add_member`'s own
               // rejection (a folder that stops resolving between the
-              // native picker and this call) with no feedback at all
-              // (review: PiePicker.tsx:75, "Sky.tsx:217... swallows the
-              // same failure with a bare void").
+              // native picker and this call)
+              // with no feedback at all.
               piesCtx.addPieMember(pie.id, picked, "folder", "menu").catch((err: unknown) => {
                 onNotice(`Couldn't add that folder — ${messageOf(err, "the folder could not be added")}`);
               });
@@ -239,11 +258,20 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
     ]);
   };
 
+  /** Same shape as `commitNewPie`: the inline rename input stays open when
+   *  the write is refused, and the refusal is shown. */
   const commitRename = async (id: string, name: string): Promise<void> => {
-    setRenamingId(null);
     const trimmed = name.trim();
-    if (!trimmed) return;
-    await piesCtx.upsertPie(id, trimmed);
+    if (!trimmed) {
+      setRenamingId(null);
+      return;
+    }
+    try {
+      await piesCtx.upsertPie(id, trimmed);
+      setRenamingId(null);
+    } catch (err) {
+      onNotice(`Couldn't rename to "${trimmed}" — ${messageOf(err, "the pie could not be renamed")}`);
+    }
   };
 
   const openPie = pies.find((p) => p.id === openPieId) ?? null;
@@ -269,7 +297,7 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
     // The plate is a sibling of the listbox, not a DOM child of it: a
     // role="dialog" (with its own nested role="listbox" layer list) is not
     // a valid listbox child, and it used to make the band's option count
-    // depend on whether a plate happened to be open (review: Sky.tsx:138).
+    // depend on whether a plate happened to be open.
     // This shell only exists to give the plate's `position: absolute; top:
     // 100%` the same containing block `.sky-band` used to provide.
     <div className="sky-band-shell">
@@ -290,8 +318,8 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
             SVG spanning the whole band with `preserveAspectRatio="none"`
             used to stretch every ellipse horizontally by paneWidth/100
             while its vertical scale stayed 1, turning each cumulus into a
-            flat smear at any pane wider than the 100-unit viewBox (review:
-            Sky.tsx:104). Only the CENTRE tracks the band width now; the
+            flat smear at any pane wider than the 100-unit viewBox. Only the
+            CENTRE tracks the band width now; the
             shapes themselves stay a fixed size at every pane width. */}
         <Cloud className="sky-cloud-1" />
         <Cloud className="sky-cloud-2" />
@@ -299,7 +327,7 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
             CHILDREN in the DOM, but an ARIA listbox only owns options that
             are its own accessible children — nesting them one div deeper
             with no role in between used to make AT report the listbox as
-            empty (review, Sky.tsx minor). Presentation removes this div
+            empty. Presentation removes this div
             from the accessibility tree, so the Pie/tin options attach
             straight to the listbox above it. */}
         <div className="sky-pies" role="presentation">
@@ -315,7 +343,7 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
                   // tabIndex) while it's mid-edit — the swap to a plain
                   // `<div>` used to drop the pie out of the listbox's option
                   // count for the whole rename, and if it was the roving
-                  // slot, out of the Tab order entirely (review: Sky.tsx:310).
+                  // slot, out of the Tab order entirely.
                   role="option"
                   aria-selected={pie.id === openPieId}
                   tabIndex={i === focusedIndex ? 0 : -1}
@@ -362,7 +390,7 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
             // Content is the share string ALONE (spec section 3: "html 58%
             // · md 25% · code 17%") — the name is already the tile's
             // visible label and already in its own `aria-label`, so
-            // prefixing it here just repeated it (review: Sky.tsx:357).
+            // prefixing it here just repeated it.
             return (
               <Tooltip key={pie.id} content={tileLabels[i] ?? ""}>
                 {tile}
@@ -399,8 +427,8 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
                   }
                 }}
                 // Clicking away used to leave `creatingNew` true forever —
-                // no blur handler meant the field just sat there focus-less
-                // (review: Sky.tsx:310). The rename input above already
+                // no blur handler meant the field just sat there focus-less.
+                // The rename input above already
                 // cancels the same way.
                 onBlur={() => {
                   setCreatingNew(false);

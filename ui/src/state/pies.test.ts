@@ -4,9 +4,12 @@ import {
   holdsPath,
   isUserPieId,
   pieFiles,
+  pickerPathPlan,
   subtractPending,
   toDerivedPie,
   uniqueName,
+  withPending,
+  withoutPending,
 } from "./pies";
 import type { Pie } from "../ipc";
 import type { DerivedPie } from "./derived-pies";
@@ -129,5 +132,67 @@ describe("isUserPieId", () => {
     expect(isUserPieId("builtin:pinned")).toBe(false);
     expect(isUserPieId("builtin:recent")).toBe(false);
     expect(isUserPieId("0199018c-fixture-uuid")).toBe(true);
+  });
+});
+
+describe("withPending / withoutPending", () => {
+  it("returns a new set rather than mutating the old one", () => {
+    const empty: ReadonlySet<string> = new Set<string>();
+    const one = withPending(empty, "a");
+    expect(empty.has("a")).toBe(false);
+    expect(one.has("a")).toBe(true);
+  });
+
+  it("keeps two overlapping deletes independent", () => {
+    // Both pies are mid-undo; clearing one must not un-hide the other.
+    let pending = withPending(withPending(new Set<string>(), "a"), "b");
+    expect([...pending].sort()).toEqual(["a", "b"]);
+    pending = withoutPending(pending, "a");
+    expect([...pending]).toEqual(["b"]);
+    expect(subtractPending([pie({ id: "a" }), pie({ id: "b" })], pending).map((p) => p.id)).toEqual([
+      "a",
+    ]);
+  });
+
+  it("removing an id that is not pending is a no-op", () => {
+    const pending = withPending(new Set<string>(), "a");
+    expect([...withoutPending(pending, "zzz")]).toEqual(["a"]);
+  });
+});
+
+describe("pickerPathPlan", () => {
+  const isRemote = (p: string) => p.startsWith("skypie-remote://");
+
+  it("refuses a pulled file — M2 has no remote pie members", () => {
+    const plan = pickerPathPlan("skypie-remote://node/x.md", true, isRemote);
+    expect(plan.action).toBe("refuse");
+    if (plan.action === "refuse") expect(plan.reason).toMatch(/pulled file/);
+  });
+
+  it("canonicalizes a local path when the command exists", () => {
+    expect(pickerPathPlan("/tmp/x.md", true, isRemote)).toEqual({
+      action: "canonicalize",
+      path: "/tmp/x.md",
+    });
+  });
+
+  it("opens uncanonicalized when the IPC surface has no canonicalizePath", () => {
+    expect(pickerPathPlan("/tmp/x.md", false, isRemote)).toEqual({
+      action: "open",
+      path: "/tmp/x.md",
+    });
+  });
+});
+
+describe("holdsPath is an exact compare", () => {
+  it("is false for a non-canonical form of a stored member", () => {
+    // The stored member is always canonical (/private/var/... on macOS);
+    // the /var form names the same file and must still answer false, which
+    // is exactly why `openPicker` canonicalizes before the picker renders.
+    const held = pie({
+      members: [{ kind: "file", path: "/private/var/tmp/a.md", added_at: 1 }],
+    });
+    expect(holdsPath(held, "/private/var/tmp/a.md")).toBe(true);
+    expect(holdsPath(held, "/var/tmp/a.md")).toBe(false);
   });
 });

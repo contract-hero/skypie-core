@@ -32,7 +32,7 @@ const CRUST = "#c89a5c";
  *  `...rest` (below) rather than allowlisted one at a time. `Tooltip.tsx`
  *  clones its child with `onMouseEnter`/`onMouseLeave`/`onFocus`/`onBlur`
  *  AND `aria-describedby`; an allowlist dropped whatever it had not been
- *  taught about, silently (review: Pie.tsx:199). `onFocus` is the one
+ *  taught about, silently. `onFocus` is the one
  *  omission: this component narrows it to a no-argument callback. */
 export interface PieProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "onFocus"> {
   pie: DerivedPie;
@@ -57,7 +57,7 @@ export interface PieProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElem
    *  the band's `role="listbox"` while the plate is open, which both
    *  breaks the listbox's a11y tree and gives M4's Finder-drop hit-test
    *  (which walks up to the nearest `[data-pie-id]`) two matches for one
-   *  id (review: PiePlate.tsx:205, Sky.tsx:138). */
+   *  id. */
   interactive?: boolean;
   /** M2: the kind whose wedge is cut 12 user-units along its bisector — the
    *  plate's active slice filter (`PiePlate.tsx`'s `filterKind`). `null`/
