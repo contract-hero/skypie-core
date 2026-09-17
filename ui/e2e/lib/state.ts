@@ -57,11 +57,16 @@ export interface OnDiskPies {
       id: string;
       name: string;
       seen_at?: number;
-      // `kind`/`source` are optional HERE, not in the document: m2/m3
-      // assert on `path` alone, m4 asserts a Finder drop stored the right
-      // kind and source. One widened shape beats a second near-identical
-      // interface per scenario.
-      members: { path: string; kind?: string; source?: string }[];
+      // `kind`/`source`/`origin` are optional HERE, not in the document:
+      // m2/m3 assert on `path` alone, m4 asserts a Finder drop stored the
+      // right kind and source, m5 asserts an agent add stored its origin.
+      // One widened shape beats a near-identical interface per scenario.
+      members: {
+        path: string;
+        kind?: string;
+        source?: string;
+        origin?: { session_id?: string; prompt_id?: string; cwd?: string };
+      }[];
     }[];
   };
 }

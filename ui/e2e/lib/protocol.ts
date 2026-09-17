@@ -20,12 +20,8 @@ export type Request =
       origin?: { session_id?: string; prompt_id?: string; cwd?: string };
     };
 
-/** The `Reply::AddedToPie` fields, flattened into the ok arm below. Optional
- *  there rather than a separate arm keyed on `kind`, because the generic ok
- *  arm already carries an open `kind: string` and TypeScript cannot narrow a
- *  literal against it — a caller checks `kind === "added_to_pie"` itself and
- *  then reads these. */
-interface AddedToPie {
+/** The `Reply::AddedToPie` fields, flattened into their own ok arm below. */
+export interface AddedToPie {
   pie: string;
   pie_id: string;
   path: string;
@@ -40,7 +36,15 @@ interface AddedToPie {
  *  a reply with no `status` at all pass the cast, and `evalIn` would then
  *  return `undefined` as a success. */
 export type Response =
-  | ({ status: "ok"; kind: string; value?: unknown } & Partial<AddedToPie>)
+  /** The `added_to_pie` reply, as its own arm with a LITERAL `kind`, placed
+   *  before the general one. `status === "ok" && kind === "added_to_pie"`
+   *  then narrows to the real fields, so a caller reads `created`/`added`
+   *  directly instead of as `| undefined`. The general arm's `kind` must
+   *  exclude that literal for the narrowing to eliminate it, which is why it
+   *  names the two reply kinds this harness actually receives rather than
+   *  an open `string`. */
+  | ({ status: "ok"; kind: "added_to_pie" } & AddedToPie)
+  | { status: "ok"; kind: "e2e_result" | "status"; value?: unknown }
   | { status: "err"; message: string };
 
 /** Accept only the two shapes above. A reply that is neither is the app

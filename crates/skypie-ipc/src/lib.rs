@@ -203,6 +203,73 @@ pub struct MemberOrigin {
     pub cwd: Option<String>,
 }
 
+/// Practical cap on ONE origin field. Provenance, not content: long enough
+/// for any real identifier, short enough that nothing can stuff a paragraph
+/// into a field the UI renders as a short tag.
+pub const MAX_ORIGIN_FIELD_LEN: usize = 128;
+
+/// Practical cap on a pie's name. More generous than an origin field because
+/// a pie's name IS rendered — the band tile's label and the plate's
+/// `aria-label` — so it needs room for an ordinary human sentence.
+pub const MAX_PIE_NAME_LEN: usize = 200;
+
+impl MemberOrigin {
+    /// Trim every field, drop an empty one to `None`, and refuse a control
+    /// character or an over-long value. Lives HERE, beside the type it
+    /// guards, because two sides need the identical rule: `skypie-mcp` cleans
+    /// what a model handed it, and the app cleans what reached `app.sock` —
+    /// the socket, not the MCP crate, is the trust boundary the app owns, so
+    /// a direct socket client gets the same hygiene.
+    ///
+    /// An over-long or control-bearing value is a hard `Err`, never a silent
+    /// truncation: a value cut short reads as though it round-tripped
+    /// correctly when it did not.
+    pub fn validated(self) -> Result<Self, String> {
+        Ok(Self {
+            session_id: validate_origin_field(self.session_id)?,
+            prompt_id: validate_origin_field(self.prompt_id)?,
+            cwd: validate_origin_field(self.cwd)?,
+        })
+    }
+}
+
+/// One origin field, cleaned. See `MemberOrigin::validated`.
+pub fn validate_origin_field(raw: Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = raw else { return Ok(None) };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err("origin field must not contain control characters".to_string());
+    }
+    if trimmed.chars().count() > MAX_ORIGIN_FIELD_LEN {
+        return Err(format!("origin field must be {MAX_ORIGIN_FIELD_LEN} characters or fewer"));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+/// Trim a pie name and refuse an empty, control-character-bearing, or
+/// over-long result. Shared for the same reason as the origin rule: the MCP
+/// client refuses a bad name before it dials the socket, and the app refuses
+/// one that arrived over the socket from anything else. Unlike an origin
+/// field, a pie's name is never invisible — it is the band tile's and the
+/// plate's accessible name — so an empty, multi-line or 5,000-character name
+/// directly breaks the UI a person looks at.
+pub fn validate_pie_name(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("pie name must not be empty".to_string());
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err("pie name must not contain control characters".to_string());
+    }
+    if trimmed.chars().count() > MAX_PIE_NAME_LEN {
+        return Err(format!("pie name must be {MAX_PIE_NAME_LEN} characters or fewer"));
+    }
+    Ok(trimmed.to_string())
+}
+
 // ── Replies ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -643,6 +710,48 @@ mod tests {
             r#"{"status":"ok","kind":"added_to_pie","pie":"Pricing","pie_id":"p1","path":"/tmp/a.html","members":1,"created":false,"added":true}"#
         );
         assert_eq!(round_trip(&added), added);
+    }
+
+    /// The origin rule lives here once, so both the MCP client and the app's
+    /// own socket dispatch enforce the identical thing.
+    #[test]
+    fn an_origin_field_is_trimmed_dropped_when_empty_and_refused_when_hostile() {
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(validate_origin_field(some("  sess-42  ")).unwrap().as_deref(), Some("sess-42"));
+        assert_eq!(validate_origin_field(None).unwrap(), None);
+        assert_eq!(validate_origin_field(some("")).unwrap(), None, "empty becomes absent");
+        assert_eq!(validate_origin_field(some("   ")).unwrap(), None, "whitespace-only too");
+        assert!(validate_origin_field(some("line1\nline2")).unwrap_err().contains("control"));
+        assert!(validate_origin_field(some("bell\x07")).unwrap_err().contains("control"));
+        let ok = "a".repeat(MAX_ORIGIN_FIELD_LEN);
+        assert_eq!(validate_origin_field(Some(ok.clone())).unwrap(), Some(ok));
+        let too_long = "a".repeat(MAX_ORIGIN_FIELD_LEN + 1);
+        assert!(validate_origin_field(Some(too_long))
+            .unwrap_err()
+            .contains(&MAX_ORIGIN_FIELD_LEN.to_string()));
+
+        let cleaned = MemberOrigin {
+            session_id: Some("  s1 ".into()),
+            prompt_id: Some("   ".into()),
+            cwd: Some("/work".into()),
+        }
+        .validated()
+        .unwrap();
+        assert_eq!(
+            cleaned,
+            MemberOrigin { session_id: some("s1"), prompt_id: None, cwd: some("/work") }
+        );
+        assert!(MemberOrigin { session_id: some("a\nb"), ..Default::default() }.validated().is_err());
+    }
+
+    #[test]
+    fn a_pie_name_is_trimmed_and_refused_when_empty_control_bearing_or_over_long() {
+        assert_eq!(validate_pie_name("  Pricing  ").unwrap(), "Pricing");
+        assert!(validate_pie_name("").unwrap_err().contains("empty"));
+        assert!(validate_pie_name("   ").unwrap_err().contains("empty"));
+        assert!(validate_pie_name("line1\nline2").unwrap_err().contains("control"));
+        let too_long = "x".repeat(MAX_PIE_NAME_LEN + 1);
+        assert!(validate_pie_name(&too_long).unwrap_err().contains(&MAX_PIE_NAME_LEN.to_string()));
     }
 
     #[cfg(any(feature = "e2e-hooks", debug_assertions))]

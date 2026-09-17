@@ -354,44 +354,30 @@ async fn dispatch(
         Request::Status => Ok(Reply::Status(crate::remote::status_for(&app).await)),
 
         // ── Agent reach (M5) ────────────────────────────────────────────
-        // Called SYNCHRONOUSLY, like `pair_confirm_for` above — `add_to_pie_for`
-        // does its own filesystem I/O (`fs::canonicalize`, `fs::metadata`)
-        // OUTSIDE the state lock (inside `pies::add_member`/`pies::canonicalize`
-        // themselves), so nothing here needs `spawn_blocking`.
+        // Called SYNCHRONOUSLY, like `pair_confirm_for` above — the
+        // filesystem I/O inside `add_to_pie_for` runs outside the state
+        // lock, so nothing here needs `spawn_blocking`.
         Request::AddToPie { pie, path, origin } => {
-            // Sanitize each origin field HERE, not just trust what a
-            // caller sent — `skypie-mcp::args::validate_origin_field`
-            // already does this for the `skypie-mcp` client, but the
-            // socket is the actual trust boundary the app owns, and any
-            // other client of it (this e2e harness included) must get the
-            // same hygiene (review: ipc_server.rs:222, minor). `pie` itself
-            // is trimmed/validated a few lines down, inside
-            // `add_to_pie_for` → `pies::find_or_create`.
-            let origin = origin
-                .map(|o| -> Result<crate::pies::PieMemberOrigin, String> {
-                    let field = |raw: Option<String>| match raw {
-                        Some(s) => crate::pies::validate_origin_field(&s),
-                        None => Ok(None),
-                    };
-                    Ok(crate::pies::PieMemberOrigin {
-                        session_id: field(o.session_id)?,
-                        prompt_id: field(o.prompt_id)?,
-                        cwd: field(o.cwd)?,
-                    })
-                })
-                .transpose()?;
+            // The socket, not the MCP crate, is the trust boundary this
+            // process owns: EVERY client of `app.sock` gets the origin
+            // hygiene, not just `skypie-mcp`. The rule itself lives in
+            // `skypie-ipc` (`MemberOrigin::validated`), behind this
+            // conversion. `pie` is validated further down, inside
+            // `pies::add_to_pie`.
+            let origin = origin.map(TryInto::try_into).transpose()?;
             // The RootSet is the one canonicalisation gate's state, held
             // by the app the same way every webview command receives it as
             // a `tauri::State`; the socket reads it from the handle.
             let roots = app.state::<crate::security::RootSet>();
-            let added = crate::app::add_to_pie_for(&app, &roots, &pie, &path, origin)?;
+            let (resolved, path, created, added) =
+                crate::app::add_to_pie_for(&app, &roots, &pie, &path, origin)?;
             Ok(Reply::AddedToPie {
-                pie: added.pie.name,
-                pie_id: added.pie.id,
-                path: added.path,
-                members: added.pie.members.len(),
-                created: added.created,
-                added: added.added,
+                members: resolved.members.len(),
+                pie: resolved.name,
+                pie_id: resolved.id,
+                path,
+                created,
+                added,
             })
         }
 

@@ -217,15 +217,11 @@ export default function PiePlate({
   // first paint. A ref frozen at mount is enough because Sky.tsx keys the
   // plate, so one instance never sees a different pie.
   //
-  // Falls back to `created_at` when `seen_at` is still 0 (a pie's first-
-  // ever open) instead of leaving the baseline at 0 — a bare `0` baseline
-  // paired with the `seenAtAtOpen > 0` guard below meant a file added on a
-  // brand-new pie's FIRST open could never carry the "new" dot, exactly
-  // the create -> open -> write flow the M5 brief's own acceptance
-  // checkpoint drives (review, PiePlate.tsx:256, major). `created_at` is
-  // itself a meaningful "nothing has been seen before this" baseline: a
-  // file older than the pie still stays unmarked, only a file written
-  // after the pie was minted (or after its last real open) counts as new.
+  // Falls back to `created_at` when `seen_at` is still 0, i.e. a pie's
+  // first-ever open. A 0 baseline paired with the `seenAtAtOpen > 0` guard
+  // below means no row can ever read "new" on that first open. `created_at`
+  // keeps the property that guard protects — a file older than the pie
+  // stays unmarked — while giving the first open a working baseline.
   const seenAtAtOpen = React.useRef(rawPie?.seen_at || rawPie?.created_at || 0).current;
 
   // Stamp seen_at on open (only meaningful for a persisted pie — a derived
@@ -981,34 +977,13 @@ export default function PiePlate({
           // `seen_at == 0` rule `freshCount` (derived-pies.ts) enforces for
           // the pill — and `freshCount` is the ONLY place that enforces it:
           // the census serves no freshness at all.
-          <React.Fragment>
+          <>
             <span className="start-row-new" data-testid="pie-row-new" aria-hidden />
-            {/* The dot itself is `aria-hidden` — a screen-reader user
-                reading this row otherwise hears only name/dir/mtime and is
-                never told it's the row the agent's add just produced, the
-                whole outcome M5 exists to surface (the band tile's own
-                `aria-label` folds its count in; this row had no
-                equivalent). Visually-hidden rather than a visible label so
-                the row's layout is unchanged for a sighted user — standard
-                clip-to-1px, not a new global class, since this codebase has
-                no existing `.sr-only` utility to reuse (review:
-                PiePlate.tsx:925, minor). */}
-            <span
-              style={{
-                position: "absolute",
-                width: 1,
-                height: 1,
-                padding: 0,
-                margin: -1,
-                overflow: "hidden",
-                clip: "rect(0, 0, 0, 0)",
-                whiteSpace: "nowrap",
-                border: 0,
-              }}
-            >
-              {" — new"}
-            </span>
-          </React.Fragment>
+            {/* The dot is `aria-hidden` and carries no text, so a screen
+                reader would otherwise never announce which row the agent's
+                add just produced. */}
+            <span className="sr-only">{" — new"}</span>
+          </>
         ) : null}
       </button>
     );

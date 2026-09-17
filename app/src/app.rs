@@ -200,12 +200,11 @@ fn remove_pie(app: tauri::AppHandle, id: String) -> Result<(), String> {
 /// 6), and only an UNRESOLVABLE path is refused. `_out_of_root` is bound
 /// rather than discarded because M3's census reads it.
 fn canonicalize_member_path(
-    path: &str,
+    path: &std::path::Path,
     roots: &crate::security::RootSet,
 ) -> Result<std::path::PathBuf, String> {
     let (canonical, _out_of_root) =
-        crate::security::canonicalize_allow_rootless(std::path::Path::new(path), roots)
-            .map_err(|e| e.to_string())?;
+        crate::security::canonicalize_allow_rootless(path, roots).map_err(|e| e.to_string())?;
     Ok(canonical)
 }
 
@@ -238,7 +237,7 @@ pub(crate) fn add_pie_member_for(
     path: &str,
     source: Option<crate::pies::PieMemberSource>,
 ) -> Result<(), String> {
-    let canonical = canonicalize_member_path(path, roots)?;
+    let canonical = canonicalize_member_path(std::path::Path::new(path), roots)?;
     crate::pies::add_member(id, &canonical, member_kind_of(&canonical), source, None)?;
     emit_pies(app);
     Ok(())
@@ -273,7 +272,7 @@ pub(crate) fn relocate_pie_member_for(
     old: &str,
     new: &str,
 ) -> Result<(), String> {
-    let canonical_new = canonicalize_member_path(new, roots)?;
+    let canonical_new = canonicalize_member_path(std::path::Path::new(new), roots)?;
     crate::pies::relocate_member(id, std::path::Path::new(old), &canonical_new)?;
     emit_pies(app);
     Ok(())
@@ -356,7 +355,7 @@ pub(crate) fn canonicalize_path_for(
     roots: &crate::security::RootSet,
     path: &str,
 ) -> Result<String, String> {
-    Ok(canonicalize_member_path(path, roots)?.to_string_lossy().into_owned())
+    Ok(canonicalize_member_path(std::path::Path::new(path), roots)?.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -367,103 +366,47 @@ fn canonicalize_path(
     canonicalize_path_for(&roots, &path)
 }
 
-/// What `add_to_pie_for` resolves to. `ipc_server.rs`'s `AddToPie` dispatch
-/// arm builds the wire `Reply::AddedToPie` straight from this — kept as its
-/// own small struct here (not `skypie_ipc::Reply` itself) because this
-/// module's pies commands already return their own result shapes throughout
-/// this file, and `Reply` is the wire crate's enum, not something `app.rs`
-/// should construct mid-pipeline.
-pub(crate) struct Added {
-    pub pie: crate::pies::Pie,
-    pub path: std::path::PathBuf,
-    pub created: bool,
-    pub added: bool,
-}
-
-/// M5 (agent reach): resolve `pie` — a name or an id, decision 1 of the M5
-/// brief — add `path` to it with `source: "agent"` and `origin`, and confirm
-/// the write actually landed before telling the caller it did. Lives HERE,
-/// not in `pies.rs` (the spec's literal placement): `pies.rs` has no `tauri`
-/// dependency and its `#[cfg(test)]` tests run without an `AppHandle`, and
-/// every other `…_for(&AppHandle, …)` plus every `app.emit` in this whole
-/// pies surface already lives in this file (see the block comment above
-/// `list_pies_for`) — `add_to_pie_for` is one more of those, not an
-/// exception. No new `#[tauri::command]`: this is reached only from the
-/// agent socket (`ipc_server.rs`), never invoked from the webview.
+/// M5 (agent reach): resolve `pie` — a name or an id — add `path` to it with
+/// `source: "agent"` and `origin`, and report what happened.
 ///
-/// `pie` resolution never asks the user to create the pie first: an exact
-/// `id` match wins, else a case-insensitive unique NAME match, else a new
-/// pie is minted with that name (`created: true`) — all inside ONE lock
-/// acquisition (`pies::find_or_create`), not a separate `find` followed by
-/// a separate `upsert`; see that function's own doc comment for why the
-/// two-call version is unsound under concurrent requests. Two existing
-/// pies sharing a case-insensitive name is `find_or_create`'s own `Err`,
-/// naming both ids so the caller (or the person reading the agent's
-/// message) can pick one by id instead.
+/// Lives HERE, not in `pies.rs`: `pies.rs` has no `tauri` dependency and its
+/// tests run without an `AppHandle`, while every other `…_for(&AppHandle, …)`
+/// and every `app.emit` in this pies surface already lives in this file. No
+/// `#[tauri::command]` — this is reached only from the agent socket.
 ///
-/// The path is resolved and stat'd BEFORE the pies document is touched at
-/// all, so a request for a path that does not exist never creates a pie for
-/// a write that was going to fail anyway — the canonicalisation gate itself
-/// already refuses a path that cannot be resolved.
+/// Two invariants. The path is resolved and stat'd BEFORE the pies document
+/// is touched, so a request for a path that does not exist never creates a
+/// pie for a write that was going to fail anyway. And the resolve-or-create
+/// and the member insert happen in ONE lock acquisition inside
+/// `pies::add_to_pie`, so neither a concurrent request for the same new name
+/// nor a concurrent delete can split them.
+///
+/// Returns the pie as it stands after the insert, the canonical path,
+/// whether the pie was created, and whether the member was newly added.
 pub(crate) fn add_to_pie_for(
     app: &tauri::AppHandle,
     roots: &crate::security::RootSet,
     pie: &str,
     path: &std::path::Path,
     origin: Option<crate::pies::PieMemberOrigin>,
-) -> Result<Added, String> {
+) -> Result<(crate::pies::Pie, std::path::PathBuf, bool, bool), String> {
     // The SAME single canonicalisation gate every webview command goes
     // through (`canonicalize_member_path`), not a second `fs::canonicalize`
     // of the socket's own — `security.rs` states there is exactly one gate
     // on this machine, and the socket is not an exception to it.
-    let canonical = canonicalize_member_path(&path.to_string_lossy(), roots)?;
+    let canonical = canonicalize_member_path(path, roots)?;
     let kind = member_kind_of(&canonical);
 
-    // `find_or_create`, not a separate `find` + `upsert` — see that
-    // function's doc comment (pies.rs) for why the two-call version races
-    // two concurrent `add_to_pie` requests naming the same not-yet-existing
-    // pie into minting two pies with that name (review, major, reported
-    // twice).
-    let (resolved, created) = crate::pies::find_or_create(pie)?;
-
-    // `add_member` reports whether IT inserted, read from inside the same
-    // lock acquisition as the write — not a snapshot taken before the call,
-    // which a second concurrent `add_to_pie` for the same path could race
-    // (review: app.rs:356, minor).
-    let inserted = crate::pies::add_member(
-        &resolved.id,
+    let (resolved, created, added) = crate::pies::add_to_pie(
+        pie,
         &canonical,
         kind,
         Some(crate::pies::PieMemberSource::Agent),
         origin,
     )?;
 
-    // LOAD-BEARING, not decorative: `mutate_doc` (pies.rs) silently leaves
-    // the on-disk document untouched when its `v` is unrecognised or it
-    // fails to parse, and `add_member` is a silent no-op for a pie id that
-    // no longer exists (a concurrent delete racing `find_or_create` above).
-    // Re-reading `pies::list()` and confirming the canonical path is
-    // actually a member is what turns either of those into a loud `Err`
-    // instead of the agent being told "added" for a write that never
-    // happened — see `mutate_doc`'s own doc comment (pies.rs) for the
-    // silent-failure class this closes.
-    let after = crate::pies::find(&resolved.id).ok_or_else(|| {
-        format!(
-            "add_to_pie: \"{}\" was removed while this request was in flight — nothing was written",
-            resolved.name
-        )
-    })?;
-    if !after.members.iter().any(|m| m.path == canonical) {
-        return Err(format!(
-            "add_to_pie: {} did not persist as a member of \"{}\" — the pies document on disk may \
-             be an unrecognised schema version",
-            canonical.display(),
-            after.name
-        ));
-    }
-
     emit_pies(app);
-    Ok(Added { pie: after, path: canonical, created, added: inserted })
+    Ok((resolved, canonical, created, added))
 }
 
 /// Start (or replace) the filesystem watcher rooted at `path`. Each successful
@@ -848,7 +791,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let roots = crate::security::RootSet::new(vec![dir.path().to_path_buf()]);
         let missing = dir.path().join("no-such-file.md");
-        let err = canonicalize_member_path(missing.to_str().unwrap(), &roots)
+        let err = canonicalize_member_path(&missing, &roots)
             .expect_err("an unresolvable path must be an error, not a silent add");
         assert!(!err.is_empty(), "the refusal has to say something");
     }

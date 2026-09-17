@@ -266,25 +266,19 @@ impl AppClient {
         session_id: Option<String>,
         prompt_id: Option<String>,
     ) -> Result<AddedToPie, String> {
-        let pie = pie.trim();
-        if pie.is_empty() {
-            return Err("pie must not be empty".to_string());
-        }
+        // The same two validators the APP runs on whatever reaches its
+        // socket, applied here so a bad argument is refused before this
+        // process even dials — a model-supplied identifier is free text, not
+        // a value to trust blindly.
+        let pie = skypie_ipc::validate_pie_name(pie)?;
         let path = args::resolve_arg_path(raw_path, &self.cwd, self.home.as_deref())?;
-        // Same hygiene `validate_origin_field` runs for both: trimmed, empty
-        // becomes absent, control characters refused, length capped — a
-        // model-supplied identifier is free text, not a value this process
-        // trusts blindly.
-        let session_id = session_id.as_deref().map(args::validate_origin_field).transpose()?.flatten();
-        let prompt_id = prompt_id.as_deref().map(args::validate_origin_field).transpose()?.flatten();
         let origin = skypie_ipc::MemberOrigin {
             session_id,
             prompt_id,
             cwd: Some(self.cwd.to_string_lossy().into_owned()),
-        };
-        match self
-            .call(Request::AddToPie { pie: pie.to_string(), path, origin: Some(origin) })
-            .await?
+        }
+        .validated()?;
+        match self.call(Request::AddToPie { pie, path, origin: Some(origin) }).await?
         {
             Reply::AddedToPie { pie, pie_id, path, members, created, added } => {
                 Ok(AddedToPie { pie, pie_id, path, members, created, added })

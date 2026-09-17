@@ -370,14 +370,13 @@ fn feedback_summary(feedback: &Feedback) -> String {
 
 /// The sentence `add_to_pie` returns.
 fn added_to_pie_summary(added: &AddedToPie) -> String {
-    let action = if added.created {
-        format!("Created \"{}\" and added {}", added.pie, added.path.display())
-    } else if added.added {
-        format!("Added {} to \"{}\"", added.path.display(), added.pie)
-    } else {
-        format!("{} was already a member of \"{}\" — nothing changed", added.path.display(), added.pie)
+    let (pie, path) = (&added.pie, added.path.display());
+    let action = match (added.created, added.added) {
+        (true, _) => format!("Created \"{pie}\" and added {path}"),
+        (false, true) => format!("Added {path} to \"{pie}\""),
+        (false, false) => format!("{path} was already a member of \"{pie}\" — nothing changed"),
     };
-    format!("{action}. \"{}\" now holds {} member(s).", added.pie, added.members)
+    format!("{action}. \"{pie}\" now holds {} member(s).", added.members)
 }
 
 /// The sentence `resolve_feedback` returns.

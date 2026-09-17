@@ -155,25 +155,19 @@ export default function Sky({
     itemRefs.current[i] = el;
   };
 
-  // Keep the roving index in range as pies (and the tin) come and go — and,
-  // critically, re-anchor it to wherever DOM focus ACTUALLY is rather than
-  // just clamping the OLD numeric value. A pie inserted ahead of the tin
-  // (e.g. the agent socket's `add_to_pie` minting a pie while the tin holds
-  // keyboard focus) shifts every slot at and after the insertion point
-  // without moving real DOM focus or unmounting the tin's own element —
-  // `Math.min(i, tinIndex)` alone never fires here (the index GREW, it did
-  // not need clamping down), so `focusedIndex` was left pointing at the
-  // tin's OLD numeric slot, which the newly-inserted pie now occupies,
-  // while the browser's actual focus stayed on the tin the whole time.
-  // `onKeyDown` below reads `focusedIndex`, not `document.activeElement`,
-  // so Enter/Delete would then act on the wrong option — opening/deleting
-  // the pie the agent just created instead of the tin's create-name input
-  // (review: Sky.tsx:143, major). `itemRefs.current` already reflects the
-  // POST-render mapping by the time this effect runs (ref callbacks commit
-  // before effects), so finding which entry equals the live
-  // `document.activeElement` recovers the right slot; only when nothing in
-  // the band actually holds DOM focus does this fall back to the old
-  // clamp.
+  // Keep the roving index in range as pies (and the tin) come and go — and
+  // re-anchor it to wherever DOM focus ACTUALLY is, rather than only clamping
+  // the old numeric value. A pie inserted ahead of the tin (the agent
+  // socket's `add_to_pie` minting one while the tin holds keyboard focus)
+  // shifts every slot at and after it without moving real DOM focus, so a
+  // clamp alone leaves `focusedIndex` pointing at the tin's OLD slot, now
+  // occupied by the new tile. `onKeyDown` reads `focusedIndex`, not
+  // `document.activeElement`, so Enter/Delete would act on the wrong option.
+  //
+  // `itemRefs.current` already holds the POST-render mapping when this effect
+  // runs (ref callbacks commit before effects), so the entry equal to the
+  // live `document.activeElement` is the right slot. Only when nothing in the
+  // band holds focus does this fall back to the clamp.
   React.useEffect(() => {
     const active = document.activeElement;
     const activeIndex = itemRefs.current.findIndex((el) => el !== null && el === active);
