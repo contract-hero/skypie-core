@@ -20,10 +20,13 @@ import type { IpcSurface } from "./ipc";
 import { useDeepLink } from "./hooks/useDeepLink";
 import type { OpenFilePayload, DeepLinkErrorPayload } from "./hooks/useDeepLink";
 import { useTheme } from "./hooks/useTheme";
+import { useTauriEvent } from "./hooks/useTauriEvent";
 import { useE2eBridge } from "./hooks/useE2eBridge";
 import { WorkspaceProvider, useWorkspace } from "./state/workspace";
 import { WatcherProvider } from "./state/watcher-bus";
 import { BookmarksProvider } from "./state/bookmarks-context";
+import { PiesProvider, usePiesContext } from "./state/pies-context";
+import type { NoticeFn } from "./state/pies-context";
 import { RecentsProvider } from "./state/recents-context";
 import { ScrollMemoryProvider } from "./state/scroll-memory";
 import { ExplorerUiProvider, useExplorerUi } from "./state/explorer-ui";
@@ -67,19 +70,42 @@ function clampSidebarPx(px: number): number {
   return Math.max(MIN_SIDEBAR_PX, Math.min(MAX_SIDEBAR_PX, px));
 }
 
-/** The transient notice toast (a rejected deep link, so far). Identical on
- *  both platforms — only where it mounts differs: over the phone shell, or
- *  inside the desktop preview column under the toolbar. */
+/** An optional inline action the notice offers besides dismissing — so far
+ *  only the Sky band's delete-pie undo (Sky.tsx), which is exactly why this
+ *  is a plain `{ label, onClick }` and not a whole notice CONTEXT: one
+ *  notice, one optional action, is all any caller needs yet. */
+export interface AppNoticeAction {
+  label: string;
+  onClick: () => void;
+}
+
+/** The transient notice toast (a rejected deep link, an undo offer).
+ *  Identical on both platforms — only where it mounts differs: over the
+ *  phone shell, or inside the desktop preview column under the toolbar. */
 function AppNotice({
   text,
+  action,
   onDismiss,
 }: {
   text: string;
+  action?: AppNoticeAction | null;
   onDismiss: () => void;
 }): React.ReactElement {
   return (
     <div className="app-notice" role="alert">
       <span className="app-notice-text">{text}</span>
+      {action ? (
+        <button
+          type="button"
+          className="app-notice-action"
+          onClick={() => {
+            action.onClick();
+            onDismiss();
+          }}
+        >
+          {action.label}
+        </button>
+      ) : null}
       <button
         type="button"
         className="app-notice-dismiss"
@@ -135,6 +161,24 @@ function E2eSeam(): null {
 
 function ProviderShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
   const { root } = useWorkspace();
+  // A callback bridge, not a notice context: `PiesProvider` must be an
+  // ANCESTOR of `AppShell` (AppShell itself reads `usePiesContext()` for
+  // ⌘D), but the notice toast's actual state lives inside AppShell —
+  // `AppNoticeAction`'s own doc comment is explicit that this codebase
+  // does not centralize notices in a context. AppShell points
+  // `noticeRef.current` at its `showNotice` in a layout effect; `PiesProvider`
+  // only ever calls `.current` from an async callback (a rejected
+  // `canonicalizePath`/`addPieMember`), always well after that render has
+  // committed, so there is no ordering hazard.
+  const noticeRef = React.useRef<NoticeFn>(() => {});
+  // Stable over the ref, so `PiesProvider`'s context `value` memo actually
+  // holds: a fresh arrow here was a new `onNotice` on every ProviderShell
+  // render, which rebuilt `openPicker`, which rebuilt the whole pies
+  // context value, which re-rendered every consumer.
+  const onNotice = React.useCallback<NoticeFn>(
+    (text, action, durationMs) => noticeRef.current(text, action, durationMs),
+    [],
+  );
   return (
     <WatcherProvider ipc={ipc} root={root}>
       <BookmarksProvider ipc={ipc}>
@@ -145,7 +189,9 @@ function ProviderShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
                 <ScrollMemoryProvider>
                   <ExplorerUiProvider>
                     <ContextMenuProvider>
-                      <AnnotatedShell ipc={ipc} />
+                      <PiesProvider ipc={ipc} onNotice={onNotice}>
+                        <AnnotatedShell ipc={ipc} noticeRef={noticeRef} />
+                      </PiesProvider>
                     </ContextMenuProvider>
                   </ExplorerUiProvider>
                 </ScrollMemoryProvider>
@@ -162,17 +208,29 @@ function ProviderShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
 // only exists inside TabsProvider — and the rail, the iOS sheet and the
 // sidebar badges must all read ONE subscription, so it wraps the shell rather
 // than living inside it.
-function AnnotatedShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
+function AnnotatedShell({
+  ipc,
+  noticeRef,
+}: {
+  ipc: IpcSurface;
+  noticeRef: React.MutableRefObject<NoticeFn>;
+}): React.ReactElement {
   const active = useActiveTab();
   const source = currentEntry(active)?.path ?? null;
   return (
     <AnnotationsProvider ipc={ipc} source={source}>
-      <AppShell ipc={ipc} />
+      <AppShell ipc={ipc} noticeRef={noticeRef} />
     </AnnotationsProvider>
   );
 }
 
-function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
+function AppShell({
+  ipc,
+  noticeRef,
+}: {
+  ipc: IpcSurface;
+  noticeRef: React.MutableRefObject<NoticeFn>;
+}): React.ReactElement {
   const { root, setRoot } = useWorkspace();
   const { isMacos } = usePlatform();
   const dispatch = useTabsDispatch();
@@ -180,6 +238,7 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
   const entry = currentEntry(active);
   const openFile = useOpenFile(ipc, root);
   const { reveal } = useExplorerUi();
+  const { openPicker } = usePiesContext();
 
   // Auto-reveal: keep the tree pointing at the active tab's file.
   const activePath = entry?.path ?? null;
@@ -200,7 +259,9 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
   const [refreshNonce, setRefreshNonce] = React.useState<number>(0);
   const [quickOpenVisible, setQuickOpenVisible] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
-  const [notice, setNotice] = React.useState<string | null>(null);
+  const [notice, setNotice] = React.useState<{ text: string; action?: AppNoticeAction | null } | null>(
+    null,
+  );
   // ── Comments ───────────────────────────────────────────────────────────
   // Two switches. "Show comments" (⇧⌘M) is a workspace posture: it stays
   // where the user left it across tabs, and reader mode hides the notes the
@@ -241,17 +302,38 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
   const addressBarRef = React.useRef<HTMLInputElement | null>(null);
   const noticeTimer = React.useRef<number | null>(null);
 
+  // The debounced state writer's last failure (`skypie://state-write-failed`,
+  // state_store.rs). PERSISTENT, not a timed toast: while it is up, nothing
+  // the user changes is reaching disk, and that stays true until they fix
+  // the cause. It is its own notice rather than a `showNotice` call so a
+  // 5-second undo toast cannot replace it.
+  const [writeFailure, setWriteFailure] = React.useState<string | null>(null);
+  useTauriEvent<string>("skypie://state-write-failed", setWriteFailure);
+  const dismissWriteFailure = React.useCallback(() => setWriteFailure(null), []);
+
   const dismissNotice = React.useCallback(() => {
     if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
     noticeTimer.current = null;
     setNotice(null);
   }, []);
 
-  const showNotice = React.useCallback((text: string) => {
-    setNotice(text);
-    if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
-    noticeTimer.current = window.setTimeout(() => setNotice(null), NOTICE_MS);
-  }, []);
+  const showNotice = React.useCallback(
+    (text: string, action?: AppNoticeAction, durationMs: number = NOTICE_MS) => {
+      setNotice({ text, action });
+      if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
+      noticeTimer.current = window.setTimeout(() => setNotice(null), durationMs);
+    },
+    [],
+  );
+  // Keep ProviderShell's bridge ref pointed at the LATEST showNotice — see
+  // its own doc comment for why this is a ref and not a context. In a layout
+  // effect, not in the render body: writing a ref while rendering is a side
+  // effect React is free to run twice (StrictMode) or throw away (an
+  // interrupted render), and the assignment commits before any paint, so
+  // nothing can read a stale `showNotice`.
+  React.useLayoutEffect(() => {
+    noticeRef.current = showNotice;
+  }, [noticeRef, showNotice]);
 
   // ── Persisted sidebar width ────────────────────────────────────────────
   React.useEffect(() => {
@@ -441,6 +523,9 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
       pickFile: handlePickFile,
       toggleQuickOpen: () => setQuickOpenVisible((v) => !v),
       copyDeviceLinkForActive,
+      addActiveFileToPie: () => {
+        if (entry?.path) openPicker(entry.path);
+      },
       toggleSidebar,
       toggleSky,
       toggleReaderMode,
@@ -579,7 +664,13 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
           onPickWorkspace={handlePickWorkspace}
           workspaceRoot={root}
         />
-        {notice ? <AppNotice text={notice} onDismiss={dismissNotice} /> : null}
+        {writeFailure ? (
+          <AppNotice
+            text={`Settings aren't being saved — ${writeFailure}. Changes made now may be lost.`}
+            onDismiss={dismissWriteFailure}
+          />
+        ) : null}
+        {notice ? <AppNotice text={notice.text} action={notice.action} onDismiss={dismissNotice} /> : null}
         {overlays}
       </div>
     );
@@ -642,8 +733,16 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
           {/* Reader mode already unmounts the Toolbar on the same condition
               (see the JSX above); the band follows it down for the same
               reason — the artifact stays the protagonist. */}
-          {skyVisible && !readerMode ? <Sky onOpenFile={openFile} /> : null}
-          {notice ? <AppNotice text={notice} onDismiss={dismissNotice} /> : null}
+          {skyVisible && !readerMode ? (
+            <Sky ipc={ipc} onOpenFile={openFile} onNotice={showNotice} />
+          ) : null}
+          {writeFailure ? (
+            <AppNotice
+              text={`Settings aren't being saved — ${writeFailure}. Changes made now may be lost.`}
+              onDismiss={dismissWriteFailure}
+            />
+          ) : null}
+          {notice ? <AppNotice text={notice.text} action={notice.action} onDismiss={dismissNotice} /> : null}
           <div
             ref={tabViewRef}
             className={"tab-view" + (commentTool && !isFrame ? " comment-tool-on" : "")}

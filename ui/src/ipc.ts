@@ -58,6 +58,63 @@ export interface BookmarkEntry {
   bookmarked_at: number;
 }
 
+// ── User pies (M2, spec section 9) ──────────────────────────────────────────
+// All timestamps here are MS epoch — `app/src/pies.rs` writes
+// `SystemTime::as_millis`. This is deliberately a different clock than
+// `RecentEntry`/`BookmarkEntry` above (seconds, `as_secs`): those are
+// unrelated persisted documents with their own established on-disk shape,
+// and `derived-pies.ts` converts them to ms at the UI boundary instead of
+// this store being "unified" onto their resolution.
+
+/** Where a member came from — the picker, a file-menu "Add to pie…", a
+ *  Finder drop (M4) or an agent over the socket (M5). Optional: M2 only
+ *  ever sends "picker" or "menu". */
+export type PieMemberSource = "picker" | "menu" | "finder" | "agent";
+
+export interface PieMemberOrigin {
+  session_id?: string;
+  prompt_id?: string;
+  cwd?: string;
+}
+
+export interface PieMember {
+  kind: "file" | "folder";
+  /** Absolute, canonical — `pies::add_member` runs `fs::canonicalize`
+   *  before storing, so this always matches the watcher's own paths. */
+  path: string;
+  added_at: number;
+  source?: PieMemberSource;
+  origin?: PieMemberOrigin;
+}
+
+export interface Pie {
+  id: string;
+  name: string;
+  created_at: number;
+  /** Set on every plate open (`touchPieSeen`); freshness (`mtime >
+   *  seen_at`, the +N pill) is M3. */
+  seen_at: number;
+  members: PieMember[];
+}
+
+/** The persisted `pies` document (`state.json`'s `"pies"` key). An unknown
+ *  `v` means an older build is reading a newer build's document: `list()`
+ *  then returns no pies and no write ever replaces the key (app/src/pies.rs). */
+export interface PiesDoc {
+  v: 1;
+  pies: Pie[];
+}
+
+/** What `listPies` and `skypie://pies-updated` carry: the pies, plus the
+ *  reason there are none when this build cannot read the document. An empty
+ *  `pies` array alone is ambiguous — "you have no pies" and "your pies are
+ *  on disk and unreadable by this build" looked identical in the band.
+ *  `usePies` raises `warning` as one notice (`pies::PiesList`). */
+export interface PiesList {
+  pies: Pie[];
+  warning?: string;
+}
+
 export interface SettingsState {
   schema_version: number;
   roots: string[];
@@ -258,6 +315,31 @@ export interface IpcSurface {
   addBookmark?(path: string): Promise<void>;
   removeBookmark?(path: string): Promise<void>;
   reorderBookmarks?(paths: string[]): Promise<void>;
+
+  /** User pies, in stored (band) order, plus a `warning` when the document
+   *  could not be read at all — see `PiesList`. */
+  listPies?(): Promise<PiesList>;
+  /** Create (`id` omitted) or rename (`id` given) a pie; resolves to the
+   *  resulting `Pie` so a fresh create's real (server-minted) id comes
+   *  back. */
+  upsertPie?(id: string | null, name: string): Promise<Pie>;
+  removePie?(id: string): Promise<void>;
+  /** Adds `path` to pie `id`. Rejects if `path` cannot be canonicalized
+   *  (i.e. does not exist), and also when `id` names no pie — a file added
+   *  to a pie another window just deleted is an error, not a silent drop. */
+  addPieMember?(id: string, path: string, kind: "file" | "folder", source?: PieMemberSource): Promise<void>;
+  removePieMember?(id: string, path: string): Promise<void>;
+  relocatePieMember?(id: string, oldPath: string, newPath: string): Promise<void>;
+  /** Stamp `seen_at` to now — called on every plate open for a user pie. */
+  touchPieSeen?(id: string): Promise<void>;
+  /** Resolves `path` to its canonical form (`std::fs::canonicalize`) —
+   *  called before comparing a caller-supplied path (a tab entry, a tree
+   *  row) against a pie's stored (always-canonical) members, e.g.
+   *  `PiePicker`'s checkmark. Runs the same canonicalisation gate the add
+   *  itself runs, and rejects the same way when the path cannot be
+   *  resolved. */
+  canonicalizePath?(path: string): Promise<string>;
+
   listFilesRecursive?(root: string): Promise<FileIndex>;
   /**
    * Replace the set of individually watched out-of-root files (open external
@@ -447,6 +529,43 @@ class TauriIpc implements IpcSurface {
 
   async reorderBookmarks(paths: string[]): Promise<void> {
     await invoke<void>("reorder_bookmarks", { paths });
+  }
+
+  async listPies(): Promise<PiesList> {
+    return await invoke<PiesList>("list_pies");
+  }
+
+  async upsertPie(id: string | null, name: string): Promise<Pie> {
+    return await invoke<Pie>("upsert_pie", { id, name });
+  }
+
+  async removePie(id: string): Promise<void> {
+    await invoke<void>("remove_pie", { id });
+  }
+
+  async addPieMember(
+    id: string,
+    path: string,
+    kind: "file" | "folder",
+    source?: PieMemberSource,
+  ): Promise<void> {
+    await invoke<void>("add_pie_member", { id, path, kind, source });
+  }
+
+  async removePieMember(id: string, path: string): Promise<void> {
+    await invoke<void>("remove_pie_member", { id, path });
+  }
+
+  async relocatePieMember(id: string, oldPath: string, newPath: string): Promise<void> {
+    await invoke<void>("relocate_pie_member", { id, old: oldPath, new: newPath });
+  }
+
+  async touchPieSeen(id: string): Promise<void> {
+    await invoke<void>("touch_pie_seen", { id });
+  }
+
+  async canonicalizePath(path: string): Promise<string> {
+    return await invoke<string>("canonicalize_path", { path });
   }
 
   async listFilesRecursive(root: string): Promise<FileIndex> {

@@ -283,9 +283,28 @@ pub fn save(state: &State) -> Result<(), String> {
     Ok(())
 }
 
-/// Update one field by key path; schedules a debounced disk write.
-/// Supports top-level keys ("roots") and dot-nested keys ("preferences.ignore_globs").
-pub fn set_state_field(key: &str, value: serde_json::Value) -> Result<(), String> {
+/// Update one field by key path under the ONE `GLOBAL_STATE` lock: read the
+/// current leaf, let `f` modify it in place, write it back — all inside a
+/// single critical section — then schedule the debounced disk write.
+///
+/// The pattern this replaces is the CALLER-side one still used by
+/// `bookmarks.rs`/`recents.rs`, which takes the lock TWICE: the caller locks
+/// and clones out a whole key (`bookmarks.rs::list_from_global`), unlocks,
+/// mutates ITS OWN clone, then calls `set_state_field`, which locks again to
+/// overwrite. (`set_state_field` itself was always one lock; the two
+/// acquisitions are one apiece, with the caller's edit in between.) Two concurrent
+/// callers doing that race a classic read-modify-write: both read the same
+/// starting array, both append to their own copy, and whichever write lands
+/// second silently discards the first's change. `pies.rs` needs a stronger
+/// guarantee than that — the UI's `touch_seen` on every plate open and, from
+/// M5, the socket thread both write the `pies` key, and neither may be able
+/// to drop the other's write — so every mutating op there goes through this
+/// instead. `bookmarks.rs`/`recents.rs` keep the old two-step path; they
+/// have no second writer yet, and switching them is out of scope here.
+pub fn update_state_field(
+    key: &str,
+    f: impl FnOnce(&mut serde_json::Value),
+) -> Result<(), String> {
     {
         let mut global = global_state().lock().unwrap_or_else(|p| p.into_inner());
         if !global.is_object() {
@@ -293,77 +312,119 @@ pub fn set_state_field(key: &str, value: serde_json::Value) -> Result<(), String
             let default_val = serde_json::to_value(&State::default()).unwrap_or_default();
             *global = default_val;
         }
-        set_nested_key(&mut global, key, value)?;
+        let leaf = get_or_insert_nested_mut(&mut global, key)?;
+        f(leaf);
     }
-
-    // Schedule debounced write.
-    {
-        let mut pending = pending_write().lock().unwrap_or_else(|p| p.into_inner());
-        let now = std::time::Instant::now();
-        let was_none = pending.is_none();
-        *pending = Some(now);
-        if was_none {
-            // Spawn a thread to flush after the debounce window.
-            let state_arc = Arc::clone(global_state());
-            let pending_arc = Arc::clone(pending_write());
-            let counter_arc = Arc::clone(write_counter_arc());
-            std::thread::spawn(move || {
-                loop {
-                    std::thread::sleep(Duration::from_millis(DEBOUNCE_MS));
-                    let mut pending_guard = pending_arc.lock().unwrap_or_else(|p| p.into_inner());
-                    if let Some(last) = *pending_guard {
-                        if last.elapsed() >= Duration::from_millis(DEBOUNCE_MS) {
-                            // Time to flush.
-                            *pending_guard = None;
-                            drop(pending_guard);
-                            let val = state_arc.lock().unwrap_or_else(|p| p.into_inner()).clone();
-                            do_write_value(&val, &counter_arc);
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-            });
-        }
-    }
-
+    schedule_debounced_write();
     Ok(())
 }
 
-fn set_nested_key(
-    val: &mut serde_json::Value,
+/// Update one field by key path (whole-value replace); schedules a debounced
+/// disk write. Supports top-level keys ("roots") and dot-nested keys
+/// ("preferences.ignore_globs"). Re-expressed on top of `update_state_field`
+/// so there is exactly one code path that walks/creates a nested key and
+/// schedules the write — this is just that path with a closure that ignores
+/// whatever was there before and drops in `value`.
+pub fn set_state_field(key: &str, value: serde_json::Value) -> Result<(), String> {
+    update_state_field(key, move |v| *v = value)
+}
+
+/// Mark a write pending and, if one isn't already counting down, spawn the
+/// thread that flushes after the `DEBOUNCE_MS` quiet window. Split out of
+/// the old `set_state_field` body so `update_state_field` and
+/// `set_state_field` both schedule through this one function.
+fn schedule_debounced_write() {
+    let mut pending = pending_write().lock().unwrap_or_else(|p| p.into_inner());
+    let now = std::time::Instant::now();
+    let was_none = pending.is_none();
+    *pending = Some(now);
+    if was_none {
+        // Spawn a thread to flush after the debounce window.
+        let state_arc = Arc::clone(global_state());
+        let pending_arc = Arc::clone(pending_write());
+        let counter_arc = Arc::clone(write_counter_arc());
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(DEBOUNCE_MS));
+                let mut pending_guard = pending_arc.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(last) = *pending_guard {
+                    if last.elapsed() >= Duration::from_millis(DEBOUNCE_MS) {
+                        // Time to flush.
+                        *pending_guard = None;
+                        drop(pending_guard);
+                        let val = state_arc.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                        do_write_value(&val, &counter_arc);
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        });
+    }
+}
+
+/// Walk (creating as needed) the dot-nested path `key` inside `val`, and
+/// return a mutable reference to the LEAF — the `set_nested_key` this
+/// replaces took a value to insert; this instead hands the caller (inside
+/// `update_state_field`) the existing leaf to read before deciding what to
+/// write. Intermediate segments become `Value::Object`; a leaf that doesn't
+/// exist yet is created as `Value::Null`, so a closure sees "nothing here
+/// yet" the same shape a freshly-loaded document missing the key would show.
+fn get_or_insert_nested_mut<'a>(
+    val: &'a mut serde_json::Value,
     key: &str,
-    value: serde_json::Value,
-) -> Result<(), String> {
+) -> Result<&'a mut serde_json::Value, String> {
     let parts: Vec<&str> = key.splitn(2, '.').collect();
     match parts.as_slice() {
         [top_key] => {
-            if let serde_json::Value::Object(map) = val {
-                map.insert(top_key.to_string(), value);
-                Ok(())
-            } else {
-                Err("global state is not an object".to_string())
-            }
+            let serde_json::Value::Object(map) = val else {
+                return Err("global state is not an object".to_string());
+            };
+            Ok(map.entry(top_key.to_string()).or_insert(serde_json::Value::Null))
         }
         [top_key, rest] => {
-            if let serde_json::Value::Object(map) = val {
-                let sub = map
-                    .entry(top_key.to_string())
-                    .or_insert_with(|| serde_json::Value::Object(Default::default()));
-                set_nested_key(sub, rest, value)
-            } else {
-                Err("global state is not an object".to_string())
-            }
+            let serde_json::Value::Object(map) = val else {
+                return Err("global state is not an object".to_string());
+            };
+            let sub = map
+                .entry(top_key.to_string())
+                .or_insert_with(|| serde_json::Value::Object(Default::default()));
+            get_or_insert_nested_mut(sub, rest)
         }
         _ => Err("empty key".to_string()),
+    }
+}
+
+/// Where a failed debounced write is reported, besides stderr.
+///
+/// The writer runs on a bare `std::thread` spawned by
+/// `schedule_debounced_write`, which holds no `tauri::AppHandle` and cannot
+/// get one — this module is deliberately free of Tauri. A sink registered
+/// once at startup (`lib.rs`) is the smallest thing that actually reaches
+/// the UI: it emits `skypie://state-write-failed`, and the App shows one
+/// persistent notice. `eprintln!` alone told nobody but a terminal, and
+/// pies is the first feature where EVERY user action is a state write.
+type WriteFailureSink = Box<dyn Fn(&str) + Send + Sync + 'static>;
+static WRITE_FAILURE_SINK: OnceLock<WriteFailureSink> = OnceLock::new();
+
+/// Register the sink. Idempotent by `OnceLock`: a second call is ignored,
+/// so a test or a second window cannot displace the app's own reporter.
+pub fn set_write_failure_sink(sink: impl Fn(&str) + Send + Sync + 'static) {
+    let _ = WRITE_FAILURE_SINK.set(Box::new(sink));
+}
+
+fn report_write_failure(message: String) {
+    eprintln!("skypie: {message}");
+    if let Some(sink) = WRITE_FAILURE_SINK.get() {
+        sink(&message);
     }
 }
 
 fn do_write_value(val: &serde_json::Value, counter: &AtomicU64) {
     let dir = state_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("skypie: cannot create state dir: {e}");
+        report_write_failure(format!("cannot create state dir: {e}"));
         return;
     }
     let path = state_path();
@@ -372,16 +433,16 @@ fn do_write_value(val: &serde_json::Value, counter: &AtomicU64) {
     let json = match serde_json::to_string_pretty(&on_disk) {
         Ok(j) => j,
         Err(e) => {
-            eprintln!("skypie: cannot serialize state: {e}");
+            report_write_failure(format!("cannot serialize state: {e}"));
             return;
         }
     };
     if let Err(e) = std::fs::write(&tmp_path, &json) {
-        eprintln!("skypie: cannot write state.json.tmp: {e}");
+        report_write_failure(format!("cannot write state.json.tmp: {e}"));
         return;
     }
     if let Err(e) = std::fs::rename(&tmp_path, &path) {
-        eprintln!("skypie: cannot rename state.json.tmp: {e}");
+        report_write_failure(format!("cannot rename state.json.tmp: {e}"));
         return;
     }
     counter.fetch_add(1, Ordering::SeqCst);
@@ -416,6 +477,70 @@ mod pane_sizes_tests {
         let json = serde_json::to_string(&hidden).unwrap();
         assert!(json.contains("\"sidebar_visible\":false"));
         assert_eq!(serde_json::from_str::<PaneSizes>(&json).unwrap(), hidden);
+    }
+}
+
+// These exercise `update_state_field` directly against the process-global
+// state (there's no injectable store to test against in isolation — see the
+// function's own doc comment), so, like bookmarks.rs's tests, they share
+// `ensure_shared_test_state_dir()` and run serially under their own lock.
+#[cfg(test)]
+mod update_state_field_tests {
+    use super::*;
+    use std::sync::{Barrier, Mutex, OnceLock};
+
+    fn guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ensure_shared_test_state_dir();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[test]
+    fn a_missing_key_is_created() {
+        let _g = guard();
+        *global_state().lock().unwrap_or_else(|p| p.into_inner()) = serde_json::json!({});
+        update_state_field("widgets.count", |v| *v = serde_json::json!(1)).unwrap();
+        assert_eq!(current_state_value()["widgets"]["count"], serde_json::json!(1));
+    }
+
+    /// The race `update_state_field` exists to close: two threads each
+    /// append ONE element to the same array through the function. Because
+    /// the whole read-modify-write happens under one lock acquisition per
+    /// call (not read-then-separately-write, the way
+    /// `bookmarks.rs::list_from_global()` + `set_state_field` do it), the
+    /// two calls can only ever interleave as "whole calls", never mid-way —
+    /// so this is a correctness property, not a race that merely usually
+    /// doesn't lose data. A `Barrier` maximizes the chance the two threads'
+    /// calls are actually in flight at the same wall-clock moment, which is
+    /// exactly the scenario the old two-lock pattern would drop one of.
+    #[test]
+    fn two_interleaved_writers_both_survive() {
+        let _g = guard();
+        *global_state().lock().unwrap_or_else(|p| p.into_inner()) =
+            serde_json::json!({ "widgets": { "list": [] } });
+
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|n| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    update_state_field("widgets.list", move |v| {
+                        v.as_array_mut()
+                            .expect("widgets.list is an array")
+                            .push(serde_json::json!(format!("item-{n}")));
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let list = current_state_value()["widgets"]["list"].clone();
+        let list = list.as_array().unwrap();
+        assert_eq!(list.len(), 2, "both appends must survive: {list:?}");
     }
 }
 

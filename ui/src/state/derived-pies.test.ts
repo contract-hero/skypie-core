@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { groupByWedge, pinnedPie, recentPie, wedgesOf, wedgesOfGroups } from "./derived-pies";
+import {
+  groupByWedge,
+  pinnedPie,
+  recentPie,
+  shareLabel,
+  wedgesOf,
+  wedgesOfGroups,
+} from "./derived-pies";
 import { BEARINGS } from "../render/kind";
 import type { BookmarkEntry, RecentEntry } from "../ipc";
 import type { DerivedPieFile } from "./derived-pies";
@@ -84,8 +91,7 @@ describe("wedgesOf", () => {
 
 // PiePlate's legend filter and the wedge tones both rely on this grouping —
 // only the e2e (m1.e2e.ts) exercised it before, which stays green even if
-// the merge loop drops a file or the "other" guard regresses (review:
-// derived-pies.ts:76).
+// the merge loop drops a file or the "other" guard regresses.
 describe("groupByWedge", () => {
   it("folds a haze-merged kind's files into the 'other' group", () => {
     const html: DerivedPieFile[] = Array.from({ length: 97 }, (_, i) => ({
@@ -138,5 +144,20 @@ describe("groupByWedge", () => {
   it("does not alias the same map instance across calls", () => {
     const files: DerivedPieFile[] = [{ path: "/a.html", kind: "html", mtime: 0 }];
     expect(groupByWedge(files)).not.toBe(groupByWedge(files));
+  });
+});
+
+describe("shareLabel", () => {
+  it("joins wedges as 'kind pct%' in BEARINGS order", () => {
+    const files: DerivedPieFile[] = [
+      { path: "/a.html", kind: "html", mtime: 0 },
+      { path: "/b.html", kind: "html", mtime: 0 },
+      { path: "/c.md", kind: "md", mtime: 0 },
+    ];
+    expect(shareLabel(files)).toBe("html 67% · md 33%");
+  });
+
+  it("reads 'No files' for an empty pie", () => {
+    expect(shareLabel([])).toBe("No files");
   });
 });

@@ -12,6 +12,7 @@ import {
   FilePlus2,
   Folder,
   Link2,
+  PieChart,
   Star,
   StarOff,
   Zap,
@@ -20,6 +21,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { MenuSection } from "../components/ContextMenu";
 import { tauriIpc } from "../ipc";
 import { useBookmarksContext } from "../state/bookmarks-context";
+import { usePiesContext } from "../state/pies-context";
 import { useBeamActions } from "../state/beam";
 import { usePlatform } from "../state/platform";
 import type { OpenFileOptions } from "../state/TabsProvider";
@@ -29,6 +31,7 @@ export function useFileMenu(
   onOpenFile?: (path: string, opts?: OpenFileOptions) => void,
 ): (path: string) => MenuSection[] {
   const { isBookmarked, toggle } = useBookmarksContext();
+  const { openPicker } = usePiesContext();
   const { beginSend } = useBeamActions();
   // Finder and sharing are macOS/desktop affordances — iOS is a read-only
   // companion that owns no files to reveal or re-share (PRODUCT.md,
@@ -44,6 +47,11 @@ export function useFileMenu(
             label: "Open in New Tab",
             icon: <FilePlus2 size={13} strokeWidth={2} />,
             onSelect: () => onOpenFile?.(path, { newTab: true, background: false }),
+          },
+          {
+            label: "Add to Pie…",
+            icon: <PieChart size={13} strokeWidth={2} />,
+            onSelect: () => openPicker(path),
           },
         ],
         [
@@ -91,6 +99,6 @@ export function useFileMenu(
         ],
       ];
     },
-    [isBookmarked, toggle, onOpenFile, isMacos, beginSend],
+    [isBookmarked, toggle, onOpenFile, isMacos, beginSend, openPicker],
   );
 }

@@ -17,6 +17,7 @@ const noopActions: AppBindingActions = {
   pickFile: () => {},
   toggleQuickOpen: () => {},
   copyDeviceLinkForActive: () => {},
+  addActiveFileToPie: () => {},
   toggleSidebar: () => {},
   toggleSky: () => {},
   toggleReaderMode: () => {},
@@ -77,7 +78,7 @@ describe("appBindings", () => {
   it("binds the workspace chords on macOS only", () => {
     const mac = combosFor({ isMacos: true, commentTool: false, readerMode: false });
     const phone = combosFor({ isMacos: false, commentTool: false, readerMode: false });
-    for (const combo of ["mod+o", "mod+p", "mod+shift+c"]) {
+    for (const combo of ["mod+o", "mod+p", "mod+shift+c", "mod+d"]) {
       expect(mac).toContain(combo);
       expect(phone).not.toContain(combo);
     }
@@ -99,5 +100,23 @@ describe("appBindings", () => {
       const withoutEscape = combos.filter((c) => c !== "escape");
       expect(new Set(withoutEscape).size, JSON.stringify(flags)).toBe(withoutEscape.length);
     }
+  });
+});
+
+describe("mod+d", () => {
+  it("invokes addActiveFileToPie and nothing else", () => {
+    // The pie picker's only keyboard entry point (spec section 2/6). A
+    // binding table edit that pointed ⌘D at a neighbouring action would
+    // otherwise still satisfy every coverage test above.
+    const fired: string[] = [];
+    const actions: AppBindingActions = Object.fromEntries(
+      Object.keys(noopActions).map((name) => [name, () => fired.push(name)]),
+    ) as unknown as AppBindingActions;
+    const binding = appBindings(actions, { isMacos: true, commentTool: false, readerMode: false }, 0.1).find(
+      (b) => b.combo === "mod+d",
+    );
+    expect(binding, "mod+d is bound on macOS").toBeDefined();
+    binding?.handler({ key: "d", code: "KeyD", metaKey: true, ctrlKey: false, shiftKey: false, altKey: false });
+    expect(fired).toEqual(["addActiveFileToPie"]);
   });
 });

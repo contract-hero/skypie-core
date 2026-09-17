@@ -17,9 +17,11 @@ import {
 import { useActiveTab, useTabsDispatch } from "../state/TabsProvider";
 import { canGoBack, canGoForward, currentEntry } from "../state/tabs";
 import { useBookmarksContext } from "../state/bookmarks-context";
+import { usePiesContext } from "../state/pies-context";
 import { useWorkspace } from "../state/workspace";
 import { useBeamActions } from "../state/beam";
 import { usePlatform } from "../state/platform";
+import { useContextMenu } from "./ContextMenu";
 import { BeamIndicator } from "./BeamDialog";
 import ShareMenu from "./ShareMenu";
 import { useRemoteActions } from "../state/remote";
@@ -60,6 +62,7 @@ function IconButton({
   pressed,
   testId,
   onClick,
+  onContextMenu,
   children,
 }: {
   title: string;
@@ -73,6 +76,8 @@ function IconButton({
   pressed?: boolean;
   testId?: string;
   onClick: () => void;
+  /** Optional right-click handler — the Sky tile opens a context menu. */
+  onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
   children: React.ReactNode;
 }): React.ReactElement {
   return (
@@ -85,6 +90,7 @@ function IconButton({
       data-testid={testId}
       disabled={disabled}
       onClick={onClick}
+      onContextMenu={onContextMenu}
     >
       {children}
     </button>
@@ -141,6 +147,8 @@ export default function Toolbar({
   const { receivedDir } = useBeamActions();
   const { deviceLabel } = useRemoteActions();
   const { isBookmarked, toggle } = useBookmarksContext();
+  const { openPicker } = usePiesContext();
+  const contextMenu = useContextMenu();
   // Sharing is a macOS/desktop affordance (PRODUCT.md: iOS is a read-only
   // companion that owns no files to hand off).
   const { isMacos } = usePlatform();
@@ -190,13 +198,24 @@ export default function Toolbar({
         <PanelLeft size={14.5} strokeWidth={2} />
       </IconButton>
 
-      {/* No right-click menu in M1 ("Add current file to pie…" is M2). */}
+      {/* Right-click opens "Add current file to pie…" (M2). */}
       <IconButton
         title="Sky (⌘⇧B)"
         label={skyVisible ? "Hide sky" : "Show sky"}
         pressed={skyVisible}
         testId="toolbar-sky-toggle"
         onClick={onToggleSky}
+        onContextMenu={(e) => {
+          if (!entry) return;
+          contextMenu.open(e, [
+            [
+              {
+                label: "Add current file to pie…",
+                onSelect: () => openPicker(entry.path),
+              },
+            ],
+          ]);
+        }}
       >
         <SkyGlyph />
       </IconButton>

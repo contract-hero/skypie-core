@@ -705,6 +705,24 @@ borrows more from the surface language than any other part of the product,
 so this section names every departure and the limit that keeps it from
 spreading.
 
+M2 adds the user's own pies to the same band, and they reuse the surface
+above rather than introducing a second one. The **tin** — the band's last
+slot, a dashed hairline circle labelled "New pie" — is the only new glyph,
+and it is hand-drawn for the same reason `FileGlyph` is: no icon set carries
+an "empty pie". Creating and **renaming** both happen in place, swapping the
+tile's label for a text input inside the same listbox option, so the band's
+roving focus and its option count never change shape mid-edit. **Delete**
+is optimistic with a 5-second undo offered through the app's one notice
+toast; nothing new is drawn for it. Each tile carries a **tooltip** after a
+400ms delay whose content is the share summary alone ("html 58% · md 25% ·
+code 17%") — the name is already the tile's visible label. The **picker**
+(⌘D, "Add to pie…") is a centred popover over a transparent backdrop, not a
+scrim: it is a one-shot action, and dimming the whole window for one click
+would read as a modal the product does not have. `--sky-focus` does one more
+job here than the bullet below states: it is also the 2px stroke on the cut
+wedge in the plate, so "the thing you chose" reads the same whether it is a
+focused tile or a cut slice.
+
 - **A gradient.** The top 32px of the band is a linear gradient from
   `{colors.bg-chrome}` into `--sky` — the one exception to "Don't add
   atmospheric gradients" (line 690). The limit is exactly those 32px: below
@@ -743,7 +761,7 @@ spreading.
 The plate's mono readout uses `{colors.fg-muted}`, not `{colors.fg-dim}`
 (line 674's "keep fg-dim off anything a user has to read"). Two labels in
 the plate are a scoped exception and do use `{colors.fg-dim}`:
-`.pie-plate-last-opened` and the layer rows' `.start-row-mtime`. Both are
+`.pie-plate-recency` and the layer rows' `.start-row-mtime`. Both are
 secondary timestamps beside the name they qualify, never the only text in
 their row, and the exception stops there — no other Sky band text takes
 `fg-dim`.

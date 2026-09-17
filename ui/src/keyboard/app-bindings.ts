@@ -34,6 +34,7 @@ export const IFRAME_DENIED: Record<string, string> = {
   "mod+shift+c": "mints a device link for the active tab onto the clipboard",
   "mod+shift+m": "toggles the comment overlay the artifact is being annotated in",
   "mod+shift+k": "picks up the comment tool, which changes what a click in the artifact means",
+  "mod+d": "opens the pie picker, a focus-stealing dialog \u2014 same rule as \u2318O/\u2318P (spec section 2/6); the Sky tile's own right-click covers the mouse path from inside a preview",
 };
 
 /** Everything App.tsx's bindings do, as one handler per action. Passing the
@@ -53,6 +54,9 @@ export interface AppBindingActions {
   pickFile: () => void;
   toggleQuickOpen: () => void;
   copyDeviceLinkForActive: () => void;
+  /** ⌘D: opens the pie picker on the active tab's file. A no-op when the
+   *  active tab holds no file. */
+  addActiveFileToPie: () => void;
   toggleSidebar: () => void;
   toggleSky: () => void;
   toggleReaderMode: () => void;
@@ -108,6 +112,11 @@ export function appBindings(
           // Never in IFRAME_FORWARDABLE: rendered content must not be able to
           // mint a link to itself onto the clipboard.
           { combo: "mod+shift+c", handler: () => a.copyDeviceLinkForActive() } satisfies Binding,
+          // ⌘D — the pie picker. Not forwarded from a preview iframe either
+          // (same owner decision as ⌘O/⌘P: it opens a dialog and steals
+          // focus — spec section 2/6). The tile's own right-click covers
+          // the mouse path from inside a preview.
+          { combo: "mod+d", allowInInput: true, handler: () => a.addActiveFileToPie() } satisfies Binding,
         ]
       : []),
     { combo: "mod+b", allowInInput: true, handler: () => a.toggleSidebar() },

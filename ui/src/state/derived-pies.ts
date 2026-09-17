@@ -10,6 +10,13 @@ import { BEARINGS, HAZE_THRESHOLD, kindOf } from "../render/kind";
 import type { FileKind } from "../render/kind";
 import { isRemoteAddress } from "../utils/remote-address";
 
+/** The two built-in pies' fixed ids. Exported because two other modules
+ *  (`pies.ts`'s `isUserPieId`, `PiePlate.tsx`'s Pinned wording) branch on
+ *  them — a bare `"builtin:pinned"` literal repeated per call site drifts
+ *  the moment one of them is renamed. */
+export const BUILTIN_PINNED_ID = "builtin:pinned";
+export const BUILTIN_RECENT_ID = "builtin:recent";
+
 export interface DerivedPieFile {
   path: string;
   kind: FileKind;
@@ -49,7 +56,7 @@ function isLocalFile(address: string): boolean {
 
 export function pinnedPie(bookmarks: BookmarkEntry[]): DerivedPie {
   return {
-    id: "builtin:pinned",
+    id: BUILTIN_PINNED_ID,
     name: "Pinned",
     files: bookmarks
       .filter((b) => isLocalFile(b.path))
@@ -63,7 +70,7 @@ export function pinnedPie(bookmarks: BookmarkEntry[]): DerivedPie {
 
 export function recentPie(recents: RecentEntry[]): DerivedPie {
   return {
-    id: "builtin:recent",
+    id: BUILTIN_RECENT_ID,
     name: "Recent",
     files: recents
       .filter((r) => isLocalFile(r.path))
@@ -133,4 +140,24 @@ export function wedgesOfGroups(groups: Map<FileKind, DerivedPieFile[]>): Wedge[]
     const count = groups.get(kind)?.length ?? 0;
     return { kind, count, share: count / total };
   });
+}
+
+/** `"html 58% · md 25% · code 17%"`, or `"No files"` — the hover tooltip's
+ *  content (spec section 3) and `Pie.tsx`'s own `aria-label` share, so both
+ *  read the same summary a pie's disc shows visually.
+ *
+ *  Takes WEDGES, not files: every caller that wants this label already has
+ *  the wedges memoized for the disc it is drawing, so grouping the same
+ *  files a second time just to build a string is pure waste. `shareLabel`
+ *  below stays for callers that hold only files.
+ */
+export function labelOfWedges(wedges: Wedge[]): string {
+  return wedges.length
+    ? wedges.map((w) => `${w.kind} ${Math.round(w.share * 100)}%`).join(" · ")
+    : "No files";
+}
+
+/** `labelOfWedges` for a caller that has files rather than wedges. */
+export function shareLabel(files: DerivedPieFile[]): string {
+  return labelOfWedges(wedgesOf(files));
 }

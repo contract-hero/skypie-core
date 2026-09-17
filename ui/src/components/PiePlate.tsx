@@ -2,25 +2,27 @@
 // the legend + layer list. Opened by Enter or a click on a Pie tile; closes
 // on Esc, an outside pointerdown, or window blur (spec section 4).
 //
-// M1 ships plain legend buttons and a flat layer listbox (role="listbox").
-// The radiogroup wedges, the 12px cut animation and the removable filter
-// chip are M2 — but the underlying FILTER still works here: clicking a
-// legend row narrows the layer list to that kind, because the M1 checkpoint
-// itself requires it ("click the HTML legend row; the layer list shows html
-// files newest first").
+// M2: the legend is a radiogroup sharing selection with the portrait pie's
+// own wedges (spec section 4, "Legend rows and wedge paths are the same
+// control"), Enter/click on a radio cuts that wedge 12px and shows the
+// filter chip, and — only for a USER pie — the layer rows' context menu
+// gains "Remove from pie" / "Add to another pie…".
 import * as React from "react";
-import { FileCode, FileText, FileImage, FileJson, File as FileIconGlyph, MessageSquare } from "lucide-react";
+import { FileCode, FileText, FileImage, FileJson, File as FileIconGlyph, MessageSquare, PieChart, XCircle } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Pie from "./Pie";
-import { groupByWedge, wedgesOfGroups } from "../state/derived-pies";
+import { BUILTIN_PINNED_ID, groupByWedge, wedgesOfGroups } from "../state/derived-pies";
 import type { DerivedPie, DerivedPieFile, Wedge } from "../state/derived-pies";
+import { isUserPieId } from "../state/pies";
 import type { FileKind } from "../render/kind";
 import { FileGlyph } from "./FileIcon";
 import { basename, displayDir } from "../utils/path";
+import { messageOf } from "../utils/error-message";
 import { formatAgo } from "../utils/beam-format";
 import { useEscape } from "../hooks/useEscape";
 import { useContextMenu } from "./ContextMenu";
 import { useFileMenu } from "../hooks/useFileMenu";
+import { usePiesContext } from "../state/pies-context";
 import { useWorkspace } from "../state/workspace";
 import { useAnnotations } from "../state/annotations-context";
 import { openOptsFromClick } from "../state/TabsProvider";
@@ -76,8 +78,8 @@ function usePaneShort(): boolean {
 
 /** `formatAgo` already returns the complete phrase "just now" for anything
  *  under 60s — appending " ago" unconditionally used to read "just now ago"
- *  for the normal case of a file opened or bookmarked in the last minute
- *  (review: PiePlate.tsx:229). One helper, both call sites below. */
+ *  for the normal case of a file opened or bookmarked in the last minute.
+ *  One helper, both call sites below. */
 export function mtimeAgo(mtimeMs: number): string {
   const ago = formatAgo(Math.floor(mtimeMs / 1000), Math.floor(Date.now() / 1000));
   return ago === "just now" ? ago : `${ago} ago`;
@@ -87,11 +89,15 @@ export function lastOpenedLabel(pie: DerivedPie): string {
   const { files } = pie;
   // Pinned's mtime is bookmarked_at (derived-pies.ts), i.e. when the file
   // was starred, not when it was opened — "Last opened" claimed something
-  // the data does not support (review: PiePlate.tsx:59).
-  const isPinned = pie.id === "builtin:pinned";
-  if (files.length === 0) return isPinned ? "Never pinned" : "Never opened";
+  // the data does not support. A user pie's
+  // `mtime` is `added_at` (pies.ts's `pieFiles` doc comment — there is no
+  // real file mtime without M3's census), i.e. when the file was ADDED to
+  // the pie, not when it changed — the same category of mislabel.
+  const isPinned = pie.id === BUILTIN_PINNED_ID;
+  const isUser = isUserPieId(pie.id);
+  if (files.length === 0) return isPinned ? "Never pinned" : isUser ? "No files added" : "Never opened";
   const newest = Math.max(...files.map((f) => f.mtime));
-  const verb = isPinned ? "Last pinned" : "Last opened";
+  const verb = isPinned ? "Last pinned" : isUser ? "Last added" : "Last opened";
   return `${verb} ${mtimeAgo(newest)}`;
 }
 
@@ -108,8 +114,7 @@ export function dominantWedge(wedges: Wedge[]): Wedge | null {
 /** The mono readout, e.g. `HTML · 60% · 9 files`. The count is the READOUT
  *  KIND's file count, not the pie's total — the spec's own example only
  *  works if 9 is the count behind the 60% (9/15, say); the pie total made
- *  the two figures disagree for any pie that is not 100% one kind (review:
- *  PiePlate.tsx:93). */
+ *  the two figures disagree for any pie that is not 100% one kind. */
 export function readoutLabel(wedge: Wedge | null): string {
   if (!wedge) return "No files";
   const files = `${wedge.count} file${wedge.count === 1 ? "" : "s"}`;
@@ -126,13 +131,41 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   const { root } = useWorkspace();
   const contextMenu = useContextMenu();
   const fileMenuFor = useFileMenu(onOpenFile);
+  const piesCtx = usePiesContext();
   const { openCountFor } = useAnnotations();
   const short = usePaneShort();
   const plateRef = React.useRef<HTMLDivElement | null>(null);
   const layerListRef = React.useRef<HTMLDivElement | null>(null);
+  const legendRefs = React.useRef<Partial<Record<FileKind, HTMLButtonElement | null>>>({});
 
   const [filterKind, setFilterKind] = React.useState<FileKind | null>(null);
+  // The radiogroup's own "cursor" (roving tabindex / aria-checked), distinct
+  // from `filterKind` — spec section 4: ←/→ "rotate the SELECTION by
+  // bearing", Enter/click then "toggles the FILTER". Arrowing to a kind
+  // must not itself cut the wedge; only Enter/click does. `null` here means
+  // "follow the readout kind" (below) until the user actually navigates.
+  const [focusedKindState, setFocusedKindState] = React.useState<FileKind | null>(null);
   const [focusedLayer, setFocusedLayer] = React.useState(0);
+
+  const isUserPie = isUserPieId(pie.id);
+
+  // Stamp seen_at on open (only meaningful for a persisted pie — a derived
+  // Pinned/Recent pie has no such field and `touchPieSeen` on an unknown id
+  // is a harmless no-op on the Rust side, but there is nothing to stamp for
+  // it, so this skips the call entirely rather than relying on that).
+  React.useEffect(() => {
+    if (isUserPie) {
+      // Nothing to show the user for a failed stamp — `seen_at` drives the
+      // M3 freshness pill, not anything on screen now — but a dropped
+      // rejection here would hide a store that refuses every write.
+      piesCtx.touchPieSeen(pie.id).catch((err: unknown) => {
+        console.warn("skypie: touchPieSeen failed", err);
+      });
+    }
+    // Only on open (mount) / when the plate switches to a different pie —
+    // not on every render, which would hammer the debounced writer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pie.id]);
 
   // One grouping pass per file list; the wedges are derived from it rather
   // than regrouping the same files a second time.
@@ -145,6 +178,19 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
     if (filterKind) return wedges.find((w) => w.kind === filterKind) ?? null;
     return dominantWedge(wedges);
   }, [filterKind, wedges]);
+  const readoutKind = filterKind ?? readoutWedge?.kind ?? null;
+  // The cursor can point at a kind that just disappeared from `wedges` —
+  // removing the last file of the focused kind through a layer row's
+  // "Remove from pie" left `focusedKindState` naming a kind with no radio
+  // at all, so `checked` was false for every row, every radio got
+  // `tabIndex={-1}`, and the radiogroup fell out of the tab order entirely
+  //. Validating the cursor HERE, at render, is
+  // the same correction without the extra state round trip an effect
+  // needed — the bad frame that effect had to repair never renders.
+  const focusedKind =
+    focusedKindState && wedges.some((w) => w.kind === focusedKindState)
+      ? focusedKindState
+      : readoutKind;
   const readout = React.useMemo(() => readoutLabel(readoutWedge), [readoutWedge]);
   const lastOpened = React.useMemo(() => lastOpenedLabel(pie), [pie]);
 
@@ -178,8 +224,7 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   // in the global registry would. Guarded the same way App.tsx's reader-mode
   // Esc binding is: an open context menu (a layer row's "Copy Path" /
   // "Bookmark" / ...) still owns Esc and closes itself on the same window
-  // event, so one keypress must not ALSO close the plate underneath it
-  // (review: PiePlate.tsx:108).
+  // event, so one keypress must not ALSO close the plate underneath it.
   useEscape(() => {
     if (document.querySelector(".context-menu")) return;
     onClose();
@@ -195,7 +240,7 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
       // ContextMenuProvider renders the row context menu at the app root,
       // outside plateRef — without this, a pointerdown on one of its own
       // items ("Copy Path", "Bookmark", ...) reads as an outside click and
-      // closes the plate the menu belongs to (review: PiePlate.tsx:115).
+      // closes the plate the menu belongs to.
       if (target instanceof Element && target.closest(".context-menu")) return;
       onClose();
     };
@@ -229,13 +274,24 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   // role="dialog" with no focus move, no aria-modal and no focus restore
   // meant a screen-reader user heard nothing open on Enter (the tile stayed
   // focused) and the layer list's own ↑/↓/Home/End did nothing until several
-  // Tabs landed inside (review: PiePlate.tsx:193). The plate does not trap
+  // Tabs landed inside. The plate does not trap
   // focus — Tab can still leave it — so aria-modal is explicitly "false"
   // rather than dropping role="dialog": that is what the attribute already
   // defaults to, made non-ambiguous here.
+  // Focusing the PLATE CONTAINER here used to leave real DOM focus stranded
+  // one level above every key handler that matters: `onLegendKeyDown` is
+  // bound on `.pie-legend`, `onLayerKeyDown` on `.pie-layers`, and a keydown
+  // whose target is the plate div reaches neither — ←/→ did nothing on
+  // open, until a Tab (or several) landed inside. Focus the CHECKED
+  // legend radio instead — `legendRefs` is already populated by the time
+  // this effect runs (refs attach during commit, before effects), so the
+  // radiogroup's own keydown handler is live from the very first keypress.
+  // Falls back to the plate container when there is no radio to focus (an
+  // empty pie).
   React.useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
-    plateRef.current?.focus();
+    const target = (focusedKind && legendRefs.current[focusedKind]) || plateRef.current;
+    target?.focus();
     return () => {
       // The tile that opened the plate can be gone by the time it closes (a
       // bookmark unpinned while it was open). Focus would then fall to
@@ -244,6 +300,10 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
       if (previouslyFocused?.isConnected) previouslyFocused.focus();
       else document.querySelector<HTMLElement>(".sky-band [data-pie-id]")?.focus();
     };
+    // Deliberately mount-only: this is the INITIAL focus target, not a
+    // resync on every readout change (which would steal focus back from
+    // wherever the user has since moved it, e.g. into the layer list).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Loose enough to accept either a mouse click or the Enter keydown that
@@ -258,6 +318,47 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
     // A plain click closes the plate; a ⌘-click (or middle-click) keeps it
     // open, the same convention openOptsFromClick already encodes elsewhere.
     if (!opts) onClose();
+  };
+
+  // Moves the radiogroup's cursor to `kind` and, for a real DOM focus move
+  // (not just the aria-checked flag), focuses the matching legend button —
+  // used by ←/→ navigation AND by a wedge click (Pie.tsx's `onWedgeClick`),
+  // which is how a mouse click on the PORTRAIT svg (aria-hidden, no radio
+  // of its own) still lands real keyboard focus on the right="radio" it is
+  // a pointer proxy for.
+  const focusRadio = (kind: FileKind) => {
+    setFocusedKindState(kind);
+    legendRefs.current[kind]?.focus();
+  };
+
+  // Enter, or a click on a legend row / wedge: move the cursor there AND
+  // toggle the cut (spec section 4: "Enter or click toggles the filter").
+  const activateRadio = (kind: FileKind) => {
+    focusRadio(kind);
+    setFilterKind((k) => (k === kind ? null : kind));
+  };
+
+  const onLegendKeyDown = (e: React.KeyboardEvent) => {
+    if (wedges.length === 0) return;
+    const kinds = wedges.map((w) => w.kind);
+    const current = focusedKind ? kinds.indexOf(focusedKind) : -1;
+    switch (e.key) {
+      case "ArrowRight":
+      case "ArrowLeft": {
+        e.preventDefault();
+        const delta = e.key === "ArrowRight" ? 1 : -1;
+        focusRadio(kinds[(current + delta + kinds.length) % kinds.length]);
+        break;
+      }
+      case "Enter":
+        e.preventDefault();
+        // Same path a click on the row takes, so keyboard and pointer
+        // cannot drift apart.
+        if (focusedKind) activateRadio(focusedKind);
+        break;
+      default:
+        break;
+    }
   };
 
   const onLayerKeyDown = (e: React.KeyboardEvent) => {
@@ -317,13 +418,42 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
       <div className="pie-plate-left">
         {/* A static portrait of the pie already open — non-interactive
             (Pie.tsx), so it is not a second role="option"/data-pie-id for
-            this pie inside the band's listbox. */}
-        <Pie pie={pie} size={short ? 120 : 200} interactive={false} />
+            this pie inside the band's listbox. Its wedge paths are still
+            pointer PROXIES for the radiogroup on the right (`onWedgeClick`)
+            — see the ARIA-ownership note on `onWedgeClick` in Pie.tsx. */}
+        <Pie
+          pie={pie}
+          // The plate already grouped these files for the legend and the
+          // layer filter; handing the wedges down stops the portrait from
+          // regrouping the very same list.
+          wedges={wedges}
+          size={short ? 120 : 200}
+          interactive={false}
+          cutKind={filterKind}
+          onWedgeClick={activateRadio}
+        />
         <div className="pie-plate-readout">{readout}</div>
-        <div className="pie-plate-last-opened">{lastOpened}</div>
+        <div className="pie-plate-recency">{lastOpened}</div>
       </div>
       <div className="pie-plate-right">
-        <div className="pie-legend" data-testid="pie-legend">
+        {/* role="radiogroup": the legend rows AND the portrait's wedge
+            paths (Pie.tsx) are one control (spec section 4). The wedges
+            can't literally BE the radios — they live in an aria-hidden svg
+            in the OTHER flex column, and ARIA ownership cannot span
+            `.pie-plate-left`/`.pie-plate-right` without `display: contents`
+            on an intervening element, which is not worth the WebKit
+            rendering risk for a cosmetic a11y-tree shortcut. A wedge click
+            instead calls `onWedgeClick`, which moves real focus AND
+            aria-checked onto the matching legend radio here — so a
+            keyboard/AT user drives the whole thing from this list, and a
+            mouse user can use either the wedge or the row. */}
+        <div
+          className="pie-legend"
+          role="radiogroup"
+          aria-label="File kinds"
+          data-testid="pie-legend"
+          onKeyDown={onLegendKeyDown}
+        >
           {wedges.length === 0 ? (
             <p className="pie-legend-empty">No files in this pie yet.</p>
           ) : (
@@ -332,15 +462,21 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
                 newest: Number.NEGATIVE_INFINITY,
                 openComments: 0,
               };
-              const active = filterKind === w.kind;
+              const cut = filterKind === w.kind;
+              const checked = focusedKind === w.kind;
               const KindIcon = KIND_ICON[w.kind];
               return (
                 <button
                   key={w.kind}
+                  ref={(el) => {
+                    legendRefs.current[w.kind] = el;
+                  }}
                   type="button"
-                  className={"pie-legend-row" + (active ? " active" : "")}
-                  aria-pressed={active}
-                  onClick={() => setFilterKind((k) => (k === w.kind ? null : w.kind))}
+                  role="radio"
+                  aria-checked={checked}
+                  tabIndex={checked ? 0 : -1}
+                  className={"pie-legend-row" + (cut ? " active" : "")}
+                  onClick={() => activateRadio(w.kind)}
                 >
                   <span className="pie-legend-glyph">
                     <KindIcon size={14} strokeWidth={1.75} aria-hidden />
@@ -364,11 +500,11 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
           // The filter's only documented ways out besides re-clicking the
           // same legend row (spec section 5): this chip, or Backspace while
           // the layer list has focus (onLayerKeyDown above). Neither shipped
-          // before, so nothing told the user how to leave the filtered view
-          // (review: PiePlate.tsx:223).
+          // before, so nothing told the user how to leave the filtered view.
           <button
             type="button"
             className="pie-slice-chip"
+            data-testid="pie-slice-chip"
             onClick={() => setFilterKind(null)}
             aria-label={`Clear the ${KIND_LABELS[filterKind]} filter`}
           >
@@ -400,13 +536,43 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
                 // React's onClick never fires for the middle button — the
                 // same .start-row shape in StartPage.tsx handles it this
                 // way, and spec section 5 gives middle-click the same
-                // background-tab-plate-stays behaviour as ⌘-click (review:
-                // PiePlate.tsx:257).
+                // background-tab-plate-stays behaviour as ⌘-click.
                 onAuxClick={(e) => {
                   if (e.button === 1) openRow(file, e);
                 }}
                 onContextMenu={(e) => {
-                  contextMenu.open(e, fileMenuFor(file.path));
+                  const sections = fileMenuFor(file.path);
+                  // Only a USER pie's own layer rows get these — a derived
+                  // Pinned/Recent pie has no "membership" to remove from
+                  // (Pinned is the bookmarks star; Recent is the recents
+                  // list), and both already have their own toggle in the
+                  // standard file menu above.
+                  if (isUserPie) {
+                    sections.push([
+                      {
+                        label: "Remove from pie",
+                        icon: <XCircle size={13} strokeWidth={2} />,
+                        // `removePieMember` removes the row optimistically
+                        // and rolls back on a refusal; without this catch
+                        // the rejection was dropped, so the row vanished,
+                        // the removal never landed, and the row came back
+                        // on the next unrelated event.
+                        onSelect: () => {
+                          piesCtx.removePieMember(pie.id, file.path).catch((err: unknown) => {
+                            piesCtx.notice?.(
+                              `Couldn't remove "${basename(file.path)}" — ${messageOf(err, "the member could not be removed")}`,
+                            );
+                          });
+                        },
+                      },
+                      {
+                        label: "Add to another pie…",
+                        icon: <PieChart size={13} strokeWidth={2} />,
+                        onSelect: () => piesCtx.openPicker(file.path),
+                      },
+                    ]);
+                  }
+                  contextMenu.open(e, sections);
                 }}
               >
                 <span className="start-row-icon">

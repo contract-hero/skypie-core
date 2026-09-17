@@ -118,6 +118,192 @@ fn reorder_bookmarks(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), St
     Ok(())
 }
 
+// ─── Pies IPC (M2) ─────────────────────────────────────────────────────────
+// Every op below is a thin `#[tauri::command]` over a `pub(crate)
+// …_for(&AppHandle, …)` function — the convention `remote.rs` follows
+// (its own doc comment: "because the local socket server drives the same
+// operations ... and must not grow a second implementation of any of
+// them"). M5 adds `add_to_pie` on the agent socket, which will call these
+// same `_for` functions directly rather than duplicate them — the ones that
+// take a `&RootSet` get it from `app.state::<crate::security::RootSet>()`,
+// the way `remote.rs::beam_offer_for` already does. Every write
+// emits the full list on `skypie://pies-updated`, exactly as `add_bookmark`
+// does for `skypie://bookmarks-updated`, so every `usePies()` subscriber —
+// the band, the picker, another window later — reconciles off one source.
+//
+// Rust command params stay single-word (`id`, `name`, `path`, `kind`),
+// matching every existing command in this file: Tauri's arg pipeline
+// converts a snake_case Rust param name to camelCase for the JS `invoke()`
+// call, and a single word has no case to convert.
+
+/// Broadcast the whole pies list on `skypie://pies-updated`. Every write op
+/// below ends with this call, so the six copies of the emit stay one line
+/// that cannot drift apart (a dropped emit leaves the band stale).
+fn emit_pies(app: &tauri::AppHandle) {
+    // A dropped emit leaves every band stale with no sign of it, so say so.
+    // Not an error the op should fail on: the write already landed.
+    if let Err(e) = app.emit("skypie://pies-updated", crate::pies::list()) {
+        eprintln!("skypie: pies: could not broadcast skypie://pies-updated: {e}");
+    }
+}
+
+pub(crate) fn list_pies_for(_app: &tauri::AppHandle) -> crate::pies::PiesList {
+    crate::pies::list()
+}
+
+/// The pies, plus the reason there are none when this build cannot read the
+/// document — see `pies::PiesList`. `usePies` raises the warning as one
+/// notice instead of showing an empty band with no explanation.
+#[tauri::command]
+fn list_pies(app: tauri::AppHandle) -> crate::pies::PiesList {
+    list_pies_for(&app)
+}
+
+pub(crate) fn upsert_pie_for(
+    app: &tauri::AppHandle,
+    id: Option<&str>,
+    name: &str,
+) -> Result<crate::pies::Pie, String> {
+    let pie = crate::pies::upsert(id, name)?;
+    emit_pies(app);
+    Ok(pie)
+}
+
+/// Create (`id` absent/null) or rename (`id` present) a pie. Returns the
+/// resulting `Pie` — the frontend needs the id a NEW pie was minted with,
+/// since `pies::upsert` (not the caller) chooses it.
+#[tauri::command]
+fn upsert_pie(
+    app: tauri::AppHandle,
+    id: Option<String>,
+    name: String,
+) -> Result<crate::pies::Pie, String> {
+    upsert_pie_for(&app, id.as_deref(), &name)
+}
+
+pub(crate) fn remove_pie_for(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    crate::pies::remove(id)?;
+    emit_pies(app);
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_pie(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    remove_pie_for(&app, &id)
+}
+
+/// Resolve one caller-supplied path through the single canonicalisation
+/// gate. `security.rs` states there is exactly ONE gate on this machine;
+/// `pies.rs` used to hold a second `fs::canonicalize` of its own, which the
+/// gate's own `canonicalize_allow_rootless` variant already covers — pie
+/// members may legitimately live outside the workspace root (spec section
+/// 6), and only an UNRESOLVABLE path is refused. `_out_of_root` is bound
+/// rather than discarded because M3's census reads it.
+fn canonicalize_member_path(
+    path: &str,
+    roots: &crate::security::RootSet,
+) -> Result<std::path::PathBuf, String> {
+    let (canonical, _out_of_root) =
+        crate::security::canonicalize_allow_rootless(std::path::Path::new(path), roots)
+            .map_err(|e| e.to_string())?;
+    Ok(canonical)
+}
+
+pub(crate) fn add_pie_member_for(
+    app: &tauri::AppHandle,
+    roots: &crate::security::RootSet,
+    id: &str,
+    path: &str,
+    kind: crate::pies::PieMemberKind,
+    source: Option<crate::pies::PieMemberSource>,
+) -> Result<(), String> {
+    let canonical = canonicalize_member_path(path, roots)?;
+    crate::pies::add_member(id, &canonical, kind, source)?;
+    emit_pies(app);
+    Ok(())
+}
+
+#[tauri::command]
+fn add_pie_member(
+    app: tauri::AppHandle,
+    roots: tauri::State<'_, crate::security::RootSet>,
+    id: String,
+    path: String,
+    kind: crate::pies::PieMemberKind,
+    source: Option<crate::pies::PieMemberSource>,
+) -> Result<(), String> {
+    add_pie_member_for(&app, &roots, &id, &path, kind, source)
+}
+
+pub(crate) fn remove_pie_member_for(app: &tauri::AppHandle, id: &str, path: &str) -> Result<(), String> {
+    crate::pies::remove_member(id, std::path::Path::new(path))?;
+    emit_pies(app);
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_pie_member(app: tauri::AppHandle, id: String, path: String) -> Result<(), String> {
+    remove_pie_member_for(&app, &id, &path)
+}
+
+pub(crate) fn relocate_pie_member_for(
+    app: &tauri::AppHandle,
+    roots: &crate::security::RootSet,
+    id: &str,
+    old: &str,
+    new: &str,
+) -> Result<(), String> {
+    let canonical_new = canonicalize_member_path(new, roots)?;
+    crate::pies::relocate_member(id, std::path::Path::new(old), &canonical_new)?;
+    emit_pies(app);
+    Ok(())
+}
+
+#[tauri::command]
+fn relocate_pie_member(
+    app: tauri::AppHandle,
+    roots: tauri::State<'_, crate::security::RootSet>,
+    id: String,
+    old: String,
+    new: String,
+) -> Result<(), String> {
+    relocate_pie_member_for(&app, &roots, &id, &old, &new)
+}
+
+pub(crate) fn touch_pie_seen_for(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    crate::pies::touch_seen(id)?;
+    emit_pies(app);
+    Ok(())
+}
+
+#[tauri::command]
+fn touch_pie_seen(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    touch_pie_seen_for(&app, &id)
+}
+
+/// Resolve `path` to its canonical form for the UI — used before comparing
+/// a caller-supplied path (a tab entry, a tree row, a deep link — none
+/// guaranteed canonical) against a pie's stored members, which the add path
+/// canonicalizes the same way. Runs the SAME gate
+/// (`canonicalize_member_path`) the add does, so the picker's check mark can
+/// never disagree with what an add would store. Errors when the path cannot
+/// be resolved, which `PiePicker` turns into a refusal notice rather than
+/// opening a picker with a check mark that can never match.
+pub(crate) fn canonicalize_path_for(
+    roots: &crate::security::RootSet,
+    path: &str,
+) -> Result<String, String> {
+    Ok(canonicalize_member_path(path, roots)?.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn canonicalize_path(
+    roots: tauri::State<'_, crate::security::RootSet>,
+    path: String,
+) -> Result<String, String> {
+    canonicalize_path_for(&roots, &path)
+}
+
 /// Start (or replace) the filesystem watcher rooted at `path`. Each successful
 /// call drops any previous watcher handle, which shuts down its entire
 /// pipeline (watcher, flush thread, raw-event thread, and the bridge thread
@@ -281,6 +467,14 @@ pub fn run(context: tauri::Context) {
             add_bookmark,
             remove_bookmark,
             reorder_bookmarks,
+            list_pies,
+            upsert_pie,
+            remove_pie,
+            add_pie_member,
+            remove_pie_member,
+            relocate_pie_member,
+            touch_pie_seen,
+            canonicalize_path,
             crate::share::share_file,
             crate::share::share_link,
             crate::remote::beam_offer,
@@ -312,6 +506,16 @@ pub fn run(context: tauri::Context) {
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();
+            // The debounced state writer runs on a bare thread with no
+            // AppHandle of its own (state_store.rs, `set_write_failure_sink`).
+            // Give it one emit closure so a failed write reaches the user
+            // instead of only stderr: every pies action is a state write.
+            {
+                let sink_handle = app_handle.clone();
+                crate::state_store::set_write_failure_sink(move |message| {
+                    let _ = sink_handle.emit("skypie://state-write-failed", message);
+                });
+            }
             // Lazy boot, launch half (design §4): sockets at startup only
             // when this install has peers AND `preferences.remote_listen`
             // is on. Otherwise the app still dials nothing until an action.
