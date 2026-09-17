@@ -90,7 +90,7 @@ Inside Claude Code, `/mcp` shows the server and its twelve tools.
 
 | Variable | Effect |
 |---|---|
-| `SKYPIE_MCP_ROOTS` | Colon-separated directories `beam_artifact` may publish files from. **This is a boundary**, not a hint: a path outside every root is refused before the app is asked. Defaults to the working directory Claude Code launched the server in. `share_link` is not gated by it — its links open only on the user's own paired devices. |
+| `SKYPIE_MCP_ROOTS` | Colon-separated directories `beam_artifact` may publish files from. **This is a boundary**, not a hint: a path outside every root is refused before the app is asked. Defaults to the working directory Claude Code launched the server in. `share_link` and `add_to_pie` are not gated by it — `share_link`'s links open only on the user's own paired devices, and `add_to_pie` never publishes bytes to anyone; it only stores a path reference in the user's own app. |
 | `SKYPIE_STATE_DIR` | The Sky Pie state directory, where the app's socket lives. Only for dev builds that run against a separate directory; the default is the app's own. |
 | `SKYPIE_APP_BUNDLE_ID` | The bundle id passed to `open -b` when the app has to be launched. Only for a dev build registered under another id. |
 
@@ -299,6 +299,13 @@ file in a dialog. Here the caller is a language model, and its arguments can be
 steered by text it merely read — a repository file, a fetched page, another
 tool's output. Narrowing `SKYPIE_MCP_ROOTS` narrows what such a caller can ever
 publish to a stranger.
+
+**`add_to_pie` is not gated by `SKYPIE_MCP_ROOTS` either, for a different
+reason than `share_link`.** It never sends a byte to anyone — it only writes
+a path reference into a pie the user already sees in their own toolbar, the
+same app-local record a Finder drag onto that pie would produce. There is no
+stranger it could publish to, so the roots gate (which exists to bound what
+a model-steered caller can offer to a THIRD PARTY) does not apply.
 
 **A link is revocable, not just expiring.** `stop_beam` drops the offer from
 the registry the request gate consults, so revocation takes effect on the next

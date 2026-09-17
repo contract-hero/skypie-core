@@ -220,11 +220,27 @@ async fn dispatch(app: tauri::AppHandle, req: Request) -> Result<Reply, String> 
         // OUTSIDE the state lock (inside `pies::add_member`/`pies::canonicalize`
         // themselves), so nothing here needs `spawn_blocking`.
         Request::AddToPie { pie, path, origin } => {
-            let origin = origin.map(|o| crate::pies::PieMemberOrigin {
-                session_id: o.session_id,
-                prompt_id: o.prompt_id,
-                cwd: o.cwd,
-            });
+            // Sanitize each origin field HERE, not just trust what a
+            // caller sent — `skypie-mcp::args::validate_origin_field`
+            // already does this for the `skypie-mcp` client, but the
+            // socket is the actual trust boundary the app owns, and any
+            // other client of it (this e2e harness included) must get the
+            // same hygiene (review: ipc_server.rs:222, minor). `pie` itself
+            // is trimmed/validated a few lines down, inside
+            // `add_to_pie_for` → `pies::find_or_create`.
+            let origin = origin
+                .map(|o| -> Result<crate::pies::PieMemberOrigin, String> {
+                    let field = |raw: Option<String>| match raw {
+                        Some(s) => crate::pies::validate_origin_field(&s),
+                        None => Ok(None),
+                    };
+                    Ok(crate::pies::PieMemberOrigin {
+                        session_id: field(o.session_id)?,
+                        prompt_id: field(o.prompt_id)?,
+                        cwd: field(o.cwd)?,
+                    })
+                })
+                .transpose()?;
             let added = crate::app::add_to_pie_for(&app, &pie, &path, origin)?;
             Ok(Reply::AddedToPie {
                 pie: added.pie.name,

@@ -138,9 +138,29 @@ export default function Sky({
     itemRefs.current[i] = el;
   };
 
-  // Keep the roving index in range as pies (and the tin) come and go.
+  // Keep the roving index in range as pies (and the tin) come and go — and,
+  // critically, re-anchor it to wherever DOM focus ACTUALLY is rather than
+  // just clamping the OLD numeric value. A pie inserted ahead of the tin
+  // (e.g. the agent socket's `add_to_pie` minting a pie while the tin holds
+  // keyboard focus) shifts every slot at and after the insertion point
+  // without moving real DOM focus or unmounting the tin's own element —
+  // `Math.min(i, tinIndex)` alone never fires here (the index GREW, it did
+  // not need clamping down), so `focusedIndex` was left pointing at the
+  // tin's OLD numeric slot, which the newly-inserted pie now occupies,
+  // while the browser's actual focus stayed on the tin the whole time.
+  // `onKeyDown` below reads `focusedIndex`, not `document.activeElement`,
+  // so Enter/Delete would then act on the wrong option — opening/deleting
+  // the pie the agent just created instead of the tin's create-name input
+  // (review: Sky.tsx:143, major). `itemRefs.current` already reflects the
+  // POST-render mapping by the time this effect runs (ref callbacks commit
+  // before effects), so finding which entry equals the live
+  // `document.activeElement` recovers the right slot; only when nothing in
+  // the band actually holds DOM focus does this fall back to the old
+  // clamp.
   React.useEffect(() => {
-    setFocusedIndex((i) => Math.min(i, tinIndex));
+    const active = document.activeElement;
+    const activeIndex = itemRefs.current.findIndex((el) => el !== null && el === active);
+    setFocusedIndex((i) => (activeIndex >= 0 ? activeIndex : Math.min(i, tinIndex)));
   }, [tinIndex]);
 
   // Drop the open plate if its pie disappeared from under it (a bookmark

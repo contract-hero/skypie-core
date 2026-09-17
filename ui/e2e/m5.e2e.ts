@@ -46,6 +46,28 @@ async function keyOnActiveElement(app: LaunchedApp, key: string): Promise<void> 
   if (!ok) throw new Error("keyOnActiveElement: document.activeElement is null");
 }
 
+/** `element.focus()` on the first match — real DOM focus, not just a click,
+ *  so the band's own roving-tabindex bookkeeping (`onFocus`) runs the same
+ *  way a Tab landing there would drive it. Copied from m2.e2e.ts's own
+ *  helper of the same name — this directory's convention, ui/e2e/README.md. */
+async function focusSelector(app: LaunchedApp, selector: string): Promise<void> {
+  const js = `(function(){
+    var el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return false;
+    el.focus();
+    return true;
+  })()`;
+  const ok = await evalIn(app, js);
+  if (!ok) throw new Error(`focusSelector: no element matches ${selector}`);
+}
+
+async function activeElementAttr(app: LaunchedApp, attr: string): Promise<string | null> {
+  return (await evalIn(
+    app,
+    `document.activeElement ? document.activeElement.getAttribute(${JSON.stringify(attr)}) : null`,
+  )) as string | null;
+}
+
 interface OnDiskMember {
   path: string;
   kind: string;
@@ -129,26 +151,15 @@ async function main(): Promise<void> {
     const tileSelector = `[data-pie-id=${JSON.stringify(pricingId)}]`;
     console.log(`ok: created "Pricing" (id ${pricingId})`);
 
-    // ── Establish a seen_at baseline BEFORE the file under test exists —
-    //    PiePlate.tsx freezes `seenAtAtOpen` at the moment the plate MOUNTS
-    //    (from whatever `pie.seen_at` already is at that first render), so
-    //    a pie's very FIRST-ever open freezes it to 0 (the newly-created
-    //    pie's `seen_at`) and the row's own "new" dot guard
-    //    (`seenAtAtOpen > 0 && mtime > seenAtAtOpen`) would never fire no
-    //    matter how fresh the file is. Opening once, waiting for the
-    //    resulting `touch_seen` to land, then closing and reopening is what
-    //    gives the LATER open a nonzero frozen baseline — the band pill
-    //    (live `freshCount`) doesn't need this, but the plate row's dot
-    //    does; both are checked below, and they read different values (M5
-    //    brief's own pitfall note). ─────────────────────────────────────
+    // ── Open the plate, once — the literal brief order: create "Pricing",
+    //    click the tile, then write + add. PiePlate.tsx freezes
+    //    `seenAtAtOpen` at mount from `rawPie.seen_at || rawPie.created_at`,
+    //    so a pie's very FIRST-ever open already has a nonzero baseline
+    //    (the pie's own `created_at`) — no open/close/reopen preamble is
+    //    needed to get a working "new" dot on checkpoint 4 below. ────────
     await click(app, tileSelector);
     await waitFor(app, `document.querySelector('[data-testid="pie-plate"]') !== null`, 10_000);
-    await waitForPersistedPies(stateDir, (d) => (d.pies?.find((p) => p.id === pricingId)?.seen_at ?? 0) > 0);
-    await keys(app, "escape");
-    await waitFor(app, `document.querySelector('[data-testid="pie-plate"]') === null`, 10_000);
-    await click(app, tileSelector);
-    await waitFor(app, `document.querySelector('[data-testid="pie-plate"]') !== null`, 10_000);
-    console.log("ok: established a nonzero seen_at baseline, then reopened the plate fresh");
+    console.log('ok: opened the "Pricing" plate');
 
     // ── Checkpoint 1: the plate is open, aria-label names the pie ─────────
     const ariaLabel = await evalIn(
@@ -186,6 +197,21 @@ async function main(): Promise<void> {
     }
     console.log(`ok: add_to_pie over app.sock replied ${JSON.stringify(added)}`);
 
+    // ── Checkpoint 2b: re-sending the IDENTICAL request is idempotent and
+    //     reports it — the brief's own "an existing member is left
+    //     untouched (report `added: false`)" outcome, otherwise unasserted
+    //     anywhere in this suite or in thin_client.rs (review, minor) ─────
+    const reAdded = await request(app.connect, {
+      op: "add_to_pie",
+      pie: "Pricing",
+      path: absNewFile,
+      origin: { session_id: "e2e-session", prompt_id: "e2e-prompt", cwd: root },
+    });
+    if (reAdded.status !== "ok" || reAdded.created !== false || reAdded.added !== false || reAdded.members !== 1) {
+      throw new Error(`expected an idempotent re-add (added: false, members: 1), got ${JSON.stringify(reAdded)}`);
+    }
+    console.log(`ok: re-adding the same path is idempotent, replied ${JSON.stringify(reAdded)}`);
+
     // ── Checkpoint 3: the plate is still open — the add did not close or
     //     remount it ──────────────────────────────────────────────────────
     const stillOpen = await evalIn(app, `document.querySelector('[data-testid="pie-plate"]') !== null`);
@@ -206,6 +232,19 @@ async function main(): Promise<void> {
     if (!firstRowIsNew) throw new Error("expected the first row to carry the new-file marker");
     console.log("ok: pricing-v3.html is the first row and carries the new-file marker, within 3s");
 
+    // The dot itself is `aria-hidden` — the row's accessible name (built
+    // from its own text content, no `aria-label`) must still carry a
+    // "new" marker a screen reader actually announces (review:
+    // PiePlate.tsx:925, minor).
+    const firstRowText = await evalIn(
+      app,
+      `document.querySelector('[data-testid="pie-layers"] .start-row')?.textContent ?? null`,
+    );
+    if (typeof firstRowText !== "string" || !firstRowText.trim().endsWith("— new")) {
+      throw new Error(`expected the new row's accessible text to end with "— new", got ${JSON.stringify(firstRowText)}`);
+    }
+    console.log("ok: the new row's accessible name (text content) ends with \"— new\"");
+
     // ── Checkpoint 5: the band pill reads +1 ────────────────────────────────
     await waitFor(
       app,
@@ -213,6 +252,20 @@ async function main(): Promise<void> {
       5_000,
     );
     console.log("ok: the band pill reads +1");
+
+    // The pill itself is `aria-hidden` by design (Pie.tsx) — the only
+    // accessible signal of the same outcome is the tile's own `aria-label`,
+    // which folds the count in. Assistive tech never reads the pill, so
+    // this is the assertion that actually matters for a screen-reader user
+    // (review: m5.e2e.ts:210, minor).
+    const tileAriaLabel = await evalIn(
+      app,
+      `document.querySelector('[data-pie-id=${JSON.stringify(pricingId)}]').getAttribute("aria-label")`,
+    );
+    if (typeof tileAriaLabel !== "string" || !tileAriaLabel.endsWith("— 1 new file")) {
+      throw new Error(`expected the tile's aria-label to end with "— 1 new file", got ${JSON.stringify(tileAriaLabel)}`);
+    }
+    console.log(`ok: the tile's aria-label reports the new file too: ${JSON.stringify(tileAriaLabel)}`);
 
     // ── Checkpoint 6: state.json converges to one agent member with a
     //     canonical path and the origin we sent ────────────────────────────
@@ -238,7 +291,14 @@ async function main(): Promise<void> {
     //     `add_member_and_touch_seen_interleave_without_losing_either_write`
     //     proves at the Rust level, exercised here through the real running
     //     app's IPC dispatch) ────────────────────────────────────────────
-    const priorSeenAt = readStateJson(stateDir)?.pies?.pies?.find((p) => p.id === pricingId)?.seen_at ?? 0;
+    // Reuses `persisted` from checkpoint 6 (already a SETTLED read, pinned
+    // by `waitForPersistedPies`'s own predicate) rather than a fresh
+    // `readStateJson` here — a fresh read races the debounced writer with
+    // no predicate to wait on, so it could still catch the FIRST open's
+    // `touch_seen` before it flushes and hand back a stale baseline that
+    // the "no write lost" assertion below would then satisfy for free
+    // (review, m5.e2e.ts:241, minor).
+    const priorSeenAt = persisted.pies?.find((p) => p.id === pricingId)?.seen_at ?? 0;
     // A same-id click while the plate is ALREADY open is a no-op in
     // Sky.tsx (`setOpenPieId` to the value it already holds never remounts
     // `PiePlate`, so its mount effect's `touch_seen` never refires) — close
@@ -306,6 +366,72 @@ async function main(): Promise<void> {
       throw new Error(`expected the pie count to stay ${countBeforeMissing}, got ${countAfterMissing}`);
     }
     console.log(`ok: a missing path answered status:"err" naming the path, and the pie count stayed ${countBeforeMissing}`);
+
+    // ── Checkpoint 9b: a missing path with an UNKNOWN pie name still errors
+    //     and leaves no orphan pie behind — checkpoint 9 above only ever
+    //     named an EXISTING pie ("Pricing"), so it could not tell whether
+    //     `add_to_pie_for` really stats the path BEFORE touching the pies
+    //     document (app.rs: `canonicalize` runs ahead of `find_or_create`)
+    //     or would leave a pie named "Orphan Pie" behind for a path that
+    //     was never written (review: m5.e2e.ts:296, minor) ─────────────────
+    const countBeforeOrphan = await pieCount(app);
+    const orphanReply = await request(app.connect, { op: "add_to_pie", pie: "Orphan Pie", path: missingPath });
+    if (orphanReply.status !== "err" || typeof orphanReply.message !== "string" || !orphanReply.message.includes(missingPath)) {
+      throw new Error(`expected an err naming ${missingPath}, got ${JSON.stringify(orphanReply)}`);
+    }
+    const countAfterOrphan = await pieCount(app);
+    if (countAfterOrphan !== countBeforeOrphan) {
+      throw new Error(`expected the pie count to stay ${countBeforeOrphan}, got ${countAfterOrphan}`);
+    }
+    const orphanTileExists = await evalIn(
+      app,
+      `Array.from(document.querySelectorAll(".sky-pies .sky-pie-label")).some(function(el){ return el.textContent === "Orphan Pie"; })`,
+    );
+    if (orphanTileExists) throw new Error('expected no "Orphan Pie" tile to appear for a path that was never written');
+    console.log(`ok: a missing path with an unknown pie name left no orphan pie behind (count stayed ${countBeforeOrphan})`);
+
+    // ── Checkpoint 10: an `add_to_pie` that mints a pie while the tin holds
+    //     keyboard focus must not desync the band's roving tabindex from
+    //     real DOM focus — the exact review scenario: focus the tin (End),
+    //     let a socket add insert a pie ahead of it, then confirm exactly
+    //     ONE option is both `tabindex="0"` and the live
+    //     `document.activeElement`, and that it is STILL the tin (review:
+    //     Sky.tsx:143, major) ───────────────────────────────────────────
+    await focusSelector(app, tileSelector);
+    await keyOnActiveElement(app, "End");
+    let activeTestId = await activeElementAttr(app, "data-testid");
+    if (activeTestId !== "sky-new-pie") {
+      throw new Error(`End: expected DOM focus on the tin, got ${JSON.stringify(activeTestId)}`);
+    }
+    const raceFile = path.join(root, "race-note.txt");
+    fs.writeFileSync(raceFile, "a racing note\n");
+    const absRaceFile = fs.realpathSync(raceFile);
+    const priorTileCount = await pieCount(app);
+    const raceReply = await request(app.connect, { op: "add_to_pie", pie: "Race Pie", path: absRaceFile });
+    if (raceReply.status !== "ok" || raceReply.created !== true) {
+      throw new Error(`expected a freshly-created pie, got ${JSON.stringify(raceReply)}`);
+    }
+    await waitFor(app, `document.querySelectorAll('.sky-pies [data-pie-id]').length === ${priorTileCount + 1}`, 10_000);
+    const tabbableCount = await evalIn(
+      app,
+      `document.querySelectorAll('.sky-band [role="option"][tabindex="0"]').length`,
+    );
+    if (tabbableCount !== 1) {
+      throw new Error(`expected exactly one roving-tabindex option, found ${tabbableCount}`);
+    }
+    activeTestId = await activeElementAttr(app, "data-testid");
+    const activeIsSoleTabbable = await evalIn(
+      app,
+      `document.activeElement === document.querySelector('.sky-band [role="option"][tabindex="0"]')`,
+    );
+    if (!activeIsSoleTabbable || activeTestId !== "sky-new-pie") {
+      throw new Error(
+        `expected DOM focus to stay on the tin after the race-y insert, got activeTestId=${JSON.stringify(
+          activeTestId,
+        )} activeIsSoleTabbable=${JSON.stringify(activeIsSoleTabbable)}`,
+      );
+    }
+    console.log("ok: an add_to_pie that inserts a pie while the tin is focused does not desync the roving tabindex");
 
     console.log("PASS");
   } finally {

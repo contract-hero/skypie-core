@@ -17,7 +17,9 @@ over a local Unix socket; nothing is uploaded anywhere.
 pulled peer-to-peer straight from this Mac. `beam_artifact` makes a link
 anyone can fetch. `list_feedback` and `resolve_feedback` are the other
 direction: the comments the user left on an artifact, and the way to mark one
-addressed. Plus `list_devices`, `pair_device`, `pair_status`,
+addressed. `add_to_pie` collects a file the agent just wrote — call it right
+after finishing an artifact the user asked for, naming the pie for that
+project. Plus `list_devices`, `pair_device`, `pair_status`,
 `confirm_pairing`, `forget_device`, `stop_beam`, `server_status`.
 
 **Hooks.** After a `Read` or a `Write`, any open comments on that file are

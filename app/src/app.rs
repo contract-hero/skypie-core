@@ -324,10 +324,13 @@ pub(crate) struct Added {
 ///
 /// `pie` resolution never asks the user to create the pie first: an exact
 /// `id` match wins, else a case-insensitive unique NAME match, else a new
-/// pie is minted with that name (`created: true`). Two existing pies
-/// sharing a case-insensitive name is `pies::find`'s own `Err`, naming both
-/// ids so the caller (or the person reading the agent's message) can pick
-/// one by id instead.
+/// pie is minted with that name (`created: true`) — all inside ONE lock
+/// acquisition (`pies::find_or_create`), not a separate `find` followed by
+/// a separate `upsert`; see that function's own doc comment for why the
+/// two-call version is unsound under concurrent requests. Two existing
+/// pies sharing a case-insensitive name is `find_or_create`'s own `Err`,
+/// naming both ids so the caller (or the person reading the agent's
+/// message) can pick one by id instead.
 ///
 /// The path is resolved and stat'd BEFORE the pies document is touched at
 /// all, so a request for a path that does not exist never creates a pie for
@@ -349,18 +352,23 @@ pub(crate) fn add_to_pie_for(
         crate::pies::PieMemberKind::File
     };
 
-    let (resolved, created) = match crate::pies::find(pie)? {
-        Some(existing) => (existing, false),
-        None => (crate::pies::upsert(None, pie)?, true),
-    };
-    let already_member = resolved.members.iter().any(|m| m.path == canonical);
+    // `find_or_create`, not a separate `find` + `upsert` — see that
+    // function's doc comment (pies.rs) for why the two-call version races
+    // two concurrent `add_to_pie` requests naming the same not-yet-existing
+    // pie into minting two pies with that name (review, major, reported
+    // twice).
+    let (resolved, created) = crate::pies::find_or_create(pie)?;
 
-    crate::pies::add_member(&resolved.id, path, kind, Some("agent"), origin)?;
+    // `add_member` reports whether IT inserted, read from inside the same
+    // lock acquisition as the write — not a snapshot taken before the call,
+    // which a second concurrent `add_to_pie` for the same path could race
+    // (review: app.rs:356, minor).
+    let inserted = crate::pies::add_member(&resolved.id, path, kind, Some("agent"), origin)?;
 
     // LOAD-BEARING, not decorative: `mutate_doc` (pies.rs) silently leaves
     // the on-disk document untouched when its `v` is unrecognised or it
     // fails to parse, and `add_member` is a silent no-op for a pie id that
-    // no longer exists (a concurrent delete racing `find`/`upsert` above).
+    // no longer exists (a concurrent delete racing `find_or_create` above).
     // Re-reading `pies::list()` and confirming the canonical path is
     // actually a member is what turns either of those into a loud `Err`
     // instead of the agent being told "added" for a write that never
@@ -382,7 +390,7 @@ pub(crate) fn add_to_pie_for(
     }
 
     let _ = app.emit("skypie://pies-updated", crate::pies::list());
-    Ok(Added { pie: after, path: canonical, created, added: !already_member })
+    Ok(Added { pie: after, path: canonical, created, added: inserted })
 }
 
 /// Start (or replace) the filesystem watcher rooted at `path`. Each successful
