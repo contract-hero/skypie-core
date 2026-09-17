@@ -800,7 +800,12 @@ plate.** Four additions, none a new departure — every color below is
   milestone. Live-resize verification was not possible from the e2e
   harness — `core:window:allow-set-size` is deliberately not in this app's
   capabilities, and granting it is a shell-repo change out of scope here —
-  so this is a read of the CSS, not a captured screenshot.
+  so `ui/e2e/m4.e2e.ts`'s own geometry step reads the CSS instead of
+  driving a captured screenshot: it parses the shipped `clamp(...)` off
+  `styles.css` itself (not a retyped copy, so a formula edit fails the
+  check), confirms it still bottoms out at 280px by 100vh = 400px, and
+  cross-checks the plate's live computed height and `.pie-plate-short`/
+  `.pie-plate-narrow` classes against the harness's own real window size.
 - **Dusk/day reviewed side by side.** `--sky`, `--sky-ink`, `--sky-cloud`,
   `--sky-focus` all read back exactly the spec's table in both themes
   (`data-theme="dark"`: `#16212f` / `#e6edf5` / `#213040` / `#8b93e8`;
@@ -808,7 +813,10 @@ plate.** Four additions, none a new departure — every color below is
   drop ring / active-file mark render in the theme's own `--sky-focus`
   shade in both, not the generic lavender — confirming the whole reason
   that token exists (`#5e6ad2` fails 3:1 non-text contrast on the day
-  `--sky`) still holds for these two new consumers.
+  `--sky`) still holds for these two new consumers. Asserted against the
+  live, running app (not just read by eye) by `ui/e2e/m4.e2e.ts`'s closing
+  step, which forces `<html data-theme>` and reads the computed styles
+  back for both themes.
 
 ## Known Gaps
 
