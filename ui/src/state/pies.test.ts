@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   bandOrder,
+  dropPlan,
   holdsPath,
   isUserPieId,
   pieFiles,
   pickerPathPlan,
+  pieHoldingPath,
+  revealRoute,
   subtractPending,
   toDerivedPie,
   uniqueName,
@@ -286,5 +289,113 @@ describe("holdsPath is an exact compare", () => {
     });
     expect(holdsPath(held, "/private/var/tmp/a.md")).toBe(true);
     expect(holdsPath(held, "/var/tmp/a.md")).toBe(false);
+  });
+});
+
+describe("pieHoldingPath", () => {
+  it("finds the user pie whose files include the path exactly", () => {
+    const pies: DerivedPie[] = [
+      { id: "builtin:pinned", name: "Pinned", files: [{ path: "/w/a.md", kind: "md", mtime: 0 }] },
+      { id: "u1", name: "Pricing", files: [{ path: "/w/b.html", kind: "html", mtime: 0 }] },
+    ];
+    expect(pieHoldingPath(pies, "/w/b.html")?.id).toBe("u1");
+  });
+
+  it("never matches a built-in pie even when its own files include the path", () => {
+    const pies: DerivedPie[] = [
+      { id: "builtin:pinned", name: "Pinned", files: [{ path: "/w/a.md", kind: "md", mtime: 0 }] },
+    ];
+    expect(pieHoldingPath(pies, "/w/a.md")).toBeNull();
+  });
+
+  it("returns null when no pie holds the path", () => {
+    const pies: DerivedPie[] = [{ id: "u1", name: "Pricing", files: [] }];
+    expect(pieHoldingPath(pies, "/w/missing.md")).toBeNull();
+  });
+});
+
+describe("revealRoute", () => {
+  const holder: DerivedPie[] = [{ id: "u1", name: "Pricing", files: [{ path: "/w/a.html", kind: "html", mtime: 0 }] }];
+
+  it("reveals in the tree when the sidebar is visible and it's not reader mode", () => {
+    expect(revealRoute({ sidebarVisible: true, readerMode: false }, holder, "/w/a.html")).toBe("tree");
+  });
+
+  it("opens the plate when the sidebar is hidden and a user pie holds the path", () => {
+    expect(revealRoute({ sidebarVisible: false, readerMode: false }, holder, "/w/a.html")).toBe("plate");
+  });
+
+  it("shows the sidebar when the sidebar is hidden and no pie holds the path", () => {
+    expect(revealRoute({ sidebarVisible: false, readerMode: false }, holder, "/w/other.html")).toBe(
+      "show-sidebar",
+    );
+  });
+
+  it("treats reader mode as 'sidebar hidden' even when sidebarVisible is true", () => {
+    expect(revealRoute({ sidebarVisible: true, readerMode: true }, holder, "/w/a.html")).toBe("plate");
+    expect(revealRoute({ sidebarVisible: true, readerMode: true }, [], "/w/a.html")).toBe("show-sidebar");
+  });
+
+  it("covers the whole posture table, including the fourth cell", () => {
+    // The fourth cell — sidebar hidden AND reader mode — has no branch of
+    // its own: reader mode already unmounts the sidebar, so it must route
+    // exactly like the sidebar-hidden case above.
+    expect(revealRoute({ sidebarVisible: false, readerMode: true }, holder, "/w/a.html")).toBe("plate");
+    expect(revealRoute({ sidebarVisible: false, readerMode: true }, holder, "/w/x.html")).toBe(
+      "show-sidebar",
+    );
+  });
+
+  it("is composed on pieHoldingPath, so a BUILT-IN-only holder routes to show-sidebar", () => {
+    // A built-in pie's files can include the path and still not be a place
+    // the user can act on — `pieHoldingPath` filters on `isUserPieId`, and
+    // `revealRoute` inherits that scope rather than restating it. This is
+    // also the one place where the reveal's scope differs from the band's
+    // active-file MARK, which does include the built-ins.
+    const builtinOnly: DerivedPie[] = [
+      { id: "builtin:pinned", name: "Pinned", files: [{ path: "/w/a.html", kind: "html", mtime: 0 }] },
+    ];
+    expect(revealRoute({ sidebarVisible: false, readerMode: false }, builtinOnly, "/w/a.html")).toBe(
+      "show-sidebar",
+    );
+  });
+});
+
+describe("dropPlan", () => {
+  const band: DerivedPie[] = [
+    { id: "builtin:pinned", name: "Pinned", files: [] },
+    { id: "u1", name: "Pricing", files: [] },
+  ];
+
+  it("ignores a drop with nothing under it", () => {
+    expect(dropPlan(null, band, ["/w/a.md"])).toEqual({ action: "ignore" });
+  });
+
+  it("names a new pie after the first dropped path for a tin drop", () => {
+    expect(dropPlan({ kind: "tin" }, band, ["/w/ideas", "/w/b.md"])).toEqual({
+      action: "create",
+      name: "ideas",
+    });
+  });
+
+  it("refuses a built-in pie, which holds no members of its own", () => {
+    const plan = dropPlan({ kind: "pie", id: "builtin:pinned" }, band, ["/w/a.md"]);
+    expect(plan.action).toBe("refuse");
+    if (plan.action === "refuse") expect(plan.reason).toMatch(/built for you/);
+  });
+
+  it("reports a pie that vanished between the ring and the release", () => {
+    // Another window deleted it while the drag hovered. The user saw a ring
+    // and let go, so this is said out loud rather than dropped silently.
+    const plan = dropPlan({ kind: "pie", id: "gone" }, band, ["/w/a.md"]);
+    expect(plan.action).toBe("vanished");
+    if (plan.action === "vanished") expect(plan.reason).toMatch(/gone/);
+  });
+
+  it("adds to a user pie in the ordinary case", () => {
+    expect(dropPlan({ kind: "pie", id: "u1" }, band, ["/w/a.md"])).toEqual({
+      action: "add",
+      pieId: "u1",
+    });
   });
 });

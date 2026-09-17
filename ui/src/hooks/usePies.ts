@@ -26,13 +26,17 @@ export interface UsePiesResult {
    *  (`PiesList.warning`), or `null`. Raised once as a notice by the
    *  provider; exposed here so a consumer can also render it inline. */
   warning: string | null;
-  upsertPie: (id: string | null, name: string) => Promise<Pie | null>;
+  /** REJECTS when this build has no `upsert_pie` command — see the
+   *  implementation for why that is an error and not a resolved `null`. */
+  upsertPie: (id: string | null, name: string) => Promise<Pie>;
   removePie: (id: string) => Promise<void>;
+  /** REJECTS when this build has no `add_pie_member` command. `opts` is a
+   *  keyed bag so M5 can add `origin` without a positional placeholder at
+   *  every call site; there is no `kind` — Rust resolves it from the path. */
   addPieMember: (
     id: string,
     path: string,
-    kind: "file" | "folder",
-    source?: PieMemberSource,
+    opts?: { source?: PieMemberSource },
   ) => Promise<void>;
   removePieMember: (id: string, path: string) => Promise<void>;
   relocatePieMember: (id: string, oldPath: string, newPath: string) => Promise<void>;
@@ -86,8 +90,12 @@ export function usePies(ipc = defaultIpc, onNotice?: (text: string) => void): Us
   useTauriEvent<PiesList>("skypie://pies-updated", acceptList);
 
   const upsertPie = React.useCallback(
-    async (id: string | null, name: string): Promise<Pie | null> => {
-      if (!ipc.upsertPie) return null;
+    async (id: string | null, name: string): Promise<Pie> => {
+      // THROW, do not resolve: resolving `null` reported success to every
+      // caller while nothing was stored — the Finder-drop path then went on
+      // to add members to a pie that does not exist, and the picker had to
+      // re-raise this exact error itself. One refusal, stated once, here.
+      if (!ipc.upsertPie) throw new Error("this build cannot create pies");
       const pie = await ipc.upsertPie(id, name);
       setPies((prev) => {
         const at = prev.findIndex((p) => p.id === pie.id);
@@ -127,14 +135,12 @@ export function usePies(ipc = defaultIpc, onNotice?: (text: string) => void): Us
   );
 
   const addPieMember = React.useCallback(
-    async (
-      id: string,
-      path: string,
-      kind: "file" | "folder",
-      source?: PieMemberSource,
-    ): Promise<void> => {
-      if (!ipc.addPieMember) return;
-      await ipc.addPieMember(id, path, kind, source);
+    async (id: string, path: string, opts?: { source?: PieMemberSource }): Promise<void> => {
+      // THROW, same reason as `upsertPie`: resolving quietly reported a
+      // stored member to the drop path, the picker and the file menu alike
+      // while nothing had been written anywhere.
+      if (!ipc.addPieMember) throw new Error("this build cannot add pie members");
+      await ipc.addPieMember(id, path, opts);
       // No optimistic member insert here — canonicalization happens on the
       // Rust side (`fs::canonicalize`), so the local path string may not be
       // the one that ends up stored; the pies-updated event above carries

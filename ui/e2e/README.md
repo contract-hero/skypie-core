@@ -20,6 +20,12 @@ command.
 | macOS | `<state dir>/app.sock`, the socket `skypie-mcp` also uses | always, in every build — but `e2e_eval` itself exists only in a debug or `e2e-hooks` build |
 | iOS simulator | `127.0.0.1:<port>` TCP | only when `SKYPIE_E2E_PORT` is set; the simulator has no unix socket peer |
 
+One scenario also reads shipped SOURCE files from Node, not just the DOM:
+`m4.e2e.ts`'s geometry step parses the plate's `clamp()` out of
+`ui/src/styles.css` and the short-pane threshold out of `PiePlate.tsx`, so a
+formula edited in the source fails the check instead of drifting away from a
+number retyped in the test.
+
 Both transports run the same connection handler and the same dispatcher
 (`app/src/ipc_server.rs`), so a verb answers identically on either — with one
 deliberate difference. Each listener declares a capability: the unix socket
@@ -61,6 +67,7 @@ pnpm -C ui e2e:smoke        # macOS: launch, set a fixture workspace, ⌘P, open
 pnpm -C ui e2e:m1           # macOS: the M1 Sky checkpoint — ⌘⇧B, the Recent plate, a slice, a relaunch
 pnpm -C ui e2e:m2           # macOS: the M2 checkpoint — the tin, ⌘D through the picker, the radiogroup, a relaunch
 pnpm -C ui e2e:m3           # macOS: the M3 checkpoint — a folder member, the +N pill, the layer tree, Locate…/Forget
+pnpm -C ui e2e:m4           # macOS: the M4 checkpoint — the drop ring, a Finder drop on the tin, the active-file mark, a deep-link reveal and its one-shot latch, the plate floor, the dusk/day tokens
 pnpm -C ui e2e:ios-smoke    # simulator: build, install, launch, read document.title, screenshot
 ```
 

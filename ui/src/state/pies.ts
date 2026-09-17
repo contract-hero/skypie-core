@@ -5,7 +5,14 @@
 import type { Pie, PieCensus } from "../ipc";
 import type { DerivedPie, DerivedPieFile } from "./derived-pies";
 import { kindOf } from "../render/kind";
-import { censusToFiles, freshCount } from "./derived-pies";
+import { censusToFiles, freshCount, isUserPieId } from "./derived-pies";
+// `DropTarget` is what the hit test produces and `dropPieName` is the name
+// rule for a tin drop; both belong beside the hook that owns the drag
+// stream, so `dropPlan` below imports them rather than restating either.
+// `finder-drop.test.ts` already imports that module under the same
+// jsdom-free vitest run, so this costs this file's own tests nothing.
+import { dropPieName } from "../hooks/useFinderDrop";
+import type { DropTarget } from "../hooks/useFinderDrop";
 
 /** Re-exported from `derived-pies.ts`, where it lives beside the two
  *  built-in ids it tests against. Every import in this module now points
@@ -146,4 +153,104 @@ export function uniqueName(pies: Pie[], wanted: string): string {
   let n = 2;
   while (taken.has(`${trimmed} ${n}`)) n += 1;
   return `${trimmed} ${n}`;
+}
+/** Whether `pie`'s (census-resolved) files include `path` exactly. The one
+ *  membership test M4's two "which pie holds this file?" call sites share
+ *  — the band's passive active-file mark (Sky.tsx) and deep-link reveal
+ *  routing (`pieHoldingPath` below) — so the ring and the route can never
+ *  disagree about the same file. An EXACT compare: both callers hand it a
+ *  canonicalized path, because stored member paths are always canonical
+ *  (`pies::add_member`).
+ *
+ *  Deliberately NOT `holdsPath` above: that one tests a persisted `Pie`'s
+ *  MEMBERS (what the picker's check mark means), this one tests a
+ *  `DerivedPie`'s resolved FILES, which a folder member expands into. */
+export function holdsFilePath(pie: DerivedPie, path: string): boolean {
+  return pie.files.some((f) => f.path === path);
+}
+
+/** M4, deep-link reveal (spec section 7, "What happens to the old
+ *  sidebar" / "Deep-link reveal"): the first USER pie holding `path`, or
+ *  `null`. Built-ins are excluded — only a user pie has persisted MEMBERS,
+ *  which is the thing "the path is a pie member" means; Pinned/Recent are
+ *  a live view over the bookmarks/recents stores, not membership. The
+ *  active-file MARK keeps the opposite scope (any pie, built-ins
+ *  included): a mark only says "this file is in here", which is true of
+ *  Pinned and Recent, while a reveal must land somewhere the user can act
+ *  on. Exported on its own (not inlined into `revealRoute` below) so
+ *  `App.tsx` can reuse the SAME lookup to learn WHICH pie to arm the plate
+ *  on, instead of computing it a second, possibly different way. */
+export function pieHoldingPath(pies: DerivedPie[], path: string): DerivedPie | null {
+  return pies.find((p) => isUserPieId(p.id) && holdsFilePath(p, path)) ?? null;
+}
+
+/**
+ * The deep-link reveal ROUTE (spec section 7): the sidebar visible (and
+ * not reader mode, which unmounts it) reveals in the tree exactly as
+ * before M4; else, when `path` is a user pie's member, the sky opens on
+ * that pie's plate instead; else the sidebar itself is shown so the tree
+ * can reveal. Pure so `App.tsx`'s branch is one call instead of an inline
+ * if/else chain, and testable here without a webview (pies.test.ts).
+ *
+ * A folder member whose census hasn't resolved yet is NOT in `files` (the
+ * census is what turns a folder member into individual file rows) —
+ * `App.tsx`'s own comment on this exact gap explains why "show-sidebar" is
+ * the acceptable fallback rather than a hard failure to reveal at all.
+ *
+ * Reader mode routes the SAME as sidebar-hidden ("plate", when a pie holds
+ * `path`) rather than getting its own branch — reader mode already
+ * unmounts the sidebar, so there is nothing left to distinguish. `App.tsx`
+ * is the one that makes this route VISIBLE: it leaves reader mode
+ * (`setReaderMode(false)`) in the "plate" branch, since Sky only mounts
+ * when `!readerMode` — without that, a reveal received mid-read was a
+ * silent no-op until the user left reader mode by hand (review fix on
+ * `handleDeepLinkIntent`).
+ *
+ * The two booleans arrive as ONE named posture object, not as two adjacent
+ * positional flags: `revealRoute(true, false, …)` and `revealRoute(false,
+ * true, …)` are both type-correct and mean opposite things, and nothing at
+ * the call site said which was which.
+ */
+export interface RevealPosture {
+  sidebarVisible: boolean;
+  readerMode: boolean;
+}
+
+export function revealRoute(
+  posture: RevealPosture,
+  pies: DerivedPie[],
+  path: string,
+): "tree" | "plate" | "show-sidebar" {
+  if (posture.sidebarVisible && !posture.readerMode) return "tree";
+  return pieHoldingPath(pies, path) ? "plate" : "show-sidebar";
+}
+
+/** What a Finder drop on `target` MEANS (M4, spec section 6), decided
+ *  without React, IPC or a DOM so all five outcomes are testable directly.
+ *  `Sky.tsx`'s `handleFinderDrop` is the effects half: it executes one of
+ *  these and holds no target branching of its own.
+ *
+ *  - `ignore`: nothing under the drop point. Silent by decision — no ring
+ *    was showing over anything either, so there is nothing to explain.
+ *  - `create`: the tin. `name` still needs `uniqueName` from the caller,
+ *    which is the one holding the current pie list.
+ *  - `refuse`: Pinned or Recent — derived views, they hold no members.
+ *  - `vanished`: a pie id no longer in the band (another window deleted it
+ *    between the ring and the release). The user saw a ring and let go, so
+ *    this is REPORTED, not dropped silently.
+ *  - `add`: the ordinary case. */
+export type DropPlan =
+  | { action: "ignore" }
+  | { action: "create"; name: string }
+  | { action: "refuse"; reason: string }
+  | { action: "vanished"; reason: string }
+  | { action: "add"; pieId: string };
+
+export function dropPlan(target: DropTarget | null, pies: DerivedPie[], paths: string[]): DropPlan {
+  if (!target) return { action: "ignore" };
+  if (target.kind === "tin") return { action: "create", name: dropPieName(paths) };
+  const pie = pies.find((p) => p.id === target.id);
+  if (!pie) return { action: "vanished", reason: "That pie is gone — nothing was added" };
+  if (!isUserPieId(pie.id)) return { action: "refuse", reason: "Pinned and Recent are built for you" };
+  return { action: "add", pieId: pie.id };
 }

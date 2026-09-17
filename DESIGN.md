@@ -784,6 +784,75 @@ introduced. The one exception already
 covered above stays the limit: no gradient, no fill, no per-kind hue
 anywhere in the tree either.
 
+**M4 — Finder drop, the drop ring, the active-file mark, short/narrow
+plate.** Four additions, none a new departure — every color below is
+`--sky-focus`, spent on a second and third job rather than a new one.
+
+- **The drop-target ring.** While a Finder drag is over a pie or the tin
+  (`useFinderDrop`'s `over` stream, hit-tested by dividing physical pixels
+  by `devicePixelRatio` and walking up to `[data-pie-id]`/`[data-pie-tin]`
+  — never DOM `dragover`, which does not fire for an OS-level drag),
+  `data-drop-target="true"` draws the SAME rule `.sky-pie:focus-visible`
+  already uses: `2px solid var(--sky-focus)`, `2px` offset, `--r-sm`
+  radius. One ring, two triggers (keyboard focus, a live drag) — not a
+  second departure.
+- **The passive active-file mark.** The pie holding the ACTIVE tab's file
+  (spec section 3's "passive auto-reveal", drawn from M1 but unbuilt until
+  now) carries `data-active-file="true"`, rendered as `box-shadow: 0 2px 0
+  var(--sky-focus)` under the label — an underline, not a box around the
+  tile, so it reads as a mark on the NAME rather than a second selection
+  state competing with `:focus-visible`/`.selected`. Remote addresses
+  (`skypie-remote://…`) never match — a pie's file paths are always local.
+- **Finder drop.** `getCurrentWebview().onDragDropEvent()` — a dropped
+  path keeps its exact basename as the new pie's name (via `uniqueName`),
+  a member's kind (file/folder) is resolved in Rust from the canonical
+  path `add_pie_member` already holds (`is_dir()` — `kind` is OPTIONAL on
+  that command, and only a caller that already knows its answer, the
+  picker or "Add folder…", still sends one), and every member is stored
+  with `source: "finder"`. That canonicalisation gate is not restricted to
+  the root set, so a folder outside the workspace is a legal drop per spec
+  line 217. A drop on Pinned/Recent
+  is refused with a notice; a drop with no hit under it is ignored
+  silently — both M4 owner decisions, not new visual language.
+- **The plate's short/narrow floor.** `usePaneShort` (M3, pane height
+  `< 480px`) is joined by `usePaneNarrow` (WINDOW width `<= 760px` —
+  `window.innerWidth`, not the narrower pane the sidebar leaves once it is
+  open; same `matchMedia` shape, a SEPARATE threshold — a short-but-wide
+  window and a narrow-but-tall one overflow at different points): the
+  legend scrolls in its own box instead of pushing the layer list off the
+  bottom, and the left rail (pie + readout) narrows from 240px to 140px so
+  the right column keeps room to read a filename. EITHER posture drops the
+  plate's pie disc from 200px to 120px — `narrow`, not only `short`: the
+  rail it sits in is 140px wide under `.pie-plate-narrow`, and `narrow` can
+  be true while `short` is false (a narrow-but-tall window), where a 200px
+  disc would overflow its own rail. Both
+  are the SAME "window-height breakpoint" exception the spec already
+  grants the plate's pie diameter (line 733 above) — a width axis added to
+  the same one exception, not a second one. Floor verified at 640×400 (the
+  window's own `minHeight`, shell `tauri.conf.json`) by arithmetic against
+  the plate's existing `clamp(280px, calc(100vh - 232px), 440px)`: at
+  100vh = 400px the clamp already bottoms out at 280px, unchanged by this
+  milestone. Live-resize verification was not possible from the e2e
+  harness — `core:window:allow-set-size` is deliberately not in this app's
+  capabilities, and granting it is a shell-repo change out of scope here —
+  so `ui/e2e/m4.e2e.ts`'s own geometry step reads the CSS instead of
+  driving a captured screenshot: it parses the shipped `clamp(...)` off
+  `styles.css` itself (not a retyped copy, so a formula edit fails the
+  check), confirms it still bottoms out at 280px by 100vh = 400px, and
+  cross-checks the plate's live computed height and `.pie-plate-short`/
+  `.pie-plate-narrow` classes against the harness's own real window size.
+- **Dusk/day reviewed side by side.** `--sky`, `--sky-ink`, `--sky-cloud`,
+  `--sky-focus` all read back exactly the spec's table in both themes
+  (`data-theme="dark"`: `#16212f` / `#e6edf5` / `#213040` / `#8b93e8`;
+  `"light"`: `#cfe3f6` / `#1d2a3a` / `#eef5fb` / `#3b45b8`), and the new
+  drop ring / active-file mark render in the theme's own `--sky-focus`
+  shade in both, not the generic lavender — confirming the whole reason
+  that token exists (`#5e6ad2` fails 3:1 non-text contrast on the day
+  `--sky`) still holds for these two new consumers. Asserted against the
+  live, running app (not just read by eye) by `ui/e2e/m4.e2e.ts`'s closing
+  step, which forces `<html data-theme>` and reads the computed styles
+  back for both themes.
+
 ## Known Gaps
 
 - Success green is recorded above but not declared. Nothing in the product

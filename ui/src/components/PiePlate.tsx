@@ -36,6 +36,7 @@ import { basename, displayDir, displayPath } from "../utils/path";
 import { messageOf } from "../utils/error-message";
 import { formatAgo } from "../utils/beam-format";
 import { useEscape } from "../hooks/useEscape";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useContextMenu } from "./ContextMenu";
 import { useFileMenu } from "../hooks/useFileMenu";
 import { usePiesContext } from "../state/pies-context";
@@ -90,20 +91,25 @@ const KIND_ICON: Record<FileKind, LucideIcon> = {
 const SHORT_PANE_WINDOW_H = 480 + 232;
 
 function usePaneShort(): boolean {
-  const [short, setShort] = React.useState(
-    () => typeof window !== "undefined" && window.innerHeight < SHORT_PANE_WINDOW_H,
-  );
-  React.useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mql = window.matchMedia(`(max-height: ${SHORT_PANE_WINDOW_H - 1}px)`);
-    // No eager `onChange()`: the lazy initializer above already read the
-    // same window height with the same threshold, so calling it on mount
-    // only set the state it was already in.
-    const onChange = () => setShort(mql.matches);
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, []);
-  return short;
+  return useMediaQuery(`(max-height: ${SHORT_PANE_WINDOW_H - 1}px)`);
+}
+
+/** M4 polish: below a 760px WINDOW width the plate's two-column layout is
+ *  the next thing to overflow after the pie/legend themselves (`usePaneShort`
+ *  handles the pie diameter and legend scroll) — the left rail (pie +
+ *  readout) narrows from 240px to 140px so the right column keeps enough
+ *  room to read a filename. Same shape as `usePaneShort`, width instead of
+ *  height; a SEPARATE threshold, since a short-but-wide window and a
+ *  narrow-but-tall one hit different overflow first. Measures
+ *  `window.innerWidth`, NOT the narrower pane the sidebar leaves when open
+ *  (unlike the height axis, where pane height is a constant window-height
+ *  offset) — a 1000px window with the default 280px sidebar has a pane
+ *  narrower than this threshold implies; see the size-clamp fix on the
+ *  `<Pie>` disc below, which also checks `narrow` for exactly this reason. */
+const NARROW_PANE_WINDOW_W = 760;
+
+function usePaneNarrow(): boolean {
+  return useMediaQuery(`(max-width: ${NARROW_PANE_WINDOW_W}px)`);
 }
 
 /** `formatAgo` already returns the complete phrase "just now" for anything
@@ -158,9 +164,21 @@ export interface PiePlateProps {
   pie: DerivedPie;
   onClose: () => void;
   onOpenFile: (path: string, opts?: OpenFileOptions) => void;
+  /** M4: deep-link reveal (App.tsx's `revealRoute === "plate"`) arms this
+   *  with the file the reveal targeted — on mount, that row gets DOM focus
+   *  and the roving-tabindex slot, INSTEAD OF the checked-legend-radio
+   *  mount focus below (spec section 7: "the plate opens on that pie with
+   *  the row focused"). `null`/omitted for every other way the plate opens
+   *  (a band click, Enter on the band). */
+  focusPath?: string | null;
 }
 
-export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): React.ReactElement {
+export default function PiePlate({
+  pie,
+  onClose,
+  onOpenFile,
+  focusPath,
+}: PiePlateProps): React.ReactElement {
   const { root } = useWorkspace();
   const contextMenu = useContextMenu();
   const fileMenuFor = useFileMenu(onOpenFile);
@@ -168,6 +186,7 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   const pieCensusCtx = usePieCensus();
   const { openCountFor } = useAnnotations();
   const short = usePaneShort();
+  const narrow = usePaneNarrow();
   const plateRef = React.useRef<HTMLDivElement | null>(null);
   const layerListRef = React.useRef<HTMLDivElement | null>(null);
   const legendRefs = React.useRef<Partial<Record<FileKind, HTMLButtonElement | null>>>({});
@@ -191,22 +210,13 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   const rawPie = isUserPie ? piesCtx.pies.find((p) => p.id === pie.id) : undefined;
   const members = rawPie?.members ?? NO_MEMBERS;
   // The "new" dot's baseline is `seen_at` AS OF THE MOMENT THIS PLATE
-  // OPENED (or switched to a DIFFERENT pie without closing — the deps array
-  // is deliberately just `[pie.id]`, not `rawPie`/`seen_at`), NOT the live
-  // `rawPie.seen_at` below, which the mount effect right after this bumps
-  // to `Date.now()` on the very same open. Reading the live value here
-  // would mean every row's mtime is compared against a timestamp from
-  // AFTER it was written, so the marker this open exists to SHOW would
-  // already read false before its first paint — the same bug the pill
-  // itself avoids by living on the BAND tile, which is never remounted by
-  // opening the plate. `useMemo`, not `useState`'s lazy initializer: Sky.tsx
-  // does not remount `PiePlate` on a pie switch (no `key={pie.id}` — the
-  // roving-tabindex/filter state below already resets itself via its own
-  // `[pie.id]`-keyed effect instead), so a one-time initializer would stay
-  // frozen on the FIRST pie forever; `useMemo` recomputes synchronously
-  // during render whenever `pie.id` itself changes, with no one-render lag.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const seenAtAtOpen = React.useMemo(() => rawPie?.seen_at ?? 0, [pie.id]);
+  // OPENED, NOT the live `rawPie.seen_at`, which the mount effect right
+  // below bumps to `Date.now()` on this very open. Reading the live value
+  // would compare every row's mtime against a timestamp written AFTER it,
+  // so the marker this open exists to SHOW would read false before its
+  // first paint. A ref frozen at mount is enough because Sky.tsx keys the
+  // plate, so one instance never sees a different pie.
+  const seenAtAtOpen = React.useRef(rawPie?.seen_at ?? 0).current;
 
   // Stamp seen_at on open (only meaningful for a persisted pie — a derived
   // Pinned/Recent pie has no such field and `touchPieSeen` on an unknown id
@@ -441,10 +451,13 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   // radiogroup's own keydown handler is live from the very first keypress.
   // Falls back to the plate container when there is no radio to focus (an
   // empty pie).
+  //
+  // Split into TWO effects. Effect A below captures whatever had focus
+  // before the plate's own focus effects run, and restores it on UNMOUNT
+  // only. It stays separate from the focus-choosing effect so a cleanup
+  // can never fire between a re-run and the focus that re-run just set.
   React.useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
-    const target = (focusedKind && legendRefs.current[focusedKind]) || plateRef.current;
-    target?.focus();
     return () => {
       // The tile that opened the plate can be gone by the time it closes (a
       // bookmark unpinned while it was open). Focus would then fall to
@@ -453,9 +466,49 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
       if (previouslyFocused?.isConnected) previouslyFocused.focus();
       else document.querySelector<HTMLElement>(".sky-band [data-pie-id]")?.focus();
     };
-    // Deliberately mount-only: this is the INITIAL focus target, not a
-    // resync on every readout change (which would steal focus back from
-    // wherever the user has since moved it, e.g. into the layer list).
+  }, []);
+
+  // Effect B: the actual "what should be focused right now" decision —
+  // the checked legend radio (spec section 4's mount-focus fix) UNLESS
+  // `focusPath` is armed (App.tsx's deep-link reveal), in which case THIS
+  // effect runs the reveal's own promise — "the plate opens on that pie
+  // with the row focused" (spec section 7) — instead, not in a second
+  // effect after it: a second effect would fire in DOM order after this
+  // one and win the race for real focus regardless of which target made
+  // more sense, and there is exactly one thing to focus at a time anyway.
+  //
+  // MOUNT-ONLY (`[]`). Every event that must re-decide focus is a remount:
+  // Sky.tsx keys the plate on the open pie's id PLUS the reveal nonce, so
+  // a second reveal into an already-open plate mints a new key and this
+  // effect runs again on the fresh instance. No nonce prop, no
+  // "was this a fresh reveal?" bookkeeping.
+  React.useEffect(() => {
+    if (focusPath) {
+      const navIndex = navItems.findIndex((item) => item.type === "file" && item.file.path === focusPath);
+      if (navIndex >= 0) {
+        setFocusedLayer(navIndex);
+        // Same query `onLayerKeyDown`'s own `focusRow` uses — headers and
+        // rows share it, in the SAME DOM order `navItems` was built in, so
+        // this index lines up with `navIndex` exactly.
+        const row = layerListRef.current?.querySelectorAll<HTMLElement>(
+          ".pie-layer-header, .start-row",
+        )[navIndex];
+        row?.focus();
+        return;
+      }
+      // `focusPath` named a file that isn't in `navItems` YET — the pie's
+      // census can still be in flight even though `App.tsx`'s own
+      // `revealRoute` already saw it in `pie.files` a moment earlier (a
+      // folder member's census resolving between that check and this
+      // mount). Falls through to the legend-radio target below rather than
+      // focusing nothing.
+    }
+    const target = (focusedKind && legendRefs.current[focusedKind]) || plateRef.current;
+    target?.focus();
+    // `focusedKind`/`legendRefs`/`navItems`/etc. deliberately excluded:
+    // this is the MOUNT focus target, not a resync on every readout
+    // change, which would steal focus back from wherever the user has
+    // since moved it (e.g. into the layer list).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -574,7 +627,9 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   return (
     <div
       ref={plateRef}
-      className="pie-plate"
+      className={
+        "pie-plate" + (short ? " pie-plate-short" : "") + (narrow ? " pie-plate-narrow" : "")
+      }
       role="dialog"
       aria-label={`${pie.name} pie`}
       aria-modal="false"
@@ -593,7 +648,14 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
           // layer filter; handing the wedges down stops the portrait from
           // regrouping the very same list.
           wedges={wedges}
-          size={short ? 120 : 200}
+          // `narrow`, not just `short` — the left
+          // rail only drops to 140px under `.pie-plate-narrow`, and narrow
+          // can be true while short is false (a narrow-but-tall window, a
+          // 640x800 desktop floor is reachable). A 200px disc in a 140px
+          // rail overflows the rail's padding/border by ~14px each side;
+          // checking either breakpoint keeps the disc inside its rail at
+          // every supported window size.
+          size={short || narrow ? 120 : 200}
           interactive={false}
           cutKind={filterKind}
           onWedgeClick={activateRadio}

@@ -3003,7 +3003,13 @@ pre[data-fallback] .line::before {
   font-weight: 500;
   color: var(--sky-ink);
 }
-.sky-pie:focus-visible {
+/* One ring, two triggers (DESIGN.md): keyboard focus, and a live Finder
+   drag over the tile. The drag trigger is `data-drop-target`, set from
+   useFinderDrop's `over` stream (Sky.tsx) — never DOM `dragover`, which
+   does not fire for an OS-level drag while Tauri's own drag-drop handling
+   is enabled. Matches the tin too: `.sky-tin` also carries `.sky-pie`. */
+.sky-pie:focus-visible,
+.sky-pie[data-drop-target="true"] {
   outline: 2px solid var(--sky-focus);
   outline-offset: 2px;
   border-radius: var(--r-sm);
@@ -3433,3 +3439,32 @@ pre[data-fallback] .line::before {
   cursor: default;
 }
 .start-row-missing .start-row-dir { color: var(--fg-dim); }
+/* ── Sky band — M4 additions (active-file mark, short/narrow plate) ───────
+   The drop-target ring lives with `.sky-pie:focus-visible` above, which it
+   shares a rule with. No new token here either: the active-file underline
+   spends --sky-focus on a second job rather than adding a color. */
+
+/* The pie holding the active tab's file (spec section 3, "passive
+   auto-reveal") — a 2px rule UNDER the label, not a box around the tile:
+   this reads as an underline on the name, the same place the focus ring
+   sits one box out. */
+.sky-pie[data-active-file="true"] .sky-pie-label {
+  box-shadow: 0 2px 0 var(--sky-focus);
+}
+
+/* Short-pane polish (M4): once the plate's own pie has already dropped to
+   120px (`usePaneShort`, unchanged since M3), the legend column is the
+   next thing to overflow a very short window — this lets it scroll inside
+   its own flex box instead of pushing the layer list off the bottom of
+   the plate. */
+.pie-plate-short .pie-legend {
+  flex: 0 1 auto;
+  overflow-y: auto;
+}
+/* Narrow-pane polish (M4): below 760px the plate's left rail (pie +
+   readout, normally 240px) is the thing fighting the legend/layer columns
+   for width — narrowing it to 140px gives the right column the room a
+   narrow sidebar-hidden window still needs to read a filename. */
+.pie-plate-narrow .pie-plate-left {
+  flex: 0 0 140px;
+}

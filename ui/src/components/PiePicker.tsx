@@ -26,11 +26,12 @@ export interface PiePickerProps {
   addPieMember: (
     id: string,
     path: string,
-    kind: "file" | "folder",
-    source?: PieMemberSource,
+    opts?: { source?: PieMemberSource },
   ) => Promise<void>;
   removePieMember: (id: string, path: string) => Promise<void>;
-  upsertPie: (id: string | null, name: string) => Promise<Pie | null>;
+  /** Rejects (rather than resolving `null`) when this build cannot create
+   *  pies — `usePies.upsertPie`'s own contract. */
+  upsertPie: (id: string | null, name: string) => Promise<Pie>;
   /** Cleans up a pie `commitCreate` just minted when the follow-up
    *  `addPieMember` for it fails, so a refused add never leaves an empty
    *  pie behind. */
@@ -115,7 +116,7 @@ export default function PiePicker({
       if (holdsPath(pie, path)) {
         await removePieMember(pie.id, path);
       } else {
-        await addPieMember(pie.id, path, "file", "picker");
+        await addPieMember(pie.id, path, { source: "picker" });
       }
     } catch (err) {
       onNotice?.(`Couldn't update "${pie.name}" — ${errorMessage(err)}`);
@@ -128,12 +129,11 @@ export default function PiePicker({
     const name = uniqueName(pies, newName.trim() || "New pie");
     let created: Pie | null = null;
     try {
+      // `upsertPie` REJECTS when the backend has no `upsert_pie` command
+      // at all (usePies), so there is no `null` left to re-raise here —
+      // that refusal lands in the same `catch` as every other one.
       created = await upsertPie(null, name);
-      // `upsertPie` resolves `null` when the backend has no `upsert_pie`
-      // command at all. Closing the picker on that looked exactly like a
-      // successful create, so say so instead of silently doing nothing.
-      if (!created) throw new Error("this build cannot create pies");
-      await addPieMember(created.id, path, "file", "picker");
+      await addPieMember(created.id, path, { source: "picker" });
     } catch (err) {
       // The create step itself succeeded but the add failed — undo the
       // create rather than leaving an empty, unreachable pie behind. AWAIT

@@ -81,6 +81,19 @@ export interface PieProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElem
    *  `undefined`, so it never gets a pill regardless of whether this is
    *  passed. */
   onOpenNewest?: (e: React.MouseEvent) => void;
+  /** M4: a Finder drag is currently over this tile (`useFinderDrop`'s
+   *  `over` stream, hit-tested in Sky.tsx — NOT DOM `dragover`, which never
+   *  fires for an OS-level drag). Renders `data-drop-target="true"`, which
+   *  `styles.css` gives the same ring `:focus-visible` already draws.
+   *  Interactive-branch only: the plate's inert portrait copy of the open
+   *  pie is never a drop target of its own. */
+  dropTarget?: boolean;
+  /** M4: the pie holding the ACTIVE tab's file (spec section 3, "passive
+   *  auto-reveal") — Sky.tsx computes this per tile from the canonicalized
+   *  active path. Renders `data-active-file="true"`, a decoration only (no
+   *  ARIA change: `role="option"` already strips presentational children,
+   *  same reasoning `onOpenNewest`'s pill span uses). */
+  active?: boolean;
   /** Wedges the caller has ALREADY grouped for this exact file list —
    *  `PiePlate` needs the groups for its legend and layer filter anyway, so
    *  handing them down keeps the portrait from grouping the same files a
@@ -101,6 +114,8 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
     onWedgeClick,
     onContextMenu,
     onOpenNewest,
+    dropTarget,
+    active,
     wedges: wedgesProp,
     ...rest
   }: PieProps,
@@ -222,6 +237,8 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
       role="option"
       aria-selected={Boolean(selected)}
       data-pie-id={pie.id}
+      data-drop-target={dropTarget ? "true" : undefined}
+      data-active-file={active ? "true" : undefined}
       // The visible label span must stay part of the accessible name (WCAG
       // 2.5.3 Label in Name) — aria-label alone as just the shares string
       // used to replace it, so VoiceOver never said which pie this was. The

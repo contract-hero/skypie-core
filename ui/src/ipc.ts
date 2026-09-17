@@ -71,6 +71,13 @@ export interface BookmarkEntry {
  *  ever sends "picker" or "menu". */
 export type PieMemberSource = "picker" | "menu" | "finder" | "agent";
 
+/** What a pie member IS on disk. Read-only from the UI's side: no add path
+ *  sends one — `add_pie_member` resolves it in Rust from the canonical path
+ *  it already holds (`is_dir()`) and reports it back on `PieMember` below.
+ *  Mirrors `skypie-ipc`'s own `PieMemberKind`, which is where both enums
+ *  are defined so M5's socket request can name them. */
+export type PieMemberKind = "file" | "folder";
+
 export interface PieMemberOrigin {
   session_id?: string;
   prompt_id?: string;
@@ -78,7 +85,7 @@ export interface PieMemberOrigin {
 }
 
 export interface PieMember {
-  kind: "file" | "folder";
+  kind: PieMemberKind;
   /** Absolute, canonical — `pies::add_member` runs `fs::canonicalize`
    *  before storing, so this always matches the watcher's own paths. */
   path: string;
@@ -377,8 +384,21 @@ export interface IpcSurface {
   removePie?(id: string): Promise<void>;
   /** Adds `path` to pie `id`. Rejects if `path` cannot be canonicalized
    *  (i.e. does not exist), and also when `id` names no pie — a file added
-   *  to a pie another window just deleted is an error, not a silent drop. */
-  addPieMember?(id: string, path: string, kind: "file" | "folder", source?: PieMemberSource): Promise<void>;
+   *  to a pie another window just deleted is an error, not a silent drop.
+   *
+   *  There is NO `kind` argument: the member's kind is read in Rust off
+   *  the canonical path the command has just resolved (`is_dir()`), the
+   *  only authority on what a path actually is. A caller-supplied kind
+   *  could contradict the disk and was stored unchecked.
+   *
+   *  `opts` is a KEYED bag, not positional flags — M5 adds `origin` to it,
+   *  and a second positional `undefined` placeholder at every call site is
+   *  exactly what that would have cost. */
+  addPieMember?(
+    id: string,
+    path: string,
+    opts?: { source?: PieMemberSource },
+  ): Promise<void>;
   removePieMember?(id: string, path: string): Promise<void>;
   relocatePieMember?(id: string, oldPath: string, newPath: string): Promise<void>;
   /** Stamp `seen_at` to now — called on every plate open for a user pie. */
@@ -605,10 +625,9 @@ class TauriIpc implements IpcSurface {
   async addPieMember(
     id: string,
     path: string,
-    kind: "file" | "folder",
-    source?: PieMemberSource,
+    opts?: { source?: PieMemberSource },
   ): Promise<void> {
-    await invoke<void>("add_pie_member", { id, path, kind, source });
+    await invoke<void>("add_pie_member", { id, path, source: opts?.source });
   }
 
   async removePieMember(id: string, path: string): Promise<void> {

@@ -5,7 +5,9 @@
 // 5-second undo, and each user pie's own right-click menu (DESIGN.md, "Sky
 // band"). M3 adds the freshness pill (+N, one-click-open-newest, ⌘Enter)
 // and folder census refresh-on-show — see PieCensusProvider (pie-census.ts)
-// and PiePlate.tsx for the folder layers themselves. Finder drop is M4.
+// and PiePlate.tsx for the folder layers themselves. M4 adds Finder drop
+// (onto a pie or the tin), the drop-target ring, the passive active-file
+// mark, and deep-link reveal's plate target (App.tsx arms `revealTarget`).
 import * as React from "react";
 import { FolderPlus, Pencil, Trash2 } from "lucide-react";
 import { useBookmarksContext } from "../state/bookmarks-context";
@@ -14,7 +16,7 @@ import { usePiesContext } from "../state/pies-context";
 import { usePieCensus, newestPath } from "../state/pie-census";
 import { labelOfWedges, pinnedPie, recentPie, wedgesOf } from "../state/derived-pies";
 import type { DerivedPie } from "../state/derived-pies";
-import { bandOrder, isUserPieId, uniqueName } from "../state/pies";
+import { bandOrder, dropPlan, holdsFilePath, isUserPieId, pickerPathPlan, uniqueName } from "../state/pies";
 import { messageOf } from "../utils/error-message";
 import Pie from "./Pie";
 import PiePlate from "./PiePlate";
@@ -22,14 +24,32 @@ import Tooltip from "./Tooltip";
 import { useContextMenu } from "./ContextMenu";
 import type { IpcSurface } from "../ipc";
 import type { AppNoticeAction } from "../App";
-import { openOptsFromClick } from "../state/TabsProvider";
+import { openOptsFromClick, useActiveTab } from "../state/TabsProvider";
 import type { OpenFileOptions } from "../state/TabsProvider";
+import { currentEntry } from "../state/tabs";
+import { isRemoteAddress } from "../utils/remote-address";
+import { basename } from "../utils/path";
+import { sameDropTarget, useFinderDrop } from "../hooks/useFinderDrop";
+import type { DropTarget } from "../hooks/useFinderDrop";
 
 /** How long a deleted user pie stays undoable before the removal actually
  *  reaches the backend (spec section 2, "Delete... 5-second AppNotice
  *  undo"). The notice itself is shown for exactly this long too, so the
  *  action disappears the instant it stops working. */
 const UNDO_MS = 5000;
+
+/** M4: what a deep-link reveal (App.tsx's `revealRoute === "plate"`) arms
+ *  Sky with — which pie's plate to open and, inside it, which row to
+ *  focus. `nonce` is part of the plate's React key below, so a SECOND
+ *  reveal of the exact same path still remounts the plate and re-focuses
+ *  the row, which `pieId`/`path` alone could not express. Not persisted
+ *  anywhere — a one-off routing decision, spec line 148, "not
+ *  persisted". */
+export interface SkyRevealTarget {
+  pieId: string;
+  path: string;
+  nonce: number;
+}
 
 export interface SkyProps {
   ipc: IpcSurface;
@@ -38,6 +58,9 @@ export interface SkyProps {
    *  Sky.tsx owns no notice UI of its own (App.tsx, "Add an optional
    *  action... Do not add a notice context"). */
   onNotice: (text: string, action?: AppNoticeAction, durationMs?: number) => void;
+  /** M4: see `SkyRevealTarget`. `null`/omitted whenever the last deep link
+   *  (if any) didn't route to the plate. */
+  revealTarget?: SkyRevealTarget | null;
 }
 
 /** A dashed hairline circle with no fill — the tin's own glyph (spec
@@ -79,7 +102,12 @@ function Cloud({ className }: { className: string }): React.ReactElement {
   );
 }
 
-export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.ReactElement {
+export default function Sky({
+  ipc,
+  onOpenFile,
+  onNotice,
+  revealTarget,
+}: SkyProps): React.ReactElement {
   const { bookmarks } = useBookmarksContext();
   const { recents } = useRecentsContext();
   const piesCtx = usePiesContext();
@@ -132,11 +160,210 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
     setFocusedIndex((i) => Math.min(i, tinIndex));
   }, [tinIndex]);
 
+  // M4: take a deep-link reveal's armed target (App.tsx) into local state.
+  // App drops `revealTarget` in the very next effect pass — it is a
+  // one-shot routing decision, and a target left standing re-opened the
+  // plate on its own every time this band remounted. Latching it here is
+  // what lets App drop it that early: the plate's `key` and `focusPath`
+  // below read THIS copy, so they do not flicker back when the prop goes.
+  // The band's own lifetime is the latch's: leaving Sky ends the reveal.
+  const [reveal, setReveal] = React.useState<SkyRevealTarget | null>(null);
+  React.useEffect(() => {
+    if (!revealTarget) return;
+    setReveal(revealTarget);
+    setOpenPieId(revealTarget.pieId);
+  }, [revealTarget]);
+
   // Drop the open plate if its pie disappeared from under it (a bookmark
   // removed, or a user pie deleted, while its plate is open).
+  //
+  // This ALSO ends a reveal armed on that same pie, and says so. Without
+  // it, a pie deleted in another window between the reveal arriving and
+  // the plate opening closed the plate while leaving `reveal` latched: the
+  // next hand-made open of that pie re-focused a row for a file the band
+  // can no longer reach, and nothing ever explained the reveal that did
+  // not land. Declared BELOW the latch because its deps read `reveal`.
   React.useEffect(() => {
-    if (openPieId && !pies.some((p) => p.id === openPieId)) setOpenPieId(null);
-  }, [pies, openPieId]);
+    if (!openPieId || pies.some((p) => p.id === openPieId)) return;
+    setOpenPieId(null);
+    if (reveal?.pieId === openPieId) {
+      setReveal(null);
+      onNotice("That pie is gone — the file wasn't revealed");
+    }
+    // `onNotice` is App's stable shell callback and is left out on purpose:
+    // re-running this guard because a notice handler re-identified would
+    // raise the same message twice.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pies, openPieId, reveal]);
+
+  // ── Passive active-file mark (spec section 3: "the pie holding the
+  // active tab's file carries a 2px --sky-focus rule under its label",
+  // M4) ──────────────────────────────────────────────────────────────────
+  const active = useActiveTab();
+  const activeRawPath = currentEntry(active)?.path ?? null;
+  // A stored member's path is always canonical (`pies::add_member` runs
+  // `fs::canonicalize`) — the ACTIVE tab's path is not guaranteed to be
+  // (it can come from a raw address-bar string, a dropped path, ...), so
+  // this canonicalizes it ONCE per change and compares the result, rather
+  // than every pie file doing its own resolution.
+  const [activeCanonicalPath, setActiveCanonicalPath] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (!activeRawPath) {
+      setActiveCanonicalPath(null);
+      return;
+    }
+    // The SAME three-way decision the pie picker makes about a
+    // caller-supplied path (`pickerPathPlan`, state/pies.ts): a remote
+    // address is refused (no pie member can ever BE one), an IPC surface
+    // with no `canonicalizePath` falls back to the raw string, and
+    // everything else is resolved. Reusing it keeps this mark and the
+    // picker from drifting apart on what "the same file" means.
+    const plan = pickerPathPlan(activeRawPath, Boolean(ipc.canonicalizePath), isRemoteAddress);
+    if (plan.action === "refuse") {
+      setActiveCanonicalPath(null);
+      return;
+    }
+    if (plan.action === "open") {
+      setActiveCanonicalPath(plan.path);
+      return;
+    }
+    let cancelled = false;
+    ipc
+      .canonicalizePath?.(plan.path)
+      .then((canonical) => {
+        if (!cancelled) setActiveCanonicalPath(canonical);
+      })
+      .catch(() => {
+        // Missing / unresolvable — no pie can hold it either way.
+        if (!cancelled) setActiveCanonicalPath(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRawPath, ipc]);
+
+  // Which tile carries the mark. One lookup per (band, active path) change
+  // rather than one `files.some(...)` scan per tile per render.
+  //
+  // Scope is EVERY pie, built-ins included — unlike `pieHoldingPath`, which
+  // deep-link reveal routing restricts to user pies. A mark only states
+  // "the open file is in here", which is as true of Pinned and Recent as
+  // of a user pie; a reveal has to land somewhere the user can act on, so
+  // it needs real membership. Both read `holdsFilePath`, so the two agree
+  // about the file even where they disagree about the pies.
+  const activePieId = React.useMemo(
+    () =>
+      activeCanonicalPath === null
+        ? null
+        : (pies.find((p) => holdsFilePath(p, activeCanonicalPath))?.id ?? null),
+    [pies, activeCanonicalPath],
+  );
+
+  // ── Finder drop (M4, spec section 6) ────────────────────────────────────
+  // `useFinderDrop` already resolves each Tauri drag event to a hit-tested
+  // `DropTarget` (a pie, the tin, or `null`) — this component only carries
+  // out what `dropPlan` decides that target MEANS, and hit-tests nothing.
+  const [dropTarget, setDropTarget] = React.useState<DropTarget | null>(null);
+
+  // No `kind` argument anywhere on this path: a dropped path's kind is
+  // whatever the filesystem says it is, and the backend already has the
+  // canonical path in hand (`add_pie_member`, app/src/app.rs) — so it reads
+  // `is_dir()` there instead of the UI spending a round trip per path to
+  // probe the same fact from a path that may still be non-canonical.
+  //
+  // Adds stay SEQUENTIAL: member order is the stored order, and a
+  // multi-file drop must land in the order the paths arrived.
+  //
+  // Failures are COLLECTED, not announced one by one. There is a single
+  // shared notice with a single timer (App.tsx), so a per-path
+  // `onNotice` call replaced the previous one: a 10-file drop with 6
+  // failures showed exactly one of them, and which one was a race. The
+  // caller turns the returned list into one sentence.
+  const addDroppedPaths = async (pieId: string, paths: string[]): Promise<string[]> => {
+    const failed: string[] = [];
+    for (const path of paths) {
+      try {
+        await piesCtx.addPieMember(pieId, path, { source: "finder" });
+      } catch (err: unknown) {
+        console.error("skypie: could not add a dropped path to a pie", path, err);
+        failed.push(basename(path));
+      }
+    }
+    return failed;
+  };
+
+  /** One sentence for a whole drop's failures, naming at most three paths
+   *  so a 200-file drop cannot push a toast off the screen. */
+  const noticeForFailures = (failed: string[], total: number): string => {
+    const named = failed.slice(0, 3).join(", ");
+    const rest = failed.length > 3 ? ", …" : "";
+    return `Couldn't add ${failed.length} of ${total} items — ${named}${rest}`;
+  };
+
+  const handleFinderDrop = async (target: DropTarget | null, paths: string[]): Promise<void> => {
+    // `dropPlan` (state/pies.ts) owns the decision and is tested on its
+    // own; this function only carries it out.
+    const plan = dropPlan(target, pies, paths);
+    switch (plan.action) {
+      case "ignore":
+        return;
+      case "refuse":
+      case "vanished":
+        onNotice(plan.reason);
+        return;
+      case "create": {
+        const name = uniqueName(piesCtx.pies, plan.name);
+        let created;
+        try {
+          created = await piesCtx.upsertPie(null, name);
+        } catch (err: unknown) {
+          onNotice(`Couldn't create "${name}" — ${messageOf(err, "the pie could not be created")}`);
+          return;
+        }
+        const failed = await addDroppedPaths(created.id, paths);
+        if (failed.length === 0) return;
+        if (failed.length === paths.length) {
+          // NOTHING landed, so the pie the drop just minted is empty and
+          // unexplained. Roll it back — the same contract `PiePicker`'s own
+          // create-then-add path already follows. A refused rollback is
+          // itself reported: an empty stray pie with no story is worse
+          // than a sentence about it.
+          try {
+            await piesCtx.removePie(created.id);
+          } catch (rollbackErr: unknown) {
+            onNotice(
+              `Couldn't clean up the empty pie "${name}" — ${messageOf(rollbackErr, "it could not be removed")}`,
+            );
+            return;
+          }
+          onNotice(`Couldn't add anything from that drop — "${name}" was not created`);
+          return;
+        }
+        onNotice(noticeForFailures(failed, paths.length));
+        return;
+      }
+      case "add": {
+        const failed = await addDroppedPaths(plan.pieId, paths);
+        if (failed.length > 0) onNotice(noticeForFailures(failed, paths.length));
+        return;
+      }
+    }
+  };
+
+  useFinderDrop({
+    // `sameDropTarget`, not `===`: every hit test mints a fresh object, so
+    // an identity compare would re-render the band on every `over` that
+    // resolved to the tile already ringed.
+    onOver: (next) => setDropTarget((prev) => (sameDropTarget(prev, next) ? prev : next)),
+    onDrop: (target, paths) => {
+      setDropTarget(null);
+      void handleFinderDrop(target, paths);
+    },
+    // Inside a running app a failed subscription means the whole feature is
+    // dead — no ring, no drop. Say so once rather than leaving the user
+    // dragging at a band that answers nothing.
+    onError: () => onNotice("Finder drop isn't available in this window"),
+  });
 
   const focusTile = (index: number) => {
     const clamped = Math.max(0, Math.min(tinIndex, index));
@@ -226,7 +453,7 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
             break;
           }
         }
-        setOpenPieId(pie.id);
+        openByHand(pie.id);
         break;
       }
       // Delete only — NOT Backspace. Backspace already means something else
@@ -281,7 +508,7 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
                 // rejection (a folder that stops resolving between the
                 // native picker and this call)
                 // with no feedback at all.
-                piesCtx.addPieMember(pie.id, picked, "folder", "menu").catch((err: unknown) => {
+                piesCtx.addPieMember(pie.id, picked, { source: "menu" }).catch((err: unknown) => {
                   onNotice(`Couldn't add that folder — ${messageOf(err, "the folder could not be added")}`);
                 });
               })
@@ -330,7 +557,25 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
   // effect keyed on [onClose], so a fresh closure on every band render (one
   // per recents/bookmarks tick) would tear down and re-add those listeners
   // each time.
-  const closePlate = React.useCallback(() => setOpenPieId(null), []);
+  const closePlate = React.useCallback(() => {
+    setOpenPieId(null);
+    // Closing the plate ends the reveal: re-opening the same pie by hand
+    // afterwards is a plain open, and must not re-focus the revealed row.
+    setReveal(null);
+  }, []);
+
+  /** Open a pie's plate because the USER asked for it — a click, Enter, or
+   *  a pill click on an empty pie. Every such open ends the reveal, for the
+   *  same reason `closePlate` does. Clearing only on close was not enough:
+   *  reveal pie A, click pie B, click pie A again, and the plate remounted
+   *  on the SAME key with `focusPath` still armed, so the user's own open
+   *  stole focus onto the revealed row and reset the slice filter long
+   *  after the reveal was over. */
+  const openByHand = React.useCallback((id: string) => {
+    setOpenPieId(id);
+    setReveal(null);
+  }, []);
+
   // One handler pair per pie, rebuilt only when the pie list itself changes
   // — an inline arrow in the map below is a new function on every render,
   // which is what a later `React.memo(Pie)` would trip over.
@@ -338,9 +583,9 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
     () =>
       pies.map((pie, i) => ({
         onFocus: () => setFocusedIndex(i),
-        onOpen: () => setOpenPieId(pie.id),
+        onOpen: () => openByHand(pie.id),
       })),
-    [pies],
+    [pies, openByHand],
   );
 
   return (
@@ -429,6 +674,8 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
                 ref={setItemRef(i)}
                 pie={pie}
                 selected={pie.id === openPieId}
+                dropTarget={dropTarget?.kind === "pie" && dropTarget.id === pie.id}
+                active={pie.id === activePieId}
                 tabIndex={i === focusedIndex ? 0 : -1}
                 onFocus={handlers[i]?.onFocus}
                 onOpen={handlers[i]?.onOpen}
@@ -444,7 +691,7 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
                   // as ⌘Enter does for an empty pie.
                   const path = newestPath(pie.files);
                   if (path) onOpenFile(path, openOptsFromClick(e));
-                  else setOpenPieId(pie.id);
+                  else openByHand(pie.id);
                 }}
               />
             );
@@ -504,6 +751,12 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
               type="button"
               className="sky-pie sky-tin"
               data-testid="sky-new-pie"
+              // NOT data-pie-id (M4 decision) — the hit test
+              // (useFinderDrop.ts, whose `DropTarget` makes the tin its own
+              // kind) and m3.e2e.ts's `.sky-pies [data-pie-id]` count both
+              // depend on the tin never counting as a pie id.
+              data-pie-tin="true"
+              data-drop-target={dropTarget?.kind === "tin" ? "true" : undefined}
               role="option"
               aria-selected={false}
               aria-label="New pie"
@@ -519,7 +772,27 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
         </div>
       </div>
       {openPie ? (
-        <PiePlate pie={openPie} onClose={closePlate} onOpenFile={onOpenFile} />
+        <PiePlate
+          // A reveal IS a remount. The key carries the open pie's id AND
+          // the reveal nonce, so both "the plate switched pies" and "a
+          // second reveal landed on the pie already open" mint a new
+          // instance, and PiePlate's focus decision stays a plain
+          // mount-only effect with no nonce prop and no consumed callback.
+          // The tradeoff, taken deliberately: a reveal into a plate that
+          // is already open resets that plate's slice filter and its
+          // scroll position, because the instance is new. A reveal is a
+          // "take me to this file" instruction, so landing on a clean
+          // plate showing the file is the behaviour that reads right.
+          key={`${openPie.id}:${reveal?.pieId === openPie.id ? reveal.nonce : ""}`}
+          pie={openPie}
+          onClose={closePlate}
+          onOpenFile={onOpenFile}
+          // Only when the CURRENTLY open pie is the one the reveal armed —
+          // switching the plate to a different pie afterward (still
+          // possible: nothing here locks the band) must not carry a stale
+          // focus target into it.
+          focusPath={reveal?.pieId === openPie.id ? reveal.path : null}
+        />
       ) : null}
     </div>
   );
