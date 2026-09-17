@@ -815,13 +815,17 @@ plate.** Four additions, none a new departure — every color below is
   is refused with a notice; a drop with no hit under it is ignored
   silently — both M4 owner decisions, not new visual language.
 - **The plate's short/narrow floor.** `usePaneShort` (M3, pane height
-  `< 480px`, the pie itself drops to 120px) is joined by `usePaneNarrow`
-  (WINDOW width `<= 760px` — `window.innerWidth`, not the narrower pane
-  the sidebar leaves once it is open; same `matchMedia` shape, a SEPARATE threshold —
-  a short-but-wide window and a narrow-but-tall one overflow at different
-  points): the legend scrolls in its own box instead of pushing the layer
-  list off the bottom, and the left rail (pie + readout) narrows from
-  240px to 140px so the right column keeps room to read a filename. Both
+  `< 480px`) is joined by `usePaneNarrow` (WINDOW width `<= 760px` —
+  `window.innerWidth`, not the narrower pane the sidebar leaves once it is
+  open; same `matchMedia` shape, a SEPARATE threshold — a short-but-wide
+  window and a narrow-but-tall one overflow at different points): the
+  legend scrolls in its own box instead of pushing the layer list off the
+  bottom, and the left rail (pie + readout) narrows from 240px to 140px so
+  the right column keeps room to read a filename. EITHER posture drops the
+  plate's pie disc from 200px to 120px — `narrow`, not only `short`: the
+  rail it sits in is 140px wide under `.pie-plate-narrow`, and `narrow` can
+  be true while `short` is false (a narrow-but-tall window), where a 200px
+  disc would overflow its own rail. Both
   are the SAME "window-height breakpoint" exception the spec already
   grants the plate's pie diameter (line 733 above) — a width axis added to
   the same one exception, not a second one. Floor verified at 640×400 (the

@@ -131,7 +131,7 @@ fn reorder_bookmarks(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), St
 // does for `skypie://bookmarks-updated`, so every `usePies()` subscriber —
 // the band, the picker, another window later — reconciles off one source.
 //
-// Rust command params stay single-word (`id`, `name`, `path`, `kind`),
+// Rust command params stay single-word (`id`, `name`, `path`, `source`),
 // matching every existing command in this file: Tauri's arg pipeline
 // converts a snake_case Rust param name to camelCase for the JS `invoke()`
 // call, and a single word has no case to convert.
@@ -209,32 +209,37 @@ fn canonicalize_member_path(
     Ok(canonical)
 }
 
-/// `kind` is OPTIONAL. Omitted, it is read off the CANONICAL path this
-/// function has just resolved — `is_dir()`, the only authority on what a
-/// path actually is. A Finder drop sends nothing: a dropped path carries
-/// no promise about its type, and the UI used to spend an extra `list_dir`
-/// round trip per path to probe the very fact already in hand here.
-/// Callers that DO know (the picker adds a file, "Add folder…" adds a
-/// folder) still state it, and their value is stored unchanged.
+/// What a canonical path IS on disk. `is_dir()` is the only authority on
+/// that question, and the caller below already holds the canonical path.
+fn member_kind_of(canonical: &std::path::Path) -> crate::pies::PieMemberKind {
+    if canonical.is_dir() {
+        crate::pies::PieMemberKind::Folder
+    } else {
+        crate::pies::PieMemberKind::File
+    }
+}
+
+/// There is NO `kind` parameter. A caller-supplied kind was stored
+/// unchecked beside a canonical path this function had just resolved, so a
+/// member whose kind CONTRADICTS the disk could be persisted — and
+/// `workspace.rs` then reads that mismatch as the member failing to
+/// resolve. Every caller's answer was derivable from the same path anyway
+/// (the picker adds a file, "Add folder…" a folder, a Finder drop makes no
+/// promise at all), so the kind is read here, once, from `is_dir()`. M5's
+/// socket twin therefore has nothing to supply either.
 ///
-/// `pies::add_member`'s own signature stays required-kind: the default is
-/// resolved here, at the command layer, so the store keeps one unambiguous
+/// `pies::add_member`'s own signature stays required-kind: the resolution
+/// happens here, at the command layer, so the store keeps one unambiguous
 /// entry point.
 pub(crate) fn add_pie_member_for(
     app: &tauri::AppHandle,
     roots: &crate::security::RootSet,
     id: &str,
     path: &str,
-    kind: Option<crate::pies::PieMemberKind>,
     source: Option<crate::pies::PieMemberSource>,
 ) -> Result<(), String> {
     let canonical = canonicalize_member_path(path, roots)?;
-    let kind = kind.unwrap_or(if canonical.is_dir() {
-        crate::pies::PieMemberKind::Folder
-    } else {
-        crate::pies::PieMemberKind::File
-    });
-    crate::pies::add_member(id, &canonical, kind, source)?;
+    crate::pies::add_member(id, &canonical, member_kind_of(&canonical), source)?;
     emit_pies(app);
     Ok(())
 }
@@ -245,10 +250,9 @@ fn add_pie_member(
     roots: tauri::State<'_, crate::security::RootSet>,
     id: String,
     path: String,
-    kind: Option<crate::pies::PieMemberKind>,
     source: Option<crate::pies::PieMemberSource>,
 ) -> Result<(), String> {
-    add_pie_member_for(&app, &roots, &id, &path, kind, source)
+    add_pie_member_for(&app, &roots, &id, &path, source)
 }
 
 pub(crate) fn remove_pie_member_for(app: &tauri::AppHandle, id: &str, path: &str) -> Result<(), String> {
@@ -709,4 +713,44 @@ pub fn run(context: tauri::Context) {
                 crate::ipc_server::cleanup();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The kind a member is stored with comes from the disk, never from a
+    /// caller — a directory is a Folder and a file is a File, and there is
+    /// no third answer for `add_pie_member_for` to take on trust.
+    #[test]
+    fn member_kind_comes_from_the_canonical_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("notes");
+        std::fs::create_dir(&folder).unwrap();
+        let file = dir.path().join("brief.md");
+        std::fs::write(&file, b"x").unwrap();
+
+        assert_eq!(
+            member_kind_of(&std::fs::canonicalize(&folder).unwrap()),
+            crate::pies::PieMemberKind::Folder
+        );
+        assert_eq!(
+            member_kind_of(&std::fs::canonicalize(&file).unwrap()),
+            crate::pies::PieMemberKind::File
+        );
+    }
+
+    /// A path that cannot be resolved is refused BEFORE the store is
+    /// touched: `add_pie_member_for` calls this first and returns on the
+    /// error, so `pies::add_member` never sees a member for a path that is
+    /// not there. Asserted on the gate itself, which needs no `AppHandle`.
+    #[test]
+    fn a_missing_path_never_reaches_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = crate::security::RootSet::new(vec![dir.path().to_path_buf()]);
+        let missing = dir.path().join("no-such-file.md");
+        let err = canonicalize_member_path(missing.to_str().unwrap(), &roots)
+            .expect_err("an unresolvable path must be an error, not a silent add");
+        assert!(!err.is_empty(), "the refusal has to say something");
+    }
 }

@@ -71,16 +71,13 @@ pub struct Pie {
     pub rest: UnknownFields,
 }
 
-/// A member's own kind — a plain file, or a folder whose contents the
-/// (M3) census walks. Lowercase on the wire ("file"/"folder") so a Tauri
-/// command can take this type directly as a param and the frontend passes
-/// the same string spec section 9's `PieMember["kind"]` union names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PieMemberKind {
-    File,
-    Folder,
-}
+/// The two member enums are DEFINED in `skypie-ipc` and re-exported here.
+/// That crate is the socket contract, and `skypie-app` depends on it — so a
+/// request that names a member's source (M5's `add_to_pie`) can name the
+/// real type instead of falling back to `String`, which would defeat the
+/// whole reason `PieMemberSource` is a closed set. Every `pies::` call site
+/// keeps reading `crate::pies::PieMemberKind`, so nothing else moves.
+pub use skypie_ipc::{PieMemberKind, PieMemberSource};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -88,20 +85,6 @@ pub struct PieMemberOrigin {
     pub session_id: Option<String>,
     pub prompt_id: Option<String>,
     pub cwd: Option<String>,
-}
-
-/// How a member got into its pie. A closed set, not a free string: the
-/// frontend already models it as the union `"picker" | "menu" | "finder" |
-/// "agent"` (`ui/src/ipc.ts`), and M5's agent socket is a second writer that
-/// must not be able to store a value the UI cannot render. Lowercase on the
-/// wire for the same reason `PieMemberKind` is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PieMemberSource {
-    Picker,
-    Menu,
-    Finder,
-    Agent,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

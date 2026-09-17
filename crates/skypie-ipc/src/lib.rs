@@ -332,6 +332,39 @@ pub struct OfferSummary {
     pub hash: String,
 }
 
+// ── Pie members ─────────────────────────────────────────────────────────────
+// These two enums describe a pie member, which `app/src/pies.rs` persists.
+// They live HERE, not there, because this crate is the contract the socket
+// speaks and `skypie-app` depends on this crate rather than the other way
+// round: a request that names a member's source (M5's `add_to_pie`) can only
+// carry a typed `PieMemberSource` if the type is reachable from this file.
+// Declared in this crate and re-exported from `pies.rs`, so there is still
+// exactly ONE definition and the store's own call sites read unchanged.
+
+/// A member's own kind — a plain file, or a folder whose contents the census
+/// walks. Lowercase on the wire ("file"/"folder"), the same strings spec
+/// section 9's `PieMember["kind"]` union names and `ui/src/ipc.ts` types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PieMemberKind {
+    File,
+    Folder,
+}
+
+/// How a member got into its pie. A closed set, not a free string: the
+/// frontend already models it as the union `"picker" | "menu" | "finder" |
+/// "agent"` (`ui/src/ipc.ts`), and M5's agent socket is a second writer that
+/// must not be able to store a value the UI cannot render. Lowercase on the
+/// wire for the same reason `PieMemberKind` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PieMemberSource {
+    Picker,
+    Menu,
+    Finder,
+    Agent,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Presence {
@@ -603,6 +636,19 @@ mod tests {
         assert_eq!(human_bytes(5 * 1024 * 1024), "5 MiB");
         assert_eq!(Presence::Unpaired.to_string(), "unpaired");
         assert_eq!(serde_json::to_value(Presence::Refused).unwrap(), "refused");
+    }
+
+    #[test]
+    fn pie_member_enums_are_lowercase_on_the_wire() {
+        // The exact strings `ui/src/ipc.ts` types and `state.json` already
+        // holds: a rename here silently orphans every stored member.
+        assert_eq!(serde_json::to_value(PieMemberKind::Folder).unwrap(), "folder");
+        assert_eq!(serde_json::to_value(PieMemberKind::File).unwrap(), "file");
+        assert_eq!(serde_json::to_value(PieMemberSource::Finder).unwrap(), "finder");
+        assert_eq!(
+            serde_json::from_str::<PieMemberSource>("\"agent\"").unwrap(),
+            PieMemberSource::Agent
+        );
     }
 
     #[test]

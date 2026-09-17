@@ -15,8 +15,12 @@ export function useMediaQuery(query: string): boolean {
   React.useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const mql = window.matchMedia(query);
-    // No eager `onChange()`: the initializer above already read this exact
-    // query, so calling it on mount only sets the state it is already in.
+    // Re-sync on every `query` change. The lazy initializer above only ever
+    // read the FIRST query, so a CHANGED query starts out holding the old
+    // query's answer and keeps it until the new list happens to fire
+    // `change` — which may never happen. Same-value setState is a no-op, so
+    // the mount pass still costs no re-render.
+    setMatches(mql.matches);
     const onChange = () => setMatches(mql.matches);
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);

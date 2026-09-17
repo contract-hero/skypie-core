@@ -16,7 +16,7 @@ import { usePiesContext } from "../state/pies-context";
 import { usePieCensus, newestPath } from "../state/pie-census";
 import { labelOfWedges, pinnedPie, recentPie, wedgesOf } from "../state/derived-pies";
 import type { DerivedPie } from "../state/derived-pies";
-import { bandOrder, holdsFilePath, isUserPieId, pickerPathPlan, uniqueName } from "../state/pies";
+import { bandOrder, dropPlan, holdsFilePath, isUserPieId, pickerPathPlan, uniqueName } from "../state/pies";
 import { messageOf } from "../utils/error-message";
 import Pie from "./Pie";
 import PiePlate from "./PiePlate";
@@ -29,7 +29,8 @@ import type { OpenFileOptions } from "../state/TabsProvider";
 import { currentEntry } from "../state/tabs";
 import { isRemoteAddress } from "../utils/remote-address";
 import { basename } from "../utils/path";
-import { dropPieName, TIN_DROP_ID, useFinderDrop } from "../hooks/useFinderDrop";
+import { sameDropTarget, useFinderDrop } from "../hooks/useFinderDrop";
+import type { DropTarget } from "../hooks/useFinderDrop";
 
 /** How long a deleted user pie stays undoable before the removal actually
  *  reaches the backend (spec section 2, "Delete... 5-second AppNotice
@@ -159,12 +160,6 @@ export default function Sky({
     setFocusedIndex((i) => Math.min(i, tinIndex));
   }, [tinIndex]);
 
-  // Drop the open plate if its pie disappeared from under it (a bookmark
-  // removed, or a user pie deleted, while its plate is open).
-  React.useEffect(() => {
-    if (openPieId && !pies.some((p) => p.id === openPieId)) setOpenPieId(null);
-  }, [pies, openPieId]);
-
   // M4: take a deep-link reveal's armed target (App.tsx) into local state.
   // App drops `revealTarget` in the very next effect pass — it is a
   // one-shot routing decision, and a target left standing re-opened the
@@ -178,6 +173,28 @@ export default function Sky({
     setReveal(revealTarget);
     setOpenPieId(revealTarget.pieId);
   }, [revealTarget]);
+
+  // Drop the open plate if its pie disappeared from under it (a bookmark
+  // removed, or a user pie deleted, while its plate is open).
+  //
+  // This ALSO ends a reveal armed on that same pie, and says so. Without
+  // it, a pie deleted in another window between the reveal arriving and
+  // the plate opening closed the plate while leaving `reveal` latched: the
+  // next hand-made open of that pie re-focused a row for a file the band
+  // can no longer reach, and nothing ever explained the reveal that did
+  // not land. Declared BELOW the latch because its deps read `reveal`.
+  React.useEffect(() => {
+    if (!openPieId || pies.some((p) => p.id === openPieId)) return;
+    setOpenPieId(null);
+    if (reveal?.pieId === openPieId) {
+      setReveal(null);
+      onNotice("That pie is gone — the file wasn't revealed");
+    }
+    // `onNotice` is App's stable shell callback and is left out on purpose:
+    // re-running this guard because a notice handler re-identified would
+    // raise the same message twice.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pies, openPieId, reveal]);
 
   // ── Passive active-file mark (spec section 3: "the pie holding the
   // active tab's file carries a 2px --sky-focus rule under its label",
@@ -244,66 +261,108 @@ export default function Sky({
 
   // ── Finder drop (M4, spec section 6) ────────────────────────────────────
   // `useFinderDrop` already resolves each Tauri drag event to a hit-tested
-  // id (a pie's own, `TIN_DROP_ID`, or `null`) — this component only
-  // decides what an id MEANS, not how to hit-test one.
-  const [dropTargetId, setDropTargetId] = React.useState<string | null>(null);
+  // `DropTarget` (a pie, the tin, or `null`) — this component only carries
+  // out what `dropPlan` decides that target MEANS, and hit-tests nothing.
+  const [dropTarget, setDropTarget] = React.useState<DropTarget | null>(null);
 
-  // No `kind` argument: a dropped path's kind is whatever the filesystem
-  // says it is, and the backend already has the canonical path in hand
-  // (`add_pie_member`, app/src/app.rs) — so it reads `is_dir()` there
-  // instead of the UI spending an `ipc.listDir` round trip per path to
-  // probe the same fact, from a path that may still be non-canonical.
+  // No `kind` argument anywhere on this path: a dropped path's kind is
+  // whatever the filesystem says it is, and the backend already has the
+  // canonical path in hand (`add_pie_member`, app/src/app.rs) — so it reads
+  // `is_dir()` there instead of the UI spending a round trip per path to
+  // probe the same fact from a path that may still be non-canonical.
   //
   // Adds stay SEQUENTIAL: member order is the stored order, and a
   // multi-file drop must land in the order the paths arrived.
-  const addDroppedPaths = async (pieId: string, paths: string[]): Promise<void> => {
+  //
+  // Failures are COLLECTED, not announced one by one. There is a single
+  // shared notice with a single timer (App.tsx), so a per-path
+  // `onNotice` call replaced the previous one: a 10-file drop with 6
+  // failures showed exactly one of them, and which one was a race. The
+  // caller turns the returned list into one sentence.
+  const addDroppedPaths = async (pieId: string, paths: string[]): Promise<string[]> => {
+    const failed: string[] = [];
     for (const path of paths) {
-      // Every rejection reaches `onNotice` individually — one bad path in
-      // a multi-file drop must not silently swallow the others' failures.
       try {
-        await piesCtx.addPieMember(pieId, path, undefined, "finder");
+        await piesCtx.addPieMember(pieId, path, { source: "finder" });
       } catch (err: unknown) {
-        onNotice(`Couldn't add "${basename(path)}" — ${String(err)}`);
+        console.error("skypie: could not add a dropped path to a pie", path, err);
+        failed.push(basename(path));
       }
     }
+    return failed;
   };
 
-  const handleFinderDrop = async (targetId: string | null, paths: string[]): Promise<void> => {
-    // A drop with no hit is ignored silently (M4 decision) — no ring was
-    // showing over anything either, so there is nothing to explain.
-    if (!targetId) return;
-    if (targetId === TIN_DROP_ID) {
-      const name = uniqueName(piesCtx.pies, dropPieName(paths));
-      let created;
-      try {
-        created = await piesCtx.upsertPie(null, name);
-      } catch (err: unknown) {
-        onNotice(`Couldn't create "${name}" — ${String(err)}`);
+  /** One sentence for a whole drop's failures, naming at most three paths
+   *  so a 200-file drop cannot push a toast off the screen. */
+  const noticeForFailures = (failed: string[], total: number): string => {
+    const named = failed.slice(0, 3).join(", ");
+    const rest = failed.length > 3 ? ", …" : "";
+    return `Couldn't add ${failed.length} of ${total} items — ${named}${rest}`;
+  };
+
+  const handleFinderDrop = async (target: DropTarget | null, paths: string[]): Promise<void> => {
+    // `dropPlan` (state/pies.ts) owns the decision and is tested on its
+    // own; this function only carries it out.
+    const plan = dropPlan(target, pies, paths);
+    switch (plan.action) {
+      case "ignore":
+        return;
+      case "refuse":
+      case "vanished":
+        onNotice(plan.reason);
+        return;
+      case "create": {
+        const name = uniqueName(piesCtx.pies, plan.name);
+        let created;
+        try {
+          created = await piesCtx.upsertPie(null, name);
+        } catch (err: unknown) {
+          onNotice(`Couldn't create "${name}" — ${messageOf(err, "the pie could not be created")}`);
+          return;
+        }
+        const failed = await addDroppedPaths(created.id, paths);
+        if (failed.length === 0) return;
+        if (failed.length === paths.length) {
+          // NOTHING landed, so the pie the drop just minted is empty and
+          // unexplained. Roll it back — the same contract `PiePicker`'s own
+          // create-then-add path already follows. A refused rollback is
+          // itself reported: an empty stray pie with no story is worse
+          // than a sentence about it.
+          try {
+            await piesCtx.removePie(created.id);
+          } catch (rollbackErr: unknown) {
+            onNotice(
+              `Couldn't clean up the empty pie "${name}" — ${messageOf(rollbackErr, "it could not be removed")}`,
+            );
+            return;
+          }
+          onNotice(`Couldn't add anything from that drop — "${name}" was not created`);
+          return;
+        }
+        onNotice(noticeForFailures(failed, paths.length));
         return;
       }
-      // `upsertPie`'s own no-op fallback (a bare `IpcSurface` test double
-      // with no `upsertPie` wired) — the real, SERVER-MINTED id is what
-      // every member add below needs; a locally invented id would never
-      // match what the backend actually stored.
-      if (!created) return;
-      await addDroppedPaths(created.id, paths);
-      return;
+      case "add": {
+        const failed = await addDroppedPaths(plan.pieId, paths);
+        if (failed.length > 0) onNotice(noticeForFailures(failed, paths.length));
+        return;
+      }
     }
-    const target = pies.find((p) => p.id === targetId);
-    if (!target) return; // the tile disappeared between the ring and the drop
-    if (!isUserPieId(target.id)) {
-      onNotice("Pinned and Recent are built for you");
-      return;
-    }
-    await addDroppedPaths(target.id, paths);
   };
 
   useFinderDrop({
-    onOver: setDropTargetId,
-    onDrop: (id, paths) => {
-      setDropTargetId(null);
-      void handleFinderDrop(id, paths);
+    // `sameDropTarget`, not `===`: every hit test mints a fresh object, so
+    // an identity compare would re-render the band on every `over` that
+    // resolved to the tile already ringed.
+    onOver: (next) => setDropTarget((prev) => (sameDropTarget(prev, next) ? prev : next)),
+    onDrop: (target, paths) => {
+      setDropTarget(null);
+      void handleFinderDrop(target, paths);
     },
+    // Inside a running app a failed subscription means the whole feature is
+    // dead — no ring, no drop. Say so once rather than leaving the user
+    // dragging at a band that answers nothing.
+    onError: () => onNotice("Finder drop isn't available in this window"),
   });
 
   const focusTile = (index: number) => {
@@ -394,7 +453,7 @@ export default function Sky({
             break;
           }
         }
-        setOpenPieId(pie.id);
+        openByHand(pie.id);
         break;
       }
       // Delete only — NOT Backspace. Backspace already means something else
@@ -449,7 +508,7 @@ export default function Sky({
                 // rejection (a folder that stops resolving between the
                 // native picker and this call)
                 // with no feedback at all.
-                piesCtx.addPieMember(pie.id, picked, "folder", "menu").catch((err: unknown) => {
+                piesCtx.addPieMember(pie.id, picked, { source: "menu" }).catch((err: unknown) => {
                   onNotice(`Couldn't add that folder — ${messageOf(err, "the folder could not be added")}`);
                 });
               })
@@ -504,6 +563,19 @@ export default function Sky({
     // afterwards is a plain open, and must not re-focus the revealed row.
     setReveal(null);
   }, []);
+
+  /** Open a pie's plate because the USER asked for it — a click, Enter, or
+   *  a pill click on an empty pie. Every such open ends the reveal, for the
+   *  same reason `closePlate` does. Clearing only on close was not enough:
+   *  reveal pie A, click pie B, click pie A again, and the plate remounted
+   *  on the SAME key with `focusPath` still armed, so the user's own open
+   *  stole focus onto the revealed row and reset the slice filter long
+   *  after the reveal was over. */
+  const openByHand = React.useCallback((id: string) => {
+    setOpenPieId(id);
+    setReveal(null);
+  }, []);
+
   // One handler pair per pie, rebuilt only when the pie list itself changes
   // — an inline arrow in the map below is a new function on every render,
   // which is what a later `React.memo(Pie)` would trip over.
@@ -511,9 +583,9 @@ export default function Sky({
     () =>
       pies.map((pie, i) => ({
         onFocus: () => setFocusedIndex(i),
-        onOpen: () => setOpenPieId(pie.id),
+        onOpen: () => openByHand(pie.id),
       })),
-    [pies],
+    [pies, openByHand],
   );
 
   return (
@@ -602,7 +674,7 @@ export default function Sky({
                 ref={setItemRef(i)}
                 pie={pie}
                 selected={pie.id === openPieId}
-                dropTarget={pie.id === dropTargetId}
+                dropTarget={dropTarget?.kind === "pie" && dropTarget.id === pie.id}
                 active={pie.id === activePieId}
                 tabIndex={i === focusedIndex ? 0 : -1}
                 onFocus={handlers[i]?.onFocus}
@@ -619,7 +691,7 @@ export default function Sky({
                   // as ⌘Enter does for an empty pie.
                   const path = newestPath(pie.files);
                   if (path) onOpenFile(path, openOptsFromClick(e));
-                  else setOpenPieId(pie.id);
+                  else openByHand(pie.id);
                 }}
               />
             );
@@ -680,11 +752,11 @@ export default function Sky({
               className="sky-pie sky-tin"
               data-testid="sky-new-pie"
               // NOT data-pie-id (M4 decision) — the hit test
-              // (useFinderDrop.ts) and ui/e2e/m3.e2e.ts:112's
-              // `.sky-pies [data-pie-id]` count both depend on the tin
-              // never counting as a pie id.
+              // (useFinderDrop.ts, whose `DropTarget` makes the tin its own
+              // kind) and m3.e2e.ts's `.sky-pies [data-pie-id]` count both
+              // depend on the tin never counting as a pie id.
               data-pie-tin="true"
-              data-drop-target={dropTargetId === TIN_DROP_ID ? "true" : undefined}
+              data-drop-target={dropTarget?.kind === "tin" ? "true" : undefined}
               role="option"
               aria-selected={false}
               aria-label="New pie"

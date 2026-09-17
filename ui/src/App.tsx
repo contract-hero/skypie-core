@@ -511,13 +511,19 @@ function AppShell({
       // discarded. Both sides read the SAME census-backed `derive`, so
       // they cannot disagree about which pie holds `path`.
       const userPies = piesCtx.pies.map(pieCensusCtx.derive);
-      const route = revealRoute(sidebarVisible, readerMode, userPies, path);
+      const route = revealRoute({ sidebarVisible, readerMode }, userPies, path);
       if (route === "tree") {
         reveal(path, root);
         return;
       }
       if (route === "plate") {
         const pie = pieHoldingPath(userPies, path);
+        // NO `return` when `pie` is null — this FALLS THROUGH to
+        // "show-sidebar" below. `pieHoldingPath` runs a second time here,
+        // and the census can move (or the pie be deleted) between the two
+        // calls; answering `null` then used to return with no reveal, no
+        // sidebar and no message at all. A reveal always has to land
+        // somewhere.
         if (pie) {
           // Leave reader mode — Sky only mounts when `skyVisible &&
           // !readerMode` (below), so a reveal received mid-read would
@@ -529,8 +535,8 @@ function AppShell({
           setReaderMode(false);
           setSkyVisible(true);
           setRevealTarget({ pieId: pie.id, path, nonce: revealNonce.current++ });
+          return;
         }
-        return;
       }
       // "show-sidebar": also the fallback when `path` really is under a
       // folder member but that member's census hasn't resolved into

@@ -6,6 +6,13 @@ import type { Pie, PieCensus } from "../ipc";
 import type { DerivedPie, DerivedPieFile } from "./derived-pies";
 import { kindOf } from "../render/kind";
 import { censusToFiles, freshCount, isUserPieId } from "./derived-pies";
+// `DropTarget` is what the hit test produces and `dropPieName` is the name
+// rule for a tin drop; both belong beside the hook that owns the drag
+// stream, so `dropPlan` below imports them rather than restating either.
+// `finder-drop.test.ts` already imports that module under the same
+// jsdom-free vitest run, so this costs this file's own tests nothing.
+import { dropPieName } from "../hooks/useFinderDrop";
+import type { DropTarget } from "../hooks/useFinderDrop";
 
 /** Re-exported from `derived-pies.ts`, where it lives beside the two
  *  built-in ids it tests against. Every import in this module now points
@@ -196,15 +203,54 @@ export function pieHoldingPath(pies: DerivedPie[], path: string): DerivedPie | n
  * is the one that makes this route VISIBLE: it leaves reader mode
  * (`setReaderMode(false)`) in the "plate" branch, since Sky only mounts
  * when `!readerMode` — without that, a reveal received mid-read was a
- * silent no-op until the user left reader mode by hand (review fix,
- * App.tsx:454).
+ * silent no-op until the user left reader mode by hand (review fix on
+ * `handleDeepLinkIntent`).
+ *
+ * The two booleans arrive as ONE named posture object, not as two adjacent
+ * positional flags: `revealRoute(true, false, …)` and `revealRoute(false,
+ * true, …)` are both type-correct and mean opposite things, and nothing at
+ * the call site said which was which.
  */
+export interface RevealPosture {
+  sidebarVisible: boolean;
+  readerMode: boolean;
+}
+
 export function revealRoute(
-  sidebarVisible: boolean,
-  readerMode: boolean,
+  posture: RevealPosture,
   pies: DerivedPie[],
   path: string,
 ): "tree" | "plate" | "show-sidebar" {
-  if (sidebarVisible && !readerMode) return "tree";
+  if (posture.sidebarVisible && !posture.readerMode) return "tree";
   return pieHoldingPath(pies, path) ? "plate" : "show-sidebar";
+}
+
+/** What a Finder drop on `target` MEANS (M4, spec section 6), decided
+ *  without React, IPC or a DOM so all five outcomes are testable directly.
+ *  `Sky.tsx`'s `handleFinderDrop` is the effects half: it executes one of
+ *  these and holds no target branching of its own.
+ *
+ *  - `ignore`: nothing under the drop point. Silent by decision — no ring
+ *    was showing over anything either, so there is nothing to explain.
+ *  - `create`: the tin. `name` still needs `uniqueName` from the caller,
+ *    which is the one holding the current pie list.
+ *  - `refuse`: Pinned or Recent — derived views, they hold no members.
+ *  - `vanished`: a pie id no longer in the band (another window deleted it
+ *    between the ring and the release). The user saw a ring and let go, so
+ *    this is REPORTED, not dropped silently.
+ *  - `add`: the ordinary case. */
+export type DropPlan =
+  | { action: "ignore" }
+  | { action: "create"; name: string }
+  | { action: "refuse"; reason: string }
+  | { action: "vanished"; reason: string }
+  | { action: "add"; pieId: string };
+
+export function dropPlan(target: DropTarget | null, pies: DerivedPie[], paths: string[]): DropPlan {
+  if (!target) return { action: "ignore" };
+  if (target.kind === "tin") return { action: "create", name: dropPieName(paths) };
+  const pie = pies.find((p) => p.id === target.id);
+  if (!pie) return { action: "vanished", reason: "That pie is gone — nothing was added" };
+  if (!isUserPieId(pie.id)) return { action: "refuse", reason: "Pinned and Recent are built for you" };
+  return { action: "add", pieId: pie.id };
 }
