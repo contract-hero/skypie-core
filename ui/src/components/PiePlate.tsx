@@ -19,8 +19,8 @@ import * as React from "react";
 import { FileCode, FileText, FileImage, FileJson, File as FileIconGlyph, MessageSquare, PieChart, XCircle } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Pie from "./Pie";
-import { groupByWedge, wedgesOf } from "../state/derived-pies";
-import type { DerivedPie, DerivedPieFile } from "../state/derived-pies";
+import { BUILTIN_PINNED_ID, groupByWedge, wedgesOfGroups } from "../state/derived-pies";
+import type { DerivedPie, DerivedPieFile, Wedge } from "../state/derived-pies";
 import { isUserPieId } from "../state/pies";
 import { kindOf } from "../render/kind";
 import type { FileKind } from "../render/kind";
@@ -28,6 +28,7 @@ import { layersOf, usePieCensus } from "../state/pie-census";
 import type { PieLayer } from "../state/pie-census";
 import { FileGlyph } from "./FileIcon";
 import { basename, displayDir, displayPath } from "../utils/path";
+import { messageOf } from "../utils/error-message";
 import { formatAgo } from "../utils/beam-format";
 import { useEscape } from "../hooks/useEscape";
 import { useContextMenu } from "./ContextMenu";
@@ -84,13 +85,14 @@ const KIND_ICON: Record<FileKind, LucideIcon> = {
   other: FileIconGlyph,
 };
 
-/** pane height < 480px is the spec's "short window" floor (section 4):
- *  the plate pie drops to 120px. Pane height ≈ window height − 2×--band-h
- *  (tab strip + toolbar, 40px each — section 2's own "pane = window − 40
- *  tab strip − 40 toolbar"), so this tracks window height directly instead
- *  of measuring the DOM, which keeps the plate's CSS clamp() and this
- *  threshold using the same arithmetic. */
-const SHORT_PANE_WINDOW_H = 480 + 80;
+/** pane height < 480px is the spec's "short window" floor (section 4): the
+ *  plate pie drops to 120px. The subtraction is the plate's own space model
+ *  — pane = window − 40 tab strip − 40 toolbar − 120 sky band − 32 margin —
+ *  the same 232px `.pie-plate`'s `clamp(280px, calc(100vh - 232px), 440px)`
+ *  uses (styles.css). Counting only the two 40px chrome bars engaged the
+ *  floor about 120px too late. Tracking window height directly, with no DOM
+ *  measurement, keeps the two in step. */
+const SHORT_PANE_WINDOW_H = 480 + 232;
 
 function usePaneShort(): boolean {
   const [short, setShort] = React.useState(
@@ -99,8 +101,10 @@ function usePaneShort(): boolean {
   React.useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const mql = window.matchMedia(`(max-height: ${SHORT_PANE_WINDOW_H - 1}px)`);
+    // No eager `onChange()`: the lazy initializer above already read the
+    // same window height with the same threshold, so calling it on mount
+    // only set the state it was already in.
     const onChange = () => setShort(mql.matches);
-    onChange();
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, []);
@@ -109,30 +113,50 @@ function usePaneShort(): boolean {
 
 /** `formatAgo` already returns the complete phrase "just now" for anything
  *  under 60s — appending " ago" unconditionally used to read "just now ago"
- *  for the normal case of a file opened or bookmarked in the last minute
- *  (review: PiePlate.tsx:229). One helper, both call sites below. */
-function mtimeAgo(mtimeMs: number): string {
+ *  for the normal case of a file opened or bookmarked in the last minute.
+ *  One helper, both call sites below. */
+export function mtimeAgo(mtimeMs: number): string {
   const ago = formatAgo(Math.floor(mtimeMs / 1000), Math.floor(Date.now() / 1000));
   return ago === "just now" ? ago : `${ago} ago`;
 }
 
-function lastOpenedLabel(pie: DerivedPie): string {
+export function lastOpenedLabel(pie: DerivedPie): string {
   const { files } = pie;
   // Pinned's mtime is bookmarked_at (derived-pies.ts), i.e. when the file
   // was starred, not when it was opened — "Last opened" claimed something
   // the data does not support (review: PiePlate.tsx:59). Before a user
   // pie's first M3 census resolves, `mtime` is still `added_at` (pies.ts's
   // `pieFiles` fallback) — when the file was ADDED, not when it changed,
-  // the same category of mislabel (review: pies.ts:19); once `pie.census`
-  // is set, `mtime` is a REAL file mtime (`toDerivedPie`'s census branch),
-  // so the label graduates from "Last added" to "Last changed" the moment
-  // that first census lands.
-  const isPinned = pie.id === "builtin:pinned";
+  // the same category of mislabel; once `pie.census` is set, `mtime` is a
+  // REAL file mtime (`toDerivedPie`'s census branch), so the label
+  // graduates from "Last added" to "Last changed" the moment that first
+  // census lands.
+  const isPinned = pie.id === BUILTIN_PINNED_ID;
   const isUser = isUserPieId(pie.id);
   if (files.length === 0) return isPinned ? "Never pinned" : isUser ? "No files added" : "Never opened";
   const newest = Math.max(...files.map((f) => f.mtime));
   const verb = isPinned ? "Last pinned" : isUser ? (pie.census ? "Last changed" : "Last added") : "Last opened";
   return `${verb} ${mtimeAgo(newest)}`;
+}
+
+/** The pie's dominant wedge — the biggest share. A tie keeps the FIRST
+ *  wedge, and `wedgesOfGroups` returns them in BEARINGS order, so a 50/50
+ *  pie reads out the kind nearer north (strict `>`, never `>=`). */
+export function dominantWedge(wedges: Wedge[]): Wedge | null {
+  return wedges.reduce<Wedge | null>(
+    (best, w) => (best === null || w.share > best.share ? w : best),
+    null,
+  );
+}
+
+/** The mono readout, e.g. `HTML · 60% · 9 files`. The count is the READOUT
+ *  KIND's file count, not the pie's total — the spec's own example only
+ *  works if 9 is the count behind the 60% (9/15, say); the pie total made
+ *  the two figures disagree for any pie that is not 100% one kind. */
+export function readoutLabel(wedge: Wedge | null): string {
+  if (!wedge) return "No files";
+  const files = `${wedge.count} file${wedge.count === 1 ? "" : "s"}`;
+  return `${KIND_LABELS[wedge.kind]} · ${Math.round(wedge.share * 100)}% · ${files}`;
 }
 
 export interface PiePlateProps {
@@ -205,7 +229,12 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
   // same open/switch moment, so one effect covers both.
   React.useEffect(() => {
     if (isUserPie) {
-      void piesCtx.touchPieSeen(pie.id);
+      // Nothing to show the user for a failed stamp — `seen_at` drives the
+      // M3 freshness pill, not anything on screen now — but a dropped
+      // rejection here would hide a store that refuses every write.
+      piesCtx.touchPieSeen(pie.id).catch((err: unknown) => {
+        console.warn("skypie: touchPieSeen failed", err);
+      });
       pieCensusCtx.refresh(pie.id);
     }
     // Only on open (mount) / when the plate switches to a different pie —
@@ -213,37 +242,48 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pie.id]);
 
-  const wedges = React.useMemo(() => wedgesOf(pie.files), [pie.files]);
+  // One grouping pass per file list; the wedges are derived from it rather
+  // than regrouping the same files a second time.
   const groups = React.useMemo(() => groupByWedge(pie.files), [pie.files]);
+  const wedges = React.useMemo(() => wedgesOfGroups(groups), [groups]);
 
+  // The wedge the readout describes: the filtered kind while a slice is on,
+  // otherwise the pie's dominant kind.
+  const readoutWedge = React.useMemo<Wedge | null>(() => {
+    if (filterKind) return wedges.find((w) => w.kind === filterKind) ?? null;
+    return dominantWedge(wedges);
+  }, [filterKind, wedges]);
+  const readoutKind = filterKind ?? readoutWedge?.kind ?? null;
   // The cursor can point at a kind that just disappeared from `wedges` —
   // removing the last file of the focused kind through a layer row's
-  // "Remove from pie" leaves `focusedKindState` naming a kind with no
-  // radio at all, so `checked` is false for every row, every radio gets
-  // `tabIndex={-1}`, and the radiogroup falls out of the tab order
-  // entirely (review: PiePlate.tsx:119). `setFocusedLayer` already gets
-  // this same reset on the layer list below; the legend needed its own.
-  React.useEffect(() => {
-    if (focusedKindState && !wedges.some((w) => w.kind === focusedKindState)) {
-      setFocusedKindState(null);
-    }
-  }, [wedges, focusedKindState]);
+  // "Remove from pie" left `focusedKindState` naming a kind with no radio
+  // at all, so `checked` was false for every row, every radio got
+  // `tabIndex={-1}`, and the radiogroup fell out of the tab order entirely
+  //. Validating the cursor HERE, at render, is
+  // the same correction without the extra state round trip an effect
+  // needed — the bad frame that effect had to repair never renders.
+  const focusedKind =
+    focusedKindState && wedges.some((w) => w.kind === focusedKindState)
+      ? focusedKindState
+      : readoutKind;
+  const readout = React.useMemo(() => readoutLabel(readoutWedge), [readoutWedge]);
+  const lastOpened = React.useMemo(() => lastOpenedLabel(pie), [pie]);
 
-  const dominant = wedges.reduce<typeof wedges[number] | null>(
-    (best, w) => (best === null || w.share > best.share ? w : best),
-    null,
-  );
-  const readoutKind = filterKind ?? dominant?.kind ?? null;
-  const focusedKind = focusedKindState ?? readoutKind;
-  const readoutWedge = readoutKind ? wedges.find((w) => w.kind === readoutKind) ?? null : null;
-  // The count is the READOUT KIND's file count, not the pie's total — the
-  // spec's own example (`html · 60% · 9 files`) only works if 9 is the
-  // count behind the 60% (9/15, say); `pie.files.length` made the two
-  // figures disagree for any pie that is not 100% one kind (review:
-  // PiePlate.tsx:93).
-  const readout = readoutWedge
-    ? `${KIND_LABELS[readoutWedge.kind]} · ${Math.round(readoutWedge.share * 100)}% · ${readoutWedge.count} file${readoutWedge.count === 1 ? "" : "s"}`
-    : "No files";
+  // Per-kind legend facts, scanned once per (files, comment state) change
+  // instead of once per legend row per render.
+  const legendFacts = React.useMemo(() => {
+    const facts = new Map<FileKind, { newest: number; openComments: number }>();
+    for (const [kind, kindFiles] of groups) {
+      let newest = Number.NEGATIVE_INFINITY;
+      let openComments = 0;
+      for (const f of kindFiles) {
+        if (f.mtime > newest) newest = f.mtime;
+        openComments += openCountFor(f.path);
+      }
+      facts.set(kind, { newest, openComments });
+    }
+    return facts;
+  }, [groups, openCountFor]);
 
   const layerFiles = React.useMemo(() => {
     const base = filterKind ? groups.get(filterKind) ?? [] : pie.files;
@@ -335,8 +375,7 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
   // in the global registry would. Guarded the same way App.tsx's reader-mode
   // Esc binding is: an open context menu (a layer row's "Copy Path" /
   // "Bookmark" / ...) still owns Esc and closes itself on the same window
-  // event, so one keypress must not ALSO close the plate underneath it
-  // (review: PiePlate.tsx:108).
+  // event, so one keypress must not ALSO close the plate underneath it.
   useEscape(() => {
     if (document.querySelector(".context-menu")) return;
     onClose();
@@ -352,7 +391,7 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
       // ContextMenuProvider renders the row context menu at the app root,
       // outside plateRef — without this, a pointerdown on one of its own
       // items ("Copy Path", "Bookmark", ...) reads as an outside click and
-      // closes the plate the menu belongs to (review: PiePlate.tsx:115).
+      // closes the plate the menu belongs to.
       if (target instanceof Element && target.closest(".context-menu")) return;
       onClose();
     };
@@ -371,7 +410,12 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
   // host and closes the plate via the outside-pointerdown handler above.
   React.useEffect(() => {
     const tabView = document.querySelector<HTMLElement>(".tab-view");
-    if (!tabView) return;
+    if (!tabView) {
+      // Without this element the iframe keeps swallowing the outside click,
+      // so the plate cannot be dismissed by pointer — say why.
+      console.error("skypie: .tab-view missing — the plate cannot block pointer events under it");
+      return;
+    }
     tabView.style.pointerEvents = "none";
     return () => {
       tabView.style.pointerEvents = "";
@@ -381,7 +425,7 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
   // role="dialog" with no focus move, no aria-modal and no focus restore
   // meant a screen-reader user heard nothing open on Enter (the tile stayed
   // focused) and the layer list's own ↑/↓/Home/End did nothing until several
-  // Tabs landed inside (review: PiePlate.tsx:193). The plate does not trap
+  // Tabs landed inside. The plate does not trap
   // focus — Tab can still leave it — so aria-modal is explicitly "false"
   // rather than dropping role="dialog": that is what the attribute already
   // defaults to, made non-ambiguous here.
@@ -389,8 +433,7 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
   // one level above every key handler that matters: `onLegendKeyDown` is
   // bound on `.pie-legend`, `onLayerKeyDown` on `.pie-layers`, and a keydown
   // whose target is the plate div reaches neither — ←/→ did nothing on
-  // open, until a Tab (or several) landed inside (review: PiePlate.tsx:220,
-  // reported against the spec's own M2 acceptance demo). Focus the CHECKED
+  // open, until a Tab (or several) landed inside. Focus the CHECKED
   // legend radio instead — `legendRefs` is already populated by the time
   // this effect runs (refs attach during commit, before effects), so the
   // radiogroup's own keydown handler is live from the very first keypress.
@@ -401,7 +444,12 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
     const target = (focusedKind && legendRefs.current[focusedKind]) || plateRef.current;
     target?.focus();
     return () => {
-      previouslyFocused?.focus?.();
+      // The tile that opened the plate can be gone by the time it closes (a
+      // bookmark unpinned while it was open). Focus would then fall to
+      // <body> and keyboard navigation would be lost with nothing to say so
+      // — fall back to the first tile (the band element itself is not focusable).
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+      else document.querySelector<HTMLElement>(".sky-band [data-pie-id]")?.focus();
     };
     // Deliberately mount-only: this is the INITIAL focus target, not a
     // resync on every readout change (which would steal focus back from
@@ -447,16 +495,17 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
     const current = focusedKind ? kinds.indexOf(focusedKind) : -1;
     switch (e.key) {
       case "ArrowRight":
+      case "ArrowLeft": {
         e.preventDefault();
-        focusRadio(kinds[(current + 1 + kinds.length) % kinds.length]);
+        const delta = e.key === "ArrowRight" ? 1 : -1;
+        focusRadio(kinds[(current + delta + kinds.length) % kinds.length]);
         break;
-      case "ArrowLeft":
-        e.preventDefault();
-        focusRadio(kinds[(current - 1 + kinds.length) % kinds.length]);
-        break;
+      }
       case "Enter":
         e.preventDefault();
-        if (focusedKind) setFilterKind((k) => (k === focusedKind ? null : focusedKind));
+        // Same path a click on the row takes, so keyboard and pointer
+        // cannot drift apart.
+        if (focusedKind) activateRadio(focusedKind);
         break;
       default:
         break;
@@ -525,11 +574,6 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
       aria-modal="false"
       tabIndex={-1}
       data-testid="pie-plate"
-      // The plate is a DOM descendant of the band, which is itself a
-      // listbox with its own arrow/Home/End/Enter handling (Sky.tsx) — stop
-      // a key the plate's own rows already handled (its layer list's
-      // ↑/↓/Home/End/Enter) from also reaching the band underneath it.
-      onKeyDown={(e) => e.stopPropagation()}
     >
       <div className="pie-plate-left">
         {/* A static portrait of the pie already open — non-interactive
@@ -539,6 +583,10 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
             — see the ARIA-ownership note on `onWedgeClick` in Pie.tsx. */}
         <Pie
           pie={pie}
+          // The plate already grouped these files for the legend and the
+          // layer filter; handing the wedges down stops the portrait from
+          // regrouping the very same list.
+          wedges={wedges}
           size={short ? 120 : 200}
           interactive={false}
           cutKind={filterKind}
@@ -548,7 +596,7 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
         {pie.census?.truncated ? (
           // spec section 4 fixes the left-column order as pie, readout,
           // "truncated · 20,000+", then "Last opened" — this used to render
-          // AFTER pie-plate-last-opened (review, minor: PiePlate.tsx:539).
+          // AFTER the recency line (review, minor: PiePlate.tsx:539).
           // A plain count would keep moving as later folders are skipped,
           // so the label names the CAP instead of a number that would be
           // wrong the moment it's read.
@@ -556,7 +604,7 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
             truncated · 20,000+
           </div>
         ) : null}
-        <div className="pie-plate-last-opened">{lastOpenedLabel(pie)}</div>
+        <div className="pie-plate-recency">{lastOpened}</div>
       </div>
       <div className="pie-plate-right">
         {/* role="radiogroup": the legend rows AND the portrait's wedge
@@ -581,9 +629,10 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
             <p className="pie-legend-empty">No files in this pie yet.</p>
           ) : (
             wedges.map((w) => {
-              const kindFiles = groups.get(w.kind) ?? [];
-              const newest = Math.max(...kindFiles.map((f) => f.mtime));
-              const openComments = kindFiles.reduce((sum, f) => sum + openCountFor(f.path), 0);
+              const { newest, openComments } = legendFacts.get(w.kind) ?? {
+                newest: Number.NEGATIVE_INFINITY,
+                openComments: 0,
+              };
               const cut = filterKind === w.kind;
               const checked = focusedKind === w.kind;
               const KindIcon = KIND_ICON[w.kind];
@@ -622,8 +671,7 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
           // The filter's only documented ways out besides re-clicking the
           // same legend row (spec section 5): this chip, or Backspace while
           // the layer list has focus (onLayerKeyDown above). Neither shipped
-          // before, so nothing told the user how to leave the filtered view
-          // (review: PiePlate.tsx:223).
+          // before, so nothing told the user how to leave the filtered view.
           <button
             type="button"
             className="pie-slice-chip"
@@ -752,7 +800,18 @@ export default function PiePlate({ pie, onClose, onOpenFile, ipc, onNotice }: Pi
               {
                 label: "Remove from pie",
                 icon: <XCircle size={13} strokeWidth={2} />,
-                onSelect: () => void piesCtx.removePieMember(pie.id, file.path),
+                // `removePieMember` removes the row optimistically and
+                // rolls back on a refusal; without this catch the
+                // rejection was dropped, so the row vanished, the removal
+                // never landed, and the row came back on the next
+                // unrelated event.
+                onSelect: () => {
+                  piesCtx.removePieMember(pie.id, file.path).catch((err: unknown) => {
+                    piesCtx.notice?.(
+                      `Couldn't remove "${basename(file.path)}" — ${messageOf(err, "the member could not be removed")}`,
+                    );
+                  });
+                },
               },
               {
                 label: "Add to another pie…",

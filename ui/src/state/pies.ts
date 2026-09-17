@@ -3,6 +3,7 @@
 // lives here (vitest here has no jsdom, no testing-library — every export
 // below is a plain function over plain data).
 import type { Pie, PieCensus } from "../ipc";
+import { BUILTIN_PINNED_ID, BUILTIN_RECENT_ID } from "./derived-pies";
 import type { DerivedPie, DerivedPieFile } from "./derived-pies";
 import { kindOf } from "../render/kind";
 import { censusToFiles, freshCount, newestPath } from "./pie-census";
@@ -58,26 +59,67 @@ export function bandOrder(
   return [...derived, ...userPies.map((p) => toDerivedPie(p, censusFor?.(p.id)))];
 }
 
-/** Pairs with `insertPieAt` for the 5-second delete undo (Sky.tsx):
- *  removing a pie from local state is optimistic and does NOT itself call
- *  `removePie` — the caller defers that IPC call until the undo window
- *  closes, so undoing never has to reconstruct a pie the backend already
- *  forgot. */
-export function withoutPie(pies: Pie[], id: string): Pie[] {
-  return pies.filter((p) => p.id !== id);
-}
-
-/** The undo half of `withoutPie`: re-insert `pie` at `index` (clamped into
- *  range), restoring the exact array shape a delete removed it from. */
-export function insertPieAt(pies: Pie[], pie: Pie, index: number): Pie[] {
-  const next = pies.slice();
-  const at = Math.max(0, Math.min(next.length, index));
-  next.splice(at, 0, pie);
+/** Adds `id` to a pending-delete set, returning a NEW set (React state must
+ *  not be mutated in place). Paired with `withoutPending` so the two
+ *  overlapping-delete transitions are one testable pair rather than two
+ *  inline `new Set(prev)` closures inside `usePies`. */
+export function withPending(pending: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(pending);
+  next.add(id);
   return next;
 }
 
+/** Removes `id` from a pending-delete set. Returns a new set, and leaves the
+ *  OTHER ids alone — two deletes whose undo windows overlap must not clear
+ *  each other, which is what a plain `setPendingDeletes(NO_PENDING)` did. */
+export function withoutPending(pending: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(pending);
+  next.delete(id);
+  return next;
+}
+
+/** What `PiesProvider.openPicker` should do with a caller-supplied path,
+ *  decided without touching React or the IPC surface so all three outcomes
+ *  are testable directly.
+ *
+ *  - `refuse`: a `skypie-remote://` address — M2 has no remote pie members.
+ *  - `canonicalize`: the normal path, resolved before the picker renders so
+ *    `holdsPath`'s exact-string compare lines up with the stored members.
+ *  - `open`: no `canonicalizePath` on this IPC surface (a test double, an
+ *    older build) — open uncanonicalized rather than hang on a promise that
+ *    will never resolve. */
+export type PickerPathPlan =
+  | { action: "refuse"; reason: string }
+  | { action: "canonicalize"; path: string }
+  | { action: "open"; path: string };
+
+export function pickerPathPlan(
+  path: string,
+  canCanonicalize: boolean,
+  isRemote: (p: string) => boolean,
+): PickerPathPlan {
+  if (isRemote(path)) return { action: "refuse", reason: "Can't add a pulled file to a pie yet" };
+  return canCanonicalize ? { action: "canonicalize", path } : { action: "open", path };
+}
+
+/** Hides every pie whose delete is still inside its undo window
+ *  (`usePies`'s `pendingDeletes`). The hook applies this to EVERY list it
+ *  reconciles, including one that arrives on a `skypie://pies-updated`
+ *  event from an unrelated write (another window's `touch_seen`, or M5's
+ *  agent socket). Without it such an event replaced the local list with the
+ *  server's still-has-it document and the deleted pie reappeared mid-undo.
+ *  Returns the SAME array when nothing is pending, so the common case adds
+ *  no new identity for React to re-render on. */
+export function subtractPending(pies: Pie[], pending: ReadonlySet<string>): Pie[] {
+  if (pending.size === 0) return pies;
+  return pies.filter((p) => !pending.has(p.id));
+}
+
 /** Whether `pie` already holds `path` as a member — the picker's check
- *  mark (spec section 6). */
+ *  mark (spec section 6). An EXACT string compare against the stored
+ *  (always canonical) member paths, which is why `openPicker` canonicalizes
+ *  before the picker renders: a non-canonical form of the very same file
+ *  answers false here. */
 export function holdsPath(pie: Pie, path: string): boolean {
   return pie.members.some((m) => m.path === path);
 }
@@ -97,9 +139,9 @@ export function uniqueName(pies: Pie[], wanted: string): string {
   return `${trimmed} ${n}`;
 }
 
-/** True for a user pie's id — every built-in pie's id is a fixed
- *  `"builtin:…"` literal (`derived-pies.ts`), and no user pie can ever be
- *  minted with that prefix (`uuid::Uuid::now_v7()` never produces one). */
+/** True for a user pie's id — the built-in pies are exactly the two fixed
+ *  ids `derived-pies.ts` exports, and no user pie can ever carry one
+ *  (`uuid::Uuid::now_v7()` never produces them). */
 export function isUserPieId(id: string): boolean {
-  return !id.startsWith("builtin:");
+  return id !== BUILTIN_PINNED_ID && id !== BUILTIN_RECENT_ID;
 }

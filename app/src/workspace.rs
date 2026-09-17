@@ -630,6 +630,7 @@ mod census_tests {
             added_at: 0,
             source: None,
             origin: None,
+            rest: Default::default(),
         }
     }
 

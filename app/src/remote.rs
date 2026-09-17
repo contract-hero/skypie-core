@@ -31,8 +31,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tauri::{Emitter, Manager};
+use skypie_ipc::{AppStatus, OfferSummary};
 #[cfg(target_os = "macos")]
-use skypie_ipc::{AppStatus, DeviceInfo, OfferSummary, PendingPairing, Presence};
+use skypie_ipc::{DeviceInfo, PendingPairing, Presence};
 
 use peers::{Peer, PendingPair};
 use proto::ArtifactMeta;
@@ -75,8 +76,8 @@ pub struct RemoteState {
     /// endpoint. `None` only when the key cannot be read or created, which
     /// `boot` reports as a hard error on its own.
     self_id: Option<String>,
-    /// Read by `status_for`, which only the macOS socket server calls.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    /// Read by `status_for`, which every transport's `status` verb answers
+    /// from — the unix socket on macOS, the E2E loopback listener on iOS.
     started: Instant,
     sessions: tokio::sync::Mutex<HashMap<String, Arc<scope::ClientSession>>>,
     /// One dial gate per peer id, so `session()` can serialize the dials for
@@ -714,8 +715,8 @@ pub async fn remote_sync_annotations(
 
 // ═══ Status for the local socket ════════════════════════════════════════════
 
-// Only the macOS socket server (`ipc_server.rs`) calls this.
-#[cfg(target_os = "macos")]
+/// One offer as the wire sees it. Read by `status_for` on every target, and
+/// by `ipc_server`'s macOS-only `stop_beam` arm.
 pub(crate) fn offer_summary(o: &beam::OfferInfo) -> OfferSummary {
     OfferSummary {
         name: o.name.clone(),
@@ -797,8 +798,9 @@ pub(crate) async fn list_devices_for(app: &tauri::AppHandle, probe: bool) -> Vec
         .collect()
 }
 
-// Only the macOS socket server (`ipc_server.rs`) calls this.
-#[cfg(target_os = "macos")]
+/// The app's own answer to the `status` verb, on every transport: the
+/// unix socket on macOS and the E2E harness's loopback listener on iOS.
+/// One implementation, so a driver reads the same fields on both.
 pub(crate) async fn status_for(app: &tauri::AppHandle) -> AppStatus {
     let state = app.state::<RemoteState>();
     let node = state.existing().await;
