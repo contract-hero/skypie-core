@@ -330,6 +330,23 @@ export async function waitFor(
   }
 }
 
+/**
+ * Open `absPath` through the app's own ⌘P quick-open palette, and wait for
+ * the resulting tab to become active. Typed on `AppHandle`, not on
+ * `LaunchedApp`, so an iOS scenario can drive it too.
+ *
+ * Shared here rather than copied per scenario: populating a scenario's
+ * Recent history is the common setup step for every Sky/pie checkpoint.
+ */
+export async function openViaQuickOpen(app: AppHandle, absPath: string): Promise<void> {
+  await keys(app, "mod+p");
+  await waitFor(app, `document.querySelector('[data-testid="quick-open"]') !== null`, 10_000);
+  const rowSelector = `li[title=${JSON.stringify(absPath)}]`;
+  await waitFor(app, `document.querySelector(${JSON.stringify(rowSelector)}) !== null`, 10_000);
+  await click(app, rowSelector);
+  await waitFor(app, `document.querySelector(".tab.active .tab-label") !== null`, 10_000);
+}
+
 /** Stop the app. Desktop kills the child process; `launchIos`'s handle
  *  terminates the simulator process instead — each `AppHandle` knows its
  *  own shutdown, this just calls it. */

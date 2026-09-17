@@ -8,11 +8,6 @@ import ImageRenderer from "./image";
 import MetadataRenderer from "./metadata";
 import { extOf } from "./kind";
 
-// `kind.ts` owns the canonical ext helper now (the Sky band's file-kind
-// table needs the same one). Nothing outside this file imports `extOf`
-// today; the re-export is only for future callers.
-export { extOf } from "./kind";
-
 const TEXT_EXTS = new Set([
   ".txt", ".md", ".markdown", ".ts", ".tsx", ".js", ".jsx", ".json",
   ".move", ".rs", ".toml", ".yml", ".yaml", ".css", ".sh", ".py", ".go",

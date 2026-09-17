@@ -19,26 +19,10 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { click, evalIn, keys, launchDesktop, quit, text, waitFor } from "./lib/app";
+import { click, evalIn, keys, launchDesktop, openViaQuickOpen, quit, text, waitFor } from "./lib/app";
 import type { LaunchedApp } from "./lib/app";
+import { sleep } from "./lib/proc";
 import { cleanupFixtureWorkspace, makeFixtureWorkspace, setWorkspaceRoot } from "./lib/fixtureWorkspace";
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Open a file through the app's own ⌘P palette — same technique as
- *  smoke.ts/sky.e2e.ts, repeated here rather than shared so each scenario
- *  stays a single, independently-readable file (this directory's existing
- *  convention). */
-async function openViaQuickOpen(app: LaunchedApp, absPath: string): Promise<void> {
-  await keys(app, "mod+p");
-  await waitFor(app, `document.querySelector('[data-testid="quick-open"]') !== null`, 10_000);
-  const rowSelector = `li[title=${JSON.stringify(absPath)}]`;
-  await waitFor(app, `document.querySelector(${JSON.stringify(rowSelector)}) !== null`, 10_000);
-  await click(app, rowSelector);
-  await waitFor(app, `document.querySelector(".tab.active .tab-label") !== null`, 10_000);
-}
 
 /** Read the real `state.json` off disk (NOT through the app) — the only way
  *  to know the debounced writer (`app/src/state_store.rs`, a ~250ms quiet

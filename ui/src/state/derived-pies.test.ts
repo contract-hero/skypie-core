@@ -75,7 +75,7 @@ describe("wedgesOf", () => {
 });
 
 // PiePlate's legend filter and the wedge tones both rely on this grouping —
-// only the e2e (sky.e2e.ts) exercised it before, which stays green even if
+// only the e2e (m1.e2e.ts) exercised it before, which stays green even if
 // the merge loop drops a file or the "other" guard regresses (review:
 // derived-pies.ts:76).
 describe("groupByWedge", () => {

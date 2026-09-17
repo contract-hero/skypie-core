@@ -35,12 +35,17 @@ const IMAGE_EXTS = new Set([
 ]);
 const DATA_EXTS = new Set([".json", ".yml", ".yaml", ".toml", ".xml"]);
 
-/** Lowercased extension including the dot (`".html"`), or `""` when `path`
- *  has no dot at all — never throws. */
+/** Lowercased extension including the dot (`".html"`), or `""` when there
+ *  is none — never throws.
+ *
+ *  `dot > 0`, not `>= 0`: a leading-dot basename (".gitignore", ".md") is a
+ *  NAME, not an extension, which is the rule FileIcon.tsx's glyph lookup
+ *  has always used. One parser, so the kind table and the glyph table can
+ *  never answer differently for the same filename. */
 export function extOf(path: string): string {
-  const i = path.lastIndexOf(".");
-  if (i < 0) return "";
-  return path.slice(i).toLowerCase();
+  const dot = path.lastIndexOf(".");
+  if (dot <= 0) return "";
+  return path.slice(dot).toLowerCase();
 }
 
 export function kindOf(path: string): FileKind {

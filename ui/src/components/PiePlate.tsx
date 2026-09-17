@@ -12,8 +12,8 @@ import * as React from "react";
 import { FileCode, FileText, FileImage, FileJson, File as FileIconGlyph, MessageSquare } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Pie from "./Pie";
-import { groupByWedge, wedgesOf } from "../state/derived-pies";
-import type { DerivedPie, DerivedPieFile } from "../state/derived-pies";
+import { groupByWedge, wedgesOfGroups } from "../state/derived-pies";
+import type { DerivedPie, DerivedPieFile, Wedge } from "../state/derived-pies";
 import type { FileKind } from "../render/kind";
 import { FileGlyph } from "./FileIcon";
 import { basename, displayDir } from "../utils/path";
@@ -63,8 +63,10 @@ function usePaneShort(): boolean {
   React.useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const mql = window.matchMedia(`(max-height: ${SHORT_PANE_WINDOW_H - 1}px)`);
+    // No eager `onChange()`: the lazy initializer above already read the
+    // same window height with the same threshold, so calling it on mount
+    // only set the state it was already in.
     const onChange = () => setShort(mql.matches);
-    onChange();
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, []);
@@ -110,23 +112,52 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   const [filterKind, setFilterKind] = React.useState<FileKind | null>(null);
   const [focusedLayer, setFocusedLayer] = React.useState(0);
 
-  const wedges = React.useMemo(() => wedgesOf(pie.files), [pie.files]);
+  // One grouping pass per file list; the wedges are derived from it rather
+  // than regrouping the same files a second time.
   const groups = React.useMemo(() => groupByWedge(pie.files), [pie.files]);
-
-  const dominant = wedges.reduce<typeof wedges[number] | null>(
-    (best, w) => (best === null || w.share > best.share ? w : best),
-    null,
+  const wedges = React.useMemo(
+    () => wedgesOfGroups(groups, pie.files.length),
+    [groups, pie.files.length],
   );
-  const readoutKind = filterKind ?? dominant?.kind ?? null;
-  const readoutWedge = readoutKind ? wedges.find((w) => w.kind === readoutKind) ?? null : null;
+
+  // The wedge the readout describes: the filtered kind while a slice is on,
+  // otherwise the pie's dominant kind.
+  const readoutWedge = React.useMemo<Wedge | null>(() => {
+    if (filterKind) return wedges.find((w) => w.kind === filterKind) ?? null;
+    return wedges.reduce<Wedge | null>(
+      (best, w) => (best === null || w.share > best.share ? w : best),
+      null,
+    );
+  }, [filterKind, wedges]);
   // The count is the READOUT KIND's file count, not the pie's total — the
   // spec's own example (`html · 60% · 9 files`) only works if 9 is the
   // count behind the 60% (9/15, say); `pie.files.length` made the two
   // figures disagree for any pie that is not 100% one kind (review:
   // PiePlate.tsx:93).
-  const readout = readoutWedge
-    ? `${KIND_LABELS[readoutWedge.kind]} · ${Math.round(readoutWedge.share * 100)}% · ${readoutWedge.count} file${readoutWedge.count === 1 ? "" : "s"}`
-    : "No files";
+  const readout = React.useMemo(
+    () =>
+      readoutWedge
+        ? `${KIND_LABELS[readoutWedge.kind]} · ${Math.round(readoutWedge.share * 100)}% · ${readoutWedge.count} file${readoutWedge.count === 1 ? "" : "s"}`
+        : "No files",
+    [readoutWedge],
+  );
+  const lastOpened = React.useMemo(() => lastOpenedLabel(pie), [pie]);
+
+  // Per-kind legend facts, scanned once per (files, comment state) change
+  // instead of once per legend row per render.
+  const legendFacts = React.useMemo(() => {
+    const facts = new Map<FileKind, { newest: number; openComments: number }>();
+    for (const [kind, kindFiles] of groups) {
+      let newest = Number.NEGATIVE_INFINITY;
+      let openComments = 0;
+      for (const f of kindFiles) {
+        if (f.mtime > newest) newest = f.mtime;
+        openComments += openCountFor(f.path);
+      }
+      facts.set(kind, { newest, openComments });
+    }
+    return facts;
+  }, [groups, openCountFor]);
 
   const layerFiles = React.useMemo(() => {
     const base = filterKind ? groups.get(filterKind) ?? [] : pie.files;
@@ -279,7 +310,7 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
             this pie inside the band's listbox. */}
         <Pie pie={pie} size={short ? 120 : 200} interactive={false} />
         <div className="pie-plate-readout">{readout}</div>
-        <div className="pie-plate-last-opened">{lastOpenedLabel(pie)}</div>
+        <div className="pie-plate-last-opened">{lastOpened}</div>
       </div>
       <div className="pie-plate-right">
         <div className="pie-legend" data-testid="pie-legend">
@@ -287,9 +318,10 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
             <p className="pie-legend-empty">No files in this pie yet.</p>
           ) : (
             wedges.map((w) => {
-              const kindFiles = groups.get(w.kind) ?? [];
-              const newest = Math.max(...kindFiles.map((f) => f.mtime));
-              const openComments = kindFiles.reduce((sum, f) => sum + openCountFor(f.path), 0);
+              const { newest, openComments } = legendFacts.get(w.kind) ?? {
+                newest: Number.NEGATIVE_INFINITY,
+                openComments: 0,
+              };
               const active = filterKind === w.kind;
               const KindIcon = KIND_ICON[w.kind];
               return (

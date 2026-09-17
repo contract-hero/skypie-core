@@ -13,32 +13,13 @@ import type { DerivedPie } from "../state/derived-pies";
 const CENTER = 100;
 const RADIUS = 92;
 
-// Tones are steps of ink between --sky-ink and --sky, not hues — the spec's
-// exact seven-step ramp, one slot per BEARINGS kind. Day and dusk are the
-// same steps reversed. A CSS custom property can't be sampled into an SVG
-// `fill` attribute without a JS round trip, so this reads `<html
-// data-theme>` directly — useTheme()'s own doc comment names that attribute
-// as the thing a consumer may read instead of re-subscribing to the theme.
-const TONE_RAMP_DAY = ["#1f2f4d", "#3a4f75", "#5b729a", "#7f95b8", "#a6b8d1", "#c2d0e2", "#dbe4ef"];
-const TONE_RAMP_DUSK = [...TONE_RAMP_DAY].reverse();
+// The one warm stroke in the product (DESIGN.md, "Sky band"). Wedge tones
+// themselves are CSS custom properties (`--sky-tone-1` … `--sky-tone-7`,
+// declared per theme in styles.css) rather than hex ramps in JS: a custom
+// property resolves inside an SVG `fill` exactly as it does in `stroke`,
+// which the wedge separators below already rely on. So the day/dusk swap is
+// a pure CSS re-resolve with no theme subscription and no MutationObserver.
 const CRUST = "#c89a5c";
-
-function useDomTheme(): "dark" | "light" {
-  const [theme, setTheme] = React.useState<"dark" | "light">(() =>
-    typeof document !== "undefined" && document.documentElement.dataset.theme === "light"
-      ? "light"
-      : "dark",
-  );
-  React.useEffect(() => {
-    const el = document.documentElement;
-    const observer = new MutationObserver(() => {
-      setTheme(el.dataset.theme === "light" ? "light" : "dark");
-    });
-    observer.observe(el, { attributes: true, attributeFilter: ["data-theme"] });
-    return () => observer.disconnect();
-  }, []);
-  return theme;
-}
 
 /** Point on the disc at `angleDeg` clockwise from north (SVG's 0° is east,
  *  so this rotates the usual parametrization by -90°). */
@@ -80,8 +61,6 @@ export default function Pie({
   onFocus,
   interactive = true,
 }: PieProps): React.ReactElement {
-  const theme = useDomTheme();
-  const ramp = theme === "light" ? TONE_RAMP_DAY : TONE_RAMP_DUSK;
   const wedges = React.useMemo(() => wedgesOf(pie.files), [pie.files]);
 
   const shareLabel = wedges.length
@@ -91,7 +70,7 @@ export default function Pie({
   let angle = 0;
   const paths = wedges.map((w) => {
     const sweep = w.share * 360;
-    const fill = ramp[BEARINGS.indexOf(w.kind)] ?? CRUST;
+    const toneIndex = BEARINGS.indexOf(w.kind);
     let d: string;
     if (wedges.length === 1) {
       // One kind = a full disc. An SVG arc of exactly 360° degenerates to
@@ -110,7 +89,7 @@ export default function Pie({
       <path
         key={w.kind}
         d={d}
-        fill={fill}
+        fill={toneIndex >= 0 ? `var(--sky-tone-${toneIndex + 1})` : CRUST}
         stroke="var(--sky)"
         strokeWidth={1}
         vectorEffect="non-scaling-stroke"

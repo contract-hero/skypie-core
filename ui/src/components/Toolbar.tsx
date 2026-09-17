@@ -55,21 +55,34 @@ export interface ToolbarProps {
 
 function IconButton({
   title,
+  label,
   disabled,
+  pressed,
+  testId,
   onClick,
   children,
 }: {
   title: string;
+  /** Accessible name, when it differs from the tooltip — a toggle's title
+   *  names the shortcut, its label names the action. Defaults to `title`. */
+  label?: string;
   disabled?: boolean;
+  /** A toggle button: renders `aria-pressed` and the pressed-state class.
+   *  Left undefined for a plain action button, which has no pressed state
+   *  and must not advertise one. */
+  pressed?: boolean;
+  testId?: string;
   onClick: () => void;
   children: React.ReactNode;
 }): React.ReactElement {
   return (
     <button
       type="button"
-      className="toolbar-button"
+      className={`toolbar-button${pressed ? " toolbar-button-pressed" : ""}`}
       title={title}
-      aria-label={title}
+      aria-label={label ?? title}
+      aria-pressed={pressed}
+      data-testid={testId}
       disabled={disabled}
       onClick={onClick}
     >
@@ -177,20 +190,16 @@ export default function Toolbar({
         <PanelLeft size={14.5} strokeWidth={2} />
       </IconButton>
 
-      {/* Plain <button>, not IconButton: this tile needs aria-pressed and
-          the pressed-state class, which IconButton doesn't carry. No
-          right-click menu in M1 ("Add current file to pie…" is M2). */}
-      <button
-        type="button"
-        className={`toolbar-button${skyVisible ? " toolbar-button-pressed" : ""}`}
-        data-testid="toolbar-sky-toggle"
+      {/* No right-click menu in M1 ("Add current file to pie…" is M2). */}
+      <IconButton
         title="Sky (⌘⇧B)"
-        aria-label={skyVisible ? "Hide sky" : "Show sky"}
-        aria-pressed={skyVisible}
+        label={skyVisible ? "Hide sky" : "Show sky"}
+        pressed={skyVisible}
+        testId="toolbar-sky-toggle"
         onClick={onToggleSky}
       >
         <SkyGlyph />
-      </button>
+      </IconButton>
 
       <span className="toolbar-sep" aria-hidden />
 
@@ -319,13 +328,11 @@ export default function Toolbar({
       {/* Feedback is its own job: see the notes, and make one. The two sit
           together, and the tool lights up while it is in hand — the one
           object the app is acting on, which is the accent's marker role. */}
-      <button
-        type="button"
-        className={`toolbar-button${commentsVisible ? " toolbar-button-pressed" : ""}`}
-        data-testid="toolbar-comments-toggle"
+      <IconButton
         title={commentsVisible ? "Hide comments (⇧⌘M)" : "Show comments (⇧⌘M)"}
-        aria-label={commentsVisible ? "Hide comments" : "Show comments"}
-        aria-pressed={commentsVisible}
+        label={commentsVisible ? "Hide comments" : "Show comments"}
+        pressed={commentsVisible}
+        testId="toolbar-comments-toggle"
         disabled={!entry}
         onClick={onToggleComments}
       >
@@ -335,7 +342,7 @@ export default function Toolbar({
             {openComments > 99 ? "99+" : openComments}
           </span>
         ) : null}
-      </button>
+      </IconButton>
       <button
         type="button"
         className={`toolbar-button${commentTool ? " toolbar-button-tool" : ""}`}

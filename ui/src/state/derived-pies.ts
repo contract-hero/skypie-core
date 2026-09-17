@@ -103,10 +103,22 @@ export function groupByWedge(files: DerivedPieFile[]): Map<FileKind, DerivedPieF
  * threshold it keeps its own wedge ("under 4%" in the spec is a strict `<`).
  */
 export function wedgesOf(files: DerivedPieFile[]): Wedge[] {
-  const total = files.length;
-  if (total === 0) return [];
+  if (files.length === 0) return [];
+  return wedgesOfGroups(groupByWedge(files), files.length);
+}
 
-  const groups = groupByWedge(files);
+/**
+ * The wedge half of `wedgesOf`, over groups a caller already has. A consumer
+ * that needs BOTH (the plate needs the groups for its legend and layer
+ * filter, and the wedges for the disc) would otherwise group the same files
+ * twice on every render.
+ *
+ * `total` is the pie's total file count, not the groups' — they are equal
+ * for groups that came from `groupByWedge` on the same list, and passing it
+ * keeps the share arithmetic explicit.
+ */
+export function wedgesOfGroups(groups: Map<FileKind, DerivedPieFile[]>, total: number): Wedge[] {
+  if (total === 0) return [];
   return BEARINGS.filter((kind) => (groups.get(kind)?.length ?? 0) > 0).map((kind) => {
     const count = groups.get(kind)?.length ?? 0;
     return { kind, count, share: count / total };
