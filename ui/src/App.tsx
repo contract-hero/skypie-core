@@ -24,6 +24,7 @@ import { useE2eBridge } from "./hooks/useE2eBridge";
 import { WorkspaceProvider, useWorkspace } from "./state/workspace";
 import { WatcherProvider } from "./state/watcher-bus";
 import { BookmarksProvider } from "./state/bookmarks-context";
+import { PiesProvider, usePiesContext } from "./state/pies-context";
 import { RecentsProvider } from "./state/recents-context";
 import { ScrollMemoryProvider } from "./state/scroll-memory";
 import { ExplorerUiProvider, useExplorerUi } from "./state/explorer-ui";
@@ -80,19 +81,42 @@ function clampSidebarPx(px: number): number {
   return Math.max(MIN_SIDEBAR_PX, Math.min(MAX_SIDEBAR_PX, px));
 }
 
-/** The transient notice toast (a rejected deep link, so far). Identical on
- *  both platforms — only where it mounts differs: over the phone shell, or
- *  inside the desktop preview column under the toolbar. */
+/** An optional inline action the notice offers besides dismissing — so far
+ *  only the Sky band's delete-pie undo (Sky.tsx), which is exactly why this
+ *  is a plain `{ label, onClick }` and not a whole notice CONTEXT: one
+ *  notice, one optional action, is all any caller needs yet. */
+export interface AppNoticeAction {
+  label: string;
+  onClick: () => void;
+}
+
+/** The transient notice toast (a rejected deep link, an undo offer).
+ *  Identical on both platforms — only where it mounts differs: over the
+ *  phone shell, or inside the desktop preview column under the toolbar. */
 function AppNotice({
   text,
+  action,
   onDismiss,
 }: {
   text: string;
+  action?: AppNoticeAction | null;
   onDismiss: () => void;
 }): React.ReactElement {
   return (
     <div className="app-notice" role="alert">
       <span className="app-notice-text">{text}</span>
+      {action ? (
+        <button
+          type="button"
+          className="app-notice-action"
+          onClick={() => {
+            action.onClick();
+            onDismiss();
+          }}
+        >
+          {action.label}
+        </button>
+      ) : null}
       <button
         type="button"
         className="app-notice-dismiss"
@@ -135,7 +159,9 @@ function ProviderShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
                 <ScrollMemoryProvider>
                   <ExplorerUiProvider>
                     <ContextMenuProvider>
-                      <AnnotatedShell ipc={ipc} />
+                      <PiesProvider ipc={ipc}>
+                        <AnnotatedShell ipc={ipc} />
+                      </PiesProvider>
                     </ContextMenuProvider>
                   </ExplorerUiProvider>
                 </ScrollMemoryProvider>
@@ -170,6 +196,7 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
   const entry = currentEntry(active);
   const openFile = useOpenFile(ipc, root);
   const { reveal } = useExplorerUi();
+  const { openPicker } = usePiesContext();
 
   // Auto-reveal: keep the tree pointing at the active tab's file.
   const activePath = entry?.path ?? null;
@@ -190,7 +217,9 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
   const [refreshNonce, setRefreshNonce] = React.useState<number>(0);
   const [quickOpenVisible, setQuickOpenVisible] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
-  const [notice, setNotice] = React.useState<string | null>(null);
+  const [notice, setNotice] = React.useState<{ text: string; action?: AppNoticeAction | null } | null>(
+    null,
+  );
   // ── Comments ───────────────────────────────────────────────────────────
   // Two switches. "Show comments" (⇧⌘M) is a workspace posture: it stays
   // where the user left it across tabs, and reader mode hides the notes the
@@ -237,11 +266,14 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
     setNotice(null);
   }, []);
 
-  const showNotice = React.useCallback((text: string) => {
-    setNotice(text);
-    if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
-    noticeTimer.current = window.setTimeout(() => setNotice(null), NOTICE_MS);
-  }, []);
+  const showNotice = React.useCallback(
+    (text: string, action?: AppNoticeAction, durationMs: number = NOTICE_MS) => {
+      setNotice({ text, action });
+      if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
+      noticeTimer.current = window.setTimeout(() => setNotice(null), durationMs);
+    },
+    [],
+  );
 
   // ── Persisted sidebar width ────────────────────────────────────────────
   React.useEffect(() => {
@@ -435,6 +467,17 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
           // Never in IFRAME_FORWARDABLE: rendered content must not be able to
           // mint a link to itself onto the clipboard.
           { combo: "mod+shift+c", handler: copyDeviceLinkForActive } satisfies Binding,
+          // ⌘D — the picker. Not forwarded from a preview iframe either
+          // (same owner decision as ⌘O/⌘P: it opens a dialog and steals
+          // focus — spec section 2/6). The tile's own right-click covers
+          // the mouse path from inside a preview.
+          {
+            combo: "mod+d",
+            allowInInput: true,
+            handler: () => {
+              if (entry?.path) openPicker(entry.path);
+            },
+          } satisfies Binding,
         ]
       : []),
     { combo: "mod+b", allowInInput: true, handler: toggleSidebar },
@@ -594,7 +637,7 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
           onPickWorkspace={handlePickWorkspace}
           workspaceRoot={root}
         />
-        {notice ? <AppNotice text={notice} onDismiss={dismissNotice} /> : null}
+        {notice ? <AppNotice text={notice.text} action={notice.action} onDismiss={dismissNotice} /> : null}
         {overlays}
       </div>
     );
@@ -657,8 +700,10 @@ function AppShell({ ipc }: { ipc: IpcSurface }): React.ReactElement {
           {/* Reader mode already unmounts the Toolbar on the same condition
               (see the JSX above); the band follows it down for the same
               reason — the artifact stays the protagonist. */}
-          {skyVisible && !readerMode ? <Sky onOpenFile={openFile} /> : null}
-          {notice ? <AppNotice text={notice} onDismiss={dismissNotice} /> : null}
+          {skyVisible && !readerMode ? (
+            <Sky ipc={ipc} onOpenFile={openFile} onNotice={showNotice} />
+          ) : null}
+          {notice ? <AppNotice text={notice.text} action={notice.action} onDismiss={dismissNotice} /> : null}
           <div
             ref={tabViewRef}
             className={"tab-view" + (commentTool && !isFrame ? " comment-tool-on" : "")}

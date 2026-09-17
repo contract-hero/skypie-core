@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupByWedge, pinnedPie, recentPie, wedgesOf } from "./derived-pies";
+import { groupByWedge, pinnedPie, recentPie, shareLabel, wedgesOf } from "./derived-pies";
 import { BEARINGS } from "../render/kind";
 import type { BookmarkEntry, RecentEntry } from "../ipc";
 import type { DerivedPieFile } from "./derived-pies";
@@ -111,5 +111,20 @@ describe("groupByWedge", () => {
   it("does not alias the same map instance across calls", () => {
     const files: DerivedPieFile[] = [{ path: "/a.html", kind: "html", mtime: 0 }];
     expect(groupByWedge(files)).not.toBe(groupByWedge(files));
+  });
+});
+
+describe("shareLabel", () => {
+  it("joins wedges as 'kind pct%' in BEARINGS order", () => {
+    const files: DerivedPieFile[] = [
+      { path: "/a.html", kind: "html", mtime: 0 },
+      { path: "/b.html", kind: "html", mtime: 0 },
+      { path: "/c.md", kind: "md", mtime: 0 },
+    ];
+    expect(shareLabel(files)).toBe("html 67% · md 33%");
+  });
+
+  it("reads 'No files' for an empty pie", () => {
+    expect(shareLabel([])).toBe("No files");
   });
 });

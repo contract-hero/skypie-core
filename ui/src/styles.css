@@ -588,6 +588,23 @@ html, body, #root {
   to { opacity: 1; transform: none; }
 }
 .app-notice-text { flex: 1 1 auto; word-break: break-word; }
+/* The delete-pie undo (Sky.tsx) is the only caller today — see AppNotice's
+   own doc comment in App.tsx for why this is one optional action, not a
+   notice context. */
+.app-notice-action {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: var(--text-ui);
+  font-weight: 600;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.app-notice-action:hover { background: var(--button-hover-bg); }
 .app-notice-dismiss {
   display: inline-flex;
   align-items: center;
@@ -3122,4 +3139,135 @@ pre[data-fallback] .line::before {
   overflow-y: auto;
   border-top: 1px solid var(--border);
   padding-top: var(--space-2);
+}
+
+/* ── Sky band — M2 additions (user pies, tin, rename) ───────────────────── */
+/* The tin: a dashed hairline circle labelled "New pie" (spec section 3),
+   last in `.sky-pies`. Shares `.sky-pie`'s 72px pitch/hover/press rules —
+   only the glyph and label differ from a real pie tile. */
+.sky-tin .sky-pie-label { color: var(--sky-ink-dim); }
+.sky-tin-creating {
+  cursor: default;
+}
+/* The inline name field — the tin's create flow and a pie's inline rename
+   both use this. Sized to the same 72px column the tile itself occupies. */
+.sky-pie-rename-input {
+  width: 100%;
+  max-width: 88px;
+  border: 1px solid var(--sky-focus);
+  border-radius: var(--r-xs);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: center;
+  padding: 2px 4px;
+}
+.sky-pie-renaming {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 72px;
+  width: 72px;
+  padding: 4px 0 0;
+}
+
+/* ── Tooltip.tsx — custom hover/focus bubble ─────────────────────────────
+   position: fixed, placed from the anchor's own getBoundingClientRect() —
+   see the component's own doc comment for why it introduces no wrapper. */
+.sky-tooltip {
+  position: fixed;
+  z-index: var(--z-popover);
+  transform: translateX(-50%);
+  max-width: 260px;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-menu);
+  color: var(--fg);
+  font-size: var(--text-caption);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ── PiePicker.tsx — "Add to pie…" popover ───────────────────────────────
+   A centred popover over a TRANSPARENT backdrop (spec section 6 decision):
+   MenuItem.onSelect (ContextMenu.tsx) carries no event, so a right-click-
+   menu-driven open has no anchor rect to pop OVER — centring needs none. */
+.pie-picker-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-popover);
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pie-picker {
+  width: min(360px, 86vw);
+  max-height: 60vh;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-overlay), var(--edge-highlight);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.pie-picker-filter {
+  border: 0;
+  outline: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-body);
+  padding: 10px var(--space-4);
+}
+.pie-picker-list {
+  overflow-y: auto;
+  padding: var(--space-1);
+}
+.pie-picker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--fg-strong);
+  font: inherit;
+  font-size: var(--text-body-sm);
+  text-align: left;
+  padding: 7px var(--space-2);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.pie-picker-row:hover { background: var(--bg-row-hover); }
+.pie-picker-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  color: var(--accent-strong);
+}
+.pie-picker-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pie-picker-row-creating { cursor: default; }
+.pie-picker-new-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-body-sm);
+}
+.pie-picker-empty {
+  color: var(--empty-fg);
+  font-size: var(--text-body-sm);
+  padding: var(--space-2);
 }

@@ -17,9 +17,11 @@ import {
 import { useActiveTab, useTabsDispatch } from "../state/TabsProvider";
 import { canGoBack, canGoForward, currentEntry } from "../state/tabs";
 import { useBookmarksContext } from "../state/bookmarks-context";
+import { usePiesContext } from "../state/pies-context";
 import { useWorkspace } from "../state/workspace";
 import { useBeamActions } from "../state/beam";
 import { usePlatform } from "../state/platform";
+import { useContextMenu } from "./ContextMenu";
 import { BeamIndicator } from "./BeamDialog";
 import ShareMenu from "./ShareMenu";
 import { useRemoteActions } from "../state/remote";
@@ -128,6 +130,8 @@ export default function Toolbar({
   const { receivedDir } = useBeamActions();
   const { deviceLabel } = useRemoteActions();
   const { isBookmarked, toggle } = useBookmarksContext();
+  const { openPicker } = usePiesContext();
+  const contextMenu = useContextMenu();
   // Sharing is a macOS/desktop affordance (PRODUCT.md: iOS is a read-only
   // companion that owns no files to hand off).
   const { isMacos } = usePlatform();
@@ -178,8 +182,7 @@ export default function Toolbar({
       </IconButton>
 
       {/* Plain <button>, not IconButton: this tile needs aria-pressed and
-          the pressed-state class, which IconButton doesn't carry. No
-          right-click menu in M1 ("Add current file to pie…" is M2). */}
+          the pressed-state class, which IconButton doesn't carry. */}
       <button
         type="button"
         className={`toolbar-button${skyVisible ? " toolbar-button-pressed" : ""}`}
@@ -188,6 +191,17 @@ export default function Toolbar({
         aria-label={skyVisible ? "Hide sky" : "Show sky"}
         aria-pressed={skyVisible}
         onClick={onToggleSky}
+        onContextMenu={(e) => {
+          if (!entry) return;
+          contextMenu.open(e, [
+            [
+              {
+                label: "Add current file to pie…",
+                onSelect: () => openPicker(entry.path),
+              },
+            ],
+          ]);
+        }}
       >
         <SkyGlyph />
       </button>

@@ -112,3 +112,15 @@ export function wedgesOf(files: DerivedPieFile[]): Wedge[] {
     return { kind, count, share: count / total };
   });
 }
+
+/** `"html 58% · md 25% · code 17%"`, or `"No files"` — the hover tooltip's
+ *  content (spec section 3) and `Pie.tsx`'s own `aria-label` share, so both
+ *  read the same summary a pie's disc shows visually. Pulled out of Pie.tsx
+ *  (M1 computed this inline as a local `shareLabel`) so `Tooltip.tsx` can
+ *  build the same string without re-deriving wedge shares itself. */
+export function shareLabel(files: DerivedPieFile[]): string {
+  const wedges = wedgesOf(files);
+  return wedges.length
+    ? wedges.map((w) => `${w.kind} ${Math.round(w.share * 100)}%`).join(" · ")
+    : "No files";
+}

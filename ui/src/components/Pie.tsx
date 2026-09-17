@@ -7,11 +7,18 @@
 // upscaled.
 import * as React from "react";
 import { BEARINGS } from "../render/kind";
-import { wedgesOf } from "../state/derived-pies";
+import type { FileKind } from "../render/kind";
+import { shareLabel as pieShareLabel, wedgesOf } from "../state/derived-pies";
 import type { DerivedPie } from "../state/derived-pies";
 
 const CENTER = 100;
 const RADIUS = 92;
+
+/** The slice cut distance, in SVG user units (viewBox 0 0 200 200) — spec
+ *  section 5's "12px cut" is 12 units in THIS coordinate space, not 12 CSS
+ *  px, so the cut is proportionally the same distance whether the disc
+ *  renders at 48px (band), 120px (short plate) or 200px (plate). */
+const CUT_OFFSET = 12;
 
 // Tones are steps of ink between --sky-ink and --sky, not hues — the spec's
 // exact seven-step ramp, one slot per BEARINGS kind. Day and dusk are the
@@ -69,28 +76,48 @@ export interface PieProps {
    *  (which walks up to the nearest `[data-pie-id]`) two matches for one
    *  id (review: PiePlate.tsx:205, Sky.tsx:138). */
   interactive?: boolean;
+  /** M2: the kind whose wedge is cut 12 user-units along its bisector — the
+   *  plate's active slice filter (`PiePlate.tsx`'s `filterKind`). `null`/
+   *  unset draws every wedge at rest. Meaningless (silently ignored) for a
+   *  kind not present in `pie.files`. */
+  cutKind?: FileKind | null;
+  /** M2: a click on a wedge path is a POINTER PROXY for the plate's legend
+   *  radio of the same kind — the wedges live inside the portrait SVG's
+   *  `aria-hidden` subtree (ARIA ownership cannot span the plate's two flex
+   *  columns without `display: contents`, which risks real breakage in
+   *  WebKit for a cosmetic win — not worth it here), so keyboard/AT users
+   *  drive the radiogroup through the legend rows and this exists only for
+   *  the mouse path (`PiePlate.tsx`). */
+  onWedgeClick?: (kind: FileKind) => void;
+  /** M2: the band tile's own right-click menu (Rename / Add folder… /
+   *  Delete pie — `Sky.tsx`). Only meaningful with `interactive`. */
+  onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
-export default function Pie({
-  pie,
-  selected,
-  onOpen,
-  size = 48,
-  tabIndex,
-  onFocus,
-  interactive = true,
-}: PieProps): React.ReactElement {
+const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(function Pie(
+  {
+    pie,
+    selected,
+    onOpen,
+    size = 48,
+    tabIndex,
+    onFocus,
+    interactive = true,
+    cutKind,
+    onWedgeClick,
+    onContextMenu,
+  }: PieProps,
+  ref,
+) {
   const theme = useDomTheme();
   const ramp = theme === "light" ? TONE_RAMP_DAY : TONE_RAMP_DUSK;
   const wedges = React.useMemo(() => wedgesOf(pie.files), [pie.files]);
-
-  const shareLabel = wedges.length
-    ? wedges.map((w) => `${w.kind} ${Math.round(w.share * 100)}%`).join(" · ")
-    : "No files";
+  const label = pieShareLabel(pie.files);
 
   let angle = 0;
   const paths = wedges.map((w) => {
     const sweep = w.share * 360;
+    const bisector = angle + sweep / 2;
     const fill = ramp[BEARINGS.indexOf(w.kind)] ?? CRUST;
     let d: string;
     if (wedges.length === 1) {
@@ -106,14 +133,29 @@ export default function Pie({
       d = `M ${CENTER},${CENTER} L ${x1},${y1} A ${RADIUS},${RADIUS} 0 ${largeArc} 1 ${x2},${y2} Z`;
     }
     angle += sweep;
+
+    const cut = cutKind === w.kind;
+    let transform: string | undefined;
+    if (cut) {
+      const rad = (bisector * Math.PI) / 180;
+      const dx = CUT_OFFSET * Math.sin(rad);
+      const dy = -CUT_OFFSET * Math.cos(rad);
+      transform = `translate(${dx.toFixed(3)},${dy.toFixed(3)})`;
+    }
+
     return (
       <path
         key={w.kind}
         d={d}
         fill={fill}
-        stroke="var(--sky)"
-        strokeWidth={1}
+        stroke={cut ? "var(--sky-focus)" : "var(--sky)"}
+        strokeWidth={cut ? 2 : 1}
         vectorEffect="non-scaling-stroke"
+        data-kind={w.kind}
+        data-cut={cut ? "true" : undefined}
+        transform={transform}
+        style={{ transition: "transform 120ms var(--ease)" }}
+        onClick={onWedgeClick ? () => onWedgeClick(w.kind) : undefined}
       />
     );
   });
@@ -144,8 +186,10 @@ export default function Pie({
     // aria-hidden: the plate's own role="dialog" already carries
     // `${pie.name} pie` as its accessible name (PiePlate.tsx), so this
     // portrait would only be a redundant announcement, not new information.
+    // The wedge paths inside stay reachable to a plain click regardless —
+    // aria-hidden only removes them from the accessibility tree.
     return (
-      <div className="sky-pie sky-pie-portrait" aria-hidden="true">
+      <div ref={ref as React.Ref<HTMLDivElement>} className="sky-pie sky-pie-portrait" aria-hidden="true">
         {disc}
         <span className="sky-pie-label">{pie.name}</span>
       </div>
@@ -154,6 +198,7 @@ export default function Pie({
 
   return (
     <button
+      ref={ref as React.Ref<HTMLButtonElement>}
       type="button"
       className={"sky-pie" + (selected ? " selected" : "")}
       role="option"
@@ -162,13 +207,16 @@ export default function Pie({
       // The visible label span must stay part of the accessible name (WCAG
       // 2.5.3 Label in Name) — aria-label alone as just the shares string
       // used to replace it, so VoiceOver never said which pie this was.
-      aria-label={`${pie.name} — ${shareLabel}`}
+      aria-label={`${pie.name} — ${label}`}
       tabIndex={tabIndex}
       onFocus={onFocus}
       onClick={onOpen}
+      onContextMenu={onContextMenu}
     >
       {disc}
       <span className="sky-pie-label">{pie.name}</span>
     </button>
   );
-}
+});
+
+export default Pie;
