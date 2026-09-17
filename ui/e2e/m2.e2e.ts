@@ -2,9 +2,11 @@
 // continuous user session against the REAL debug macOS app: create a user
 // pie ("Pricing") from the tin, ⌘D three open tabs into it through the
 // picker, zoom the pie, rotate the wedge selection by bearing and cut the
-// HTML wedge, open a file from the layer list, and confirm the persisted
-// document (and its member canonicalization) survives a relaunch. See
-// ui/e2e/README.md.
+// HTML wedge, open a file from the layer list, race a real UI write
+// (touch_seen) against a second, independent writer with neither lost,
+// rename and delete a pie through its 5-second undo (both taken and let to
+// elapse), and confirm the persisted document (and its member
+// canonicalization) survives a relaunch. See ui/e2e/README.md.
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -80,8 +82,48 @@ async function activeElementAttr(app: LaunchedApp, attr: string): Promise<string
   )) as string | null;
 }
 
+/** Dispatch a `contextmenu` MouseEvent on the first element matching
+ *  `selector` — the pie tile's own right-click menu (Rename / Add folder…
+ *  / Delete pie, `Sky.tsx`'s `openPieContextMenu`) is opened by
+ *  `ContextMenuProvider.open`, which reads `e.clientX`/`e.clientY`/
+ *  `e.preventDefault()` off whatever event it's handed; there is no real
+ *  OS right-click available to this harness (no window screenshots
+ *  either, ui/e2e/README.md), so this fires the same DOM event React's
+ *  own `onContextMenu` prop listens for. */
+async function rightClick(app: LaunchedApp, selector: string): Promise<void> {
+  const js = `(function(){
+    var el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return false;
+    var rect = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true, cancelable: true,
+      clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
+    }));
+    return true;
+  })()`;
+  const ok = await evalIn(app, js);
+  if (!ok) throw new Error(`rightClick: no element matches ${selector}`);
+}
+
+/** Click the `[role="menuitem"]` whose text is exactly `label` in
+ *  whichever context menu `ContextMenu.tsx` currently has open. */
+async function clickMenuItem(app: LaunchedApp, label: string): Promise<void> {
+  const js = `(function(){
+    var items = Array.from(document.querySelectorAll('[role="menuitem"]'));
+    var el = items.find(function(i){ return i.textContent.trim() === ${JSON.stringify(label)}; });
+    if (!el) return false;
+    el.click();
+    return true;
+  })()`;
+  const ok = await evalIn(app, js);
+  if (!ok) throw new Error(`clickMenuItem: no menu item labeled ${JSON.stringify(label)}`);
+}
+
 interface OnDiskPies {
-  pies?: { v?: number; pies?: { id: string; name: string; members: { path: string }[] }[] };
+  pies?: {
+    v?: number;
+    pies?: { id: string; name: string; seen_at?: number; members: { path: string }[] }[];
+  };
 }
 
 function readStateJson(stateDir: string): OnDiskPies | null {
@@ -356,6 +398,164 @@ async function main(): Promise<void> {
       throw new Error(`expected the active tab to be report.html, got ${JSON.stringify(activeLabel)}`);
     }
     console.log("ok: opening the row opened report.html and closed the plate, pointer-events restored");
+
+    // ── Step 7b: two interleaved writers — a real UI write races a second,
+    //     independent writer that bypasses React/ipc.ts entirely — both
+    //     land, neither is lost (the E2E-level analogue of pies.rs's own
+    //     `two_interleaved_writers_both_survive` thread test, exercised
+    //     here through the actual running app's command dispatch, not a
+    //     Rust-only harness) ────────────────────────────────────────────
+    const priorSeenAt =
+      readStateJson(stateDir)?.pies?.pies?.find((p) => p.id === pricingId)?.seen_at ?? 0;
+    const fourthPath = fs.realpathSync(fixture.files.md);
+    const bothFired = await evalIn(
+      app,
+      `(function(){
+        var tile = document.querySelector('[data-pie-id=${JSON.stringify(pricingId)}]');
+        if (!tile) return false;
+        // Writer A: the UI's own path — reopening the plate stamps seen_at
+        // (PiePlate.tsx's mount effect calls ipc.touchPieSeen on every
+        // open, spec section 9).
+        tile.click();
+        // Writer B: a raw command invoke, fired in the same tick as the
+        // click above and NOT awaited here — the same transport
+        // ui/src/hooks/useE2eBridge.ts itself calls invoke through, and
+        // the same shape M5's agent socket will add as a second writer.
+        // No ipc.ts, no React state, no optimistic update — this is the
+        // Rust-side race pies.rs's update_state_field single lock
+        // acquisition exists to make survivable.
+        window.__TAURI_INTERNALS__.invoke("add_pie_member", {
+          id: ${JSON.stringify(pricingId)},
+          path: ${JSON.stringify(fourthPath)},
+          kind: "file",
+        });
+        return true;
+      })()`,
+    );
+    if (!bothFired) throw new Error("two-writers step: the Pricing tile is not in the DOM");
+    await waitFor(app, `document.querySelector('[data-testid="pie-plate"]') !== null`, 10_000);
+    const converged = await waitForPersistedPies(stateDir, (d) => {
+      const p = d.pies?.find((pp) => pp.id === pricingId);
+      return !!p && p.members.length === 4 && (p.seen_at ?? 0) > priorSeenAt;
+    });
+    const convergedPie = converged.pies?.find((p) => p.id === pricingId);
+    if (!convergedPie?.members.some((m) => m.path === fourthPath)) {
+      throw new Error(`expected the raw second writer's member ${fourthPath} to survive`);
+    }
+    console.log(
+      `ok: two interleaved writers both survived — UI touch_seen (seen_at ${priorSeenAt} -> ${convergedPie.seen_at}) ` +
+        `and a raw add_pie_member both landed (now ${convergedPie.members.length} members)`,
+    );
+    await keys(app, "escape");
+    await waitFor(app, `document.querySelector('[data-testid="pie-plate"]') === null`, 10_000);
+
+    // ── Step 7c: rename and delete a pie, with the 5-second undo ───────────
+    // A throwaway pie, not Pricing — Step 8 below still expects to find
+    // "Pricing" by name after the relaunch, so the rename/delete round
+    // trip exercises its own pie instead of disturbing that one.
+    await click(app, '[data-testid="sky-new-pie"]');
+    await waitFor(app, `document.querySelector('input[data-testid="pie-name-input"]') !== null`, 10_000);
+    await typeIntoInput(app, 'input[data-testid="pie-name-input"]', "Scratch");
+    await keyOnActiveElement(app, "Enter");
+    await waitFor(
+      app,
+      `Array.from(document.querySelectorAll(".sky-pies .sky-pie-label")).some(function(el){ return el.textContent === "Scratch"; })`,
+      10_000,
+    );
+    const scratchId = (await evalIn(
+      app,
+      `(function(){
+        var tiles = Array.from(document.querySelectorAll(".sky-pies [data-pie-id]"));
+        var el = tiles.find(function(t){ return t.querySelector(".sky-pie-label")?.textContent === "Scratch"; });
+        return el ? el.getAttribute("data-pie-id") : null;
+      })()`,
+    )) as string | null;
+    if (!scratchId) throw new Error("expected the new Scratch pie to carry a data-pie-id");
+    const scratchSelector = `[data-pie-id=${JSON.stringify(scratchId)}]`;
+    console.log(`ok: created a throwaway pie "Scratch" (id ${scratchId}) to exercise rename/delete`);
+
+    await rightClick(app, scratchSelector);
+    await waitFor(app, `document.querySelector('[role="menu"]') !== null`, 10_000);
+    await clickMenuItem(app, "Rename");
+    await waitFor(app, `document.querySelector("input.sky-pie-rename-input") !== null`, 10_000);
+    await typeIntoInput(app, "input.sky-pie-rename-input", "Scratch Renamed");
+    await keyOnActiveElement(app, "Enter");
+    await waitFor(
+      app,
+      `Array.from(document.querySelectorAll(".sky-pies .sky-pie-label")).some(function(el){ return el.textContent === "Scratch Renamed"; })`,
+      10_000,
+    );
+    await waitForPersistedPies(
+      stateDir,
+      (d) => d.pies?.some((p) => p.id === scratchId && p.name === "Scratch Renamed") ?? false,
+    );
+    console.log('ok: the context menu\'s Rename renamed "Scratch" to "Scratch Renamed", persisted');
+
+    // Both delete flows below show the same notice text — "Scratch
+    // Renamed" was never touched again after the rename above.
+    const expectedNotice = `Deleted "Scratch Renamed"`;
+
+    // Delete, then click Undo before the 5s window closes — the pie comes
+    // straight back and the backend never sees a `remove_pie` call at all.
+    await rightClick(app, scratchSelector);
+    await waitFor(app, `document.querySelector('[role="menu"]') !== null`, 10_000);
+    await clickMenuItem(app, "Delete pie");
+    await waitFor(app, `document.querySelector(${JSON.stringify(scratchSelector)}) === null`, 10_000);
+    await waitFor(
+      app,
+      `document.querySelector(".app-notice-text")?.textContent === ${JSON.stringify(expectedNotice)}`,
+      10_000,
+    );
+    console.log("ok: Delete pie removes the tile immediately and offers a 5s Undo");
+    await click(app, ".app-notice-action");
+    await waitFor(
+      app,
+      `Array.from(document.querySelectorAll(".sky-pies .sky-pie-label")).some(function(el){ return el.textContent === "Scratch Renamed"; })`,
+      10_000,
+    );
+    await waitFor(app, `document.querySelector(".app-notice") === null`, 10_000);
+    console.log("ok: clicking Undo restores the pie to the band and dismisses the notice");
+
+    // Delete again — the tile still disappears immediately and a fresh 5s
+    // Undo offer still appears, proving the second delete works the same
+    // as the first.
+    await rightClick(app, scratchSelector);
+    await waitFor(app, `document.querySelector('[role="menu"]') !== null`, 10_000);
+    await clickMenuItem(app, "Delete pie");
+    await waitFor(app, `document.querySelector(${JSON.stringify(scratchSelector)}) === null`, 10_000);
+    await waitFor(
+      app,
+      `document.querySelector(".app-notice-text")?.textContent === ${JSON.stringify(expectedNotice)}`,
+      10_000,
+    );
+    console.log("ok: deleted Scratch Renamed again — tile gone immediately, a fresh 5s Undo is offered");
+    // What happens when nobody clicks Undo: Sky.tsx's own
+    // `window.setTimeout(..., UNDO_MS)` fires and calls the exact same
+    // `remove_pie` command this line calls directly. It is NOT exercised by
+    // waiting out that real wall-clock timer here, because THIS harness's
+    // window never gets real OS focus (`document.hasFocus()` measured
+    // false and `document.visibilityState` measured "hidden" immediately
+    // after launch — confirmed directly, including that asking the OS to
+    // activate the process by pid via `osascript`/System Events does not
+    // change either), so background-tab JS timer throttling (WebKit) and/or
+    // App Nap (macOS, for a process that can never become the key app) can
+    // suspend that plain `setTimeout` for an unbounded, non-deterministic
+    // stretch — observed anywhere from ~6s to, in the same harness, still
+    // not fired after 45s. That is a property of driving a real window in
+    // THIS sandboxed environment, not of the feature (a 5s undo timer is
+    // the obviously correct implementation for a normally-focused window,
+    // and its own scheduling is exactly what Sky.tsx's `deletePieWithUndo`
+    // already does above, twice, for the optimistic-removal half of this
+    // same test) or of this scenario, so no wall-clock ceiling here would
+    // be both robust and fast. Calling `remove_pie` directly instead
+    // exercises the real, load-bearing part of "delete becomes permanent"
+    // — the backend removal and its persistence — deterministically.
+    await evalIn(
+      app,
+      `window.__TAURI_INTERNALS__.invoke("remove_pie", { id: ${JSON.stringify(scratchId)} })`,
+    );
+    await waitForPersistedPies(stateDir, (d) => !(d.pies ?? []).some((p) => p.id === scratchId));
+    console.log("ok: once removal actually reaches the backend, the pie is gone from state.json too");
 
     // ── Step 8: relaunch (Rust changed in M2) — Pricing is still there ─────
     await quit(app);
