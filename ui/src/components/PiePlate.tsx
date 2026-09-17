@@ -9,6 +9,8 @@
 // itself requires it ("click the HTML legend row; the layer list shows html
 // files newest first").
 import * as React from "react";
+import { FileCode, FileText, FileImage, FileJson, File as FileIconGlyph, MessageSquare } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import Pie from "./Pie";
 import { groupByWedge, wedgesOf } from "../state/derived-pies";
 import type { DerivedPie, DerivedPieFile } from "../state/derived-pies";
@@ -20,6 +22,7 @@ import { useEscape } from "../hooks/useEscape";
 import { useContextMenu } from "./ContextMenu";
 import { useFileMenu } from "../hooks/useFileMenu";
 import { useWorkspace } from "../state/workspace";
+import { useAnnotations } from "../state/annotations-context";
 import { openOptsFromClick } from "../state/TabsProvider";
 import type { OpenFileOptions } from "../state/TabsProvider";
 
@@ -31,6 +34,18 @@ const KIND_LABELS: Record<FileKind, string> = {
   image: "Image",
   data: "Data",
   other: "Other",
+};
+
+// Legend glyph per KIND, not per extension — FileGlyph (FileIcon.tsx) infers
+// its icon from a filename, which a wedge/kind does not have.
+const KIND_ICON: Record<FileKind, LucideIcon> = {
+  html: FileCode,
+  md: FileText,
+  code: FileCode,
+  text: FileText,
+  image: FileImage,
+  data: FileJson,
+  other: FileIconGlyph,
 };
 
 /** pane height < 480px is the spec's "short window" floor (section 4):
@@ -56,11 +71,25 @@ function usePaneShort(): boolean {
   return short;
 }
 
-function lastOpenedLabel(files: DerivedPieFile[]): string {
-  if (files.length === 0) return "Never opened";
+/** `formatAgo` already returns the complete phrase "just now" for anything
+ *  under 60s — appending " ago" unconditionally used to read "just now ago"
+ *  for the normal case of a file opened or bookmarked in the last minute
+ *  (review: PiePlate.tsx:229). One helper, both call sites below. */
+function mtimeAgo(mtimeMs: number): string {
+  const ago = formatAgo(Math.floor(mtimeMs / 1000), Math.floor(Date.now() / 1000));
+  return ago === "just now" ? ago : `${ago} ago`;
+}
+
+function lastOpenedLabel(pie: DerivedPie): string {
+  const { files } = pie;
+  // Pinned's mtime is bookmarked_at (derived-pies.ts), i.e. when the file
+  // was starred, not when it was opened — "Last opened" claimed something
+  // the data does not support (review: PiePlate.tsx:59).
+  const isPinned = pie.id === "builtin:pinned";
+  if (files.length === 0) return isPinned ? "Never pinned" : "Never opened";
   const newest = Math.max(...files.map((f) => f.mtime));
-  const ago = formatAgo(Math.floor(newest / 1000), Math.floor(Date.now() / 1000));
-  return ago === "just now" ? "Last opened just now" : `Last opened ${ago} ago`;
+  const verb = isPinned ? "Last pinned" : "Last opened";
+  return `${verb} ${mtimeAgo(newest)}`;
 }
 
 export interface PiePlateProps {
@@ -73,6 +102,7 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   const { root } = useWorkspace();
   const contextMenu = useContextMenu();
   const fileMenuFor = useFileMenu(onOpenFile);
+  const { openCountFor } = useAnnotations();
   const short = usePaneShort();
   const plateRef = React.useRef<HTMLDivElement | null>(null);
   const layerListRef = React.useRef<HTMLDivElement | null>(null);
@@ -89,8 +119,13 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
   );
   const readoutKind = filterKind ?? dominant?.kind ?? null;
   const readoutWedge = readoutKind ? wedges.find((w) => w.kind === readoutKind) ?? null : null;
+  // The count is the READOUT KIND's file count, not the pie's total — the
+  // spec's own example (`html · 60% · 9 files`) only works if 9 is the
+  // count behind the 60% (9/15, say); `pie.files.length` made the two
+  // figures disagree for any pie that is not 100% one kind (review:
+  // PiePlate.tsx:93).
   const readout = readoutWedge
-    ? `${KIND_LABELS[readoutWedge.kind]} · ${Math.round(readoutWedge.share * 100)}% · ${pie.files.length} file${pie.files.length === 1 ? "" : "s"}`
+    ? `${KIND_LABELS[readoutWedge.kind]} · ${Math.round(readoutWedge.share * 100)}% · ${readoutWedge.count} file${readoutWedge.count === 1 ? "" : "s"}`
     : "No files";
 
   const layerFiles = React.useMemo(() => {
@@ -104,15 +139,29 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
 
   // Close on Esc — capture-phase and self-stopping (useEscape), so this
   // press does not ALSO leave reader mode the way a plain `escape` binding
-  // in the global registry would.
-  useEscape(onClose);
+  // in the global registry would. Guarded the same way App.tsx's reader-mode
+  // Esc binding is: an open context menu (a layer row's "Copy Path" /
+  // "Bookmark" / ...) still owns Esc and closes itself on the same window
+  // event, so one keypress must not ALSO close the plate underneath it
+  // (review: PiePlate.tsx:108).
+  useEscape(() => {
+    if (document.querySelector(".context-menu")) return;
+    onClose();
+  });
 
   // Close on an outside pointerdown or window blur (spec section 4). A real
   // click dispatches pointerdown before React commits this effect, so the
   // very click that opened the plate can never immediately close it.
   React.useEffect(() => {
     const onPointerDown = (e: PointerEvent) => {
-      if (!plateRef.current?.contains(e.target as Node)) onClose();
+      const target = e.target as Node;
+      if (plateRef.current?.contains(target)) return;
+      // ContextMenuProvider renders the row context menu at the app root,
+      // outside plateRef — without this, a pointerdown on one of its own
+      // items ("Copy Path", "Bookmark", ...) reads as an outside click and
+      // closes the plate the menu belongs to (review: PiePlate.tsx:115).
+      if (target instanceof Element && target.closest(".context-menu")) return;
+      onClose();
     };
     const onBlur = () => onClose();
     window.addEventListener("pointerdown", onPointerDown, true);
@@ -133,6 +182,21 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
     tabView.style.pointerEvents = "none";
     return () => {
       tabView.style.pointerEvents = "";
+    };
+  }, []);
+
+  // role="dialog" with no focus move, no aria-modal and no focus restore
+  // meant a screen-reader user heard nothing open on Enter (the tile stayed
+  // focused) and the layer list's own ↑/↓/Home/End did nothing until several
+  // Tabs landed inside (review: PiePlate.tsx:193). The plate does not trap
+  // focus — Tab can still leave it — so aria-modal is explicitly "false"
+  // rather than dropping role="dialog": that is what the attribute already
+  // defaults to, made non-ambiguous here.
+  React.useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    plateRef.current?.focus();
+    return () => {
+      previouslyFocused?.focus?.();
     };
   }, []);
 
@@ -181,6 +245,14 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
         if (file) openRow(file, e);
         break;
       }
+      case "Backspace":
+        // The slice filter's only documented way out besides the chip
+        // (spec section 5: "pressing Backspace clears the filter").
+        if (filterKind) {
+          e.preventDefault();
+          setFilterKind(null);
+        }
+        break;
       default:
         break;
     }
@@ -192,6 +264,8 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
       className="pie-plate"
       role="dialog"
       aria-label={`${pie.name} pie`}
+      aria-modal="false"
+      tabIndex={-1}
       data-testid="pie-plate"
       // The plate is a DOM descendant of the band, which is itself a
       // listbox with its own arrow/Home/End/Enter handling (Sky.tsx) — stop
@@ -200,11 +274,12 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
       onKeyDown={(e) => e.stopPropagation()}
     >
       <div className="pie-plate-left">
-        {/* A static portrait of the pie already open — not itself part of a
-            listbox here, so it takes no tab stop. */}
-        <Pie pie={pie} size={short ? 120 : 200} tabIndex={-1} onOpen={() => {}} />
+        {/* A static portrait of the pie already open — non-interactive
+            (Pie.tsx), so it is not a second role="option"/data-pie-id for
+            this pie inside the band's listbox. */}
+        <Pie pie={pie} size={short ? 120 : 200} interactive={false} />
         <div className="pie-plate-readout">{readout}</div>
-        <div className="pie-plate-last-opened">{lastOpenedLabel(pie.files)}</div>
+        <div className="pie-plate-last-opened">{lastOpenedLabel(pie)}</div>
       </div>
       <div className="pie-plate-right">
         <div className="pie-legend" data-testid="pie-legend">
@@ -212,8 +287,11 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
             <p className="pie-legend-empty">No files in this pie yet.</p>
           ) : (
             wedges.map((w) => {
-              const newest = Math.max(...(groups.get(w.kind) ?? []).map((f) => f.mtime));
+              const kindFiles = groups.get(w.kind) ?? [];
+              const newest = Math.max(...kindFiles.map((f) => f.mtime));
+              const openComments = kindFiles.reduce((sum, f) => sum + openCountFor(f.path), 0);
               const active = filterKind === w.kind;
+              const KindIcon = KIND_ICON[w.kind];
               return (
                 <button
                   key={w.kind}
@@ -222,17 +300,39 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
                   aria-pressed={active}
                   onClick={() => setFilterKind((k) => (k === w.kind ? null : w.kind))}
                 >
+                  <span className="pie-legend-glyph">
+                    <KindIcon size={14} strokeWidth={1.75} aria-hidden />
+                  </span>
                   <span className="pie-legend-kind">{KIND_LABELS[w.kind]}</span>
                   <span className="pie-legend-count">{w.count}</span>
                   <span className="pie-legend-share">{Math.round(w.share * 100)}%</span>
-                  <span className="pie-legend-mtime">
-                    {Number.isFinite(newest) ? `${formatAgo(Math.floor(newest / 1000), Math.floor(Date.now() / 1000))} ago` : ""}
-                  </span>
+                  <span className="pie-legend-mtime">{Number.isFinite(newest) ? mtimeAgo(newest) : ""}</span>
+                  {openComments > 0 ? (
+                    <span className="pie-legend-comments" aria-label={`${openComments} open comments`}>
+                      <MessageSquare size={12} strokeWidth={2} aria-hidden />
+                      {openComments}
+                    </span>
+                  ) : null}
                 </button>
               );
             })
           )}
         </div>
+        {filterKind ? (
+          // The filter's only documented ways out besides re-clicking the
+          // same legend row (spec section 5): this chip, or Backspace while
+          // the layer list has focus (onLayerKeyDown above). Neither shipped
+          // before, so nothing told the user how to leave the filtered view
+          // (review: PiePlate.tsx:223).
+          <button
+            type="button"
+            className="pie-slice-chip"
+            onClick={() => setFilterKind(null)}
+            aria-label={`Clear the ${KIND_LABELS[filterKind]} filter`}
+          >
+            Slice · {KIND_LABELS[filterKind]} <span aria-hidden>×</span>
+          </button>
+        ) : null}
         <div
           ref={layerListRef}
           className="pie-layers"
@@ -255,6 +355,14 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
                 tabIndex={i === focusedLayer ? 0 : -1}
                 onFocus={() => setFocusedLayer(i)}
                 onClick={(e) => openRow(file, e)}
+                // React's onClick never fires for the middle button — the
+                // same .start-row shape in StartPage.tsx handles it this
+                // way, and spec section 5 gives middle-click the same
+                // background-tab-plate-stays behaviour as ⌘-click (review:
+                // PiePlate.tsx:257).
+                onAuxClick={(e) => {
+                  if (e.button === 1) openRow(file, e);
+                }}
                 onContextMenu={(e) => {
                   contextMenu.open(e, fileMenuFor(file.path));
                 }}
@@ -266,6 +374,7 @@ export default function PiePlate({ pie, onClose, onOpenFile }: PiePlateProps): R
                 <span className="start-row-dir">
                   <bdi>{displayDir(file.path, root)}</bdi>
                 </span>
+                <span className="start-row-mtime">{mtimeAgo(file.mtime)}</span>
               </button>
             ))
           )}

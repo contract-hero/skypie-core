@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { pinnedPie, recentPie, wedgesOf } from "./derived-pies";
+import { groupByWedge, pinnedPie, recentPie, wedgesOf } from "./derived-pies";
 import { BEARINGS } from "../render/kind";
 import type { BookmarkEntry, RecentEntry } from "../ipc";
+import type { DerivedPieFile } from "./derived-pies";
 
 describe("pinnedPie", () => {
   it("converts bookmarked_at seconds to ms", () => {
@@ -70,5 +71,45 @@ describe("wedgesOf", () => {
 
   it("returns no wedges for empty input", () => {
     expect(wedgesOf([])).toEqual([]);
+  });
+});
+
+// PiePlate's legend filter and the wedge tones both rely on this grouping —
+// only the e2e (sky.e2e.ts) exercised it before, which stays green even if
+// the merge loop drops a file or the "other" guard regresses (review:
+// derived-pies.ts:76).
+describe("groupByWedge", () => {
+  it("folds a haze-merged kind's files into the 'other' group", () => {
+    const html: DerivedPieFile[] = Array.from({ length: 97 }, (_, i) => ({
+      path: `/f${i}.html`,
+      kind: "html",
+      mtime: 0,
+    }));
+    const data: DerivedPieFile[] = Array.from({ length: 3 }, (_, i) => ({
+      path: `/d${i}.json`,
+      kind: "data",
+      mtime: 0,
+    }));
+    const groups = groupByWedge([...html, ...data]);
+    expect(groups.get("data")).toBeUndefined();
+    expect(groups.get("other")?.map((f) => f.path).sort()).toEqual(data.map((f) => f.path).sort());
+  });
+
+  it("keeps a genuine 'other' group under 4% as its own entry, not double-merged", () => {
+    const files: DerivedPieFile[] = [
+      ...Array.from({ length: 99 }, (_, i) => ({ path: `/f${i}.html`, kind: "html" as const, mtime: 0 })),
+      { path: "/x.bin", kind: "other", mtime: 0 },
+    ];
+    const groups = groupByWedge(files);
+    expect(groups.get("other")).toEqual([{ path: "/x.bin", kind: "other", mtime: 0 }]);
+  });
+
+  it("returns an empty map for empty input", () => {
+    expect(groupByWedge([]).size).toBe(0);
+  });
+
+  it("does not alias the same map instance across calls", () => {
+    const files: DerivedPieFile[] = [{ path: "/a.html", kind: "html", mtime: 0 }];
+    expect(groupByWedge(files)).not.toBe(groupByWedge(files));
   });
 });

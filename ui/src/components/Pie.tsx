@@ -52,13 +52,23 @@ export interface PieProps {
   /** This pie's plate is the one currently open — dims every OTHER pie in
    *  the same band to 60% (spec section 4). */
   selected?: boolean;
-  onOpen: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  /** Required when `interactive` (the default); unused for a portrait. */
+  onOpen?: (e: React.MouseEvent<HTMLButtonElement>) => void;
   /** Disc + button diameter in px. 48 in the band, 200 (or 120 under a
    *  480px pane) in the plate. */
   size?: number;
   /** Roving-tabindex slot; the host (Sky, PiePlate) owns the roving index. */
   tabIndex?: number;
   onFocus?: () => void;
+  /** false renders an inert portrait: no `<button>`, no `role="option"`,
+   *  no `aria-selected`, no `data-pie-id`. PiePlate's left-column copy of
+   *  the pie that is already open uses this — without it, that copy is a
+   *  SECOND `role="option"` (and a second `data-pie-id={pie.id}`) inside
+   *  the band's `role="listbox"` while the plate is open, which both
+   *  breaks the listbox's a11y tree and gives M4's Finder-drop hit-test
+   *  (which walks up to the nearest `[data-pie-id]`) two matches for one
+   *  id (review: PiePlate.tsx:205, Sky.tsx:138). */
+  interactive?: boolean;
 }
 
 export default function Pie({
@@ -68,6 +78,7 @@ export default function Pie({
   size = 48,
   tabIndex,
   onFocus,
+  interactive = true,
 }: PieProps): React.ReactElement {
   const theme = useDomTheme();
   const ramp = theme === "light" ? TONE_RAMP_DAY : TONE_RAMP_DUSK;
@@ -107,6 +118,40 @@ export default function Pie({
     );
   });
 
+  const disc = (
+    <svg
+      className="sky-pie-disc"
+      viewBox="0 0 200 200"
+      width={size}
+      height={size}
+      aria-hidden
+      focusable="false"
+    >
+      {paths}
+      <circle
+        cx={CENTER}
+        cy={CENTER}
+        r={RADIUS}
+        fill="none"
+        stroke={CRUST}
+        strokeWidth={1}
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  );
+
+  if (!interactive) {
+    // aria-hidden: the plate's own role="dialog" already carries
+    // `${pie.name} pie` as its accessible name (PiePlate.tsx), so this
+    // portrait would only be a redundant announcement, not new information.
+    return (
+      <div className="sky-pie sky-pie-portrait" aria-hidden="true">
+        {disc}
+        <span className="sky-pie-label">{pie.name}</span>
+      </div>
+    );
+  }
+
   return (
     <button
       type="button"
@@ -114,31 +159,15 @@ export default function Pie({
       role="option"
       aria-selected={Boolean(selected)}
       data-pie-id={pie.id}
-      aria-label={shareLabel}
-      title={shareLabel}
+      // The visible label span must stay part of the accessible name (WCAG
+      // 2.5.3 Label in Name) — aria-label alone as just the shares string
+      // used to replace it, so VoiceOver never said which pie this was.
+      aria-label={`${pie.name} — ${shareLabel}`}
       tabIndex={tabIndex}
       onFocus={onFocus}
       onClick={onOpen}
     >
-      <svg
-        className="sky-pie-disc"
-        viewBox="0 0 200 200"
-        width={size}
-        height={size}
-        aria-hidden
-        focusable="false"
-      >
-        {paths}
-        <circle
-          cx={CENTER}
-          cy={CENTER}
-          r={RADIUS}
-          fill="none"
-          stroke={CRUST}
-          strokeWidth={1}
-          vectorEffect="non-scaling-stroke"
-        />
-      </svg>
+      {disc}
       <span className="sky-pie-label">{pie.name}</span>
     </button>
   );

@@ -729,9 +729,16 @@ spreading.
   `{colors.accent-focus}` falls under 3:1 non-text contrast on the day
   `--sky` field. Same job as the one accent's focus role, a shade chosen per
   surface rather than a second color.
+- **A window-height breakpoint.** Below a 480px pane (`usePaneShort`,
+  `PiePlate.tsx`) the plate's pie drops from 200px to 120px and the legend
+  scrolls — the one exception to "Don't let chrome grow with the window, and
+  don't add breakpoints" (line 693). The limit is exactly that one
+  threshold, on the plate's pie diameter only: the 120px band height never
+  changes, and no other Sky band surface reflows with the window. Owner
+  decision: below a 480px pane the plate uses this floor geometry.
 
 The plate's mono readout uses `{colors.fg-muted}`, not `{colors.fg-dim}`
-(line 674's "keep fg-dim off anything a user has to read") — so no sixth
+(line 674's "keep fg-dim off anything a user has to read") — no further
 departure is needed there.
 
 ## Known Gaps

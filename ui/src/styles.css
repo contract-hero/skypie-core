@@ -1306,6 +1306,16 @@ html, body, #root {
   font-family: var(--font-mono);
   text-align: right;
 }
+/* Trailing mtime column — only PiePlate's layer list uses this today (the
+   list is sorted newest-first, so the freshness the sort is based on stays
+   visible per row, not just implied by position — review: PiePlate.tsx:262). */
+.start-row-mtime {
+  flex: 0 0 auto;
+  color: var(--fg-dim);
+  font-size: var(--text-caption);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
 .start-empty {
   color: var(--fg-muted);
   font-size: var(--text-body-sm);
@@ -2853,9 +2863,17 @@ pre[data-fallback] .line::before {
    3×--band-h = 120px, never elastic (DESIGN.md, "Sky band"). --sky is a
    SURFACE, not the accent — the one-lavender rule counts --sky-focus as its
    own per-theme shade of the same job, not a second color. */
-.sky-band {
+/* The flex item in App.tsx's column is this shell, not .sky-band itself —
+   Sky.tsx renders the plate as the shell's second child (a sibling of the
+   listbox, not a DOM descendant of it; see Sky.tsx), and the plate's
+   `position: absolute; top: 100%` needs the SAME containing block .sky-band
+   alone used to provide. */
+.sky-band-shell {
   position: relative;
   flex: 0 0 calc(var(--band-h) * 3);
+}
+.sky-band {
+  position: relative;
   height: calc(var(--band-h) * 3);
   background: var(--sky);
   border-bottom: 1px solid var(--border);
@@ -2873,15 +2891,21 @@ pre[data-fallback] .line::before {
 }
 /* Two static cumulus, three ellipses each, clipped to a flat base — no
    drift, no shadow (spec section 2). Low contrast against --sky on purpose:
-   the shapes say "sky", they never compete with a pie. */
-.sky-clouds {
+   the shapes say "sky", they never compete with a pie. Each cloud is a
+   fixed-size SVG positioned by `left` percentage: ONLY the centre tracks the
+   band width (22% / 71%, DESIGN.md), the shape itself does not stretch with
+   it. A single SVG spanning the band with `preserveAspectRatio="none"` used
+   to scale every ellipse horizontally by paneWidth/100 while the vertical
+   scale stayed 1, flattening each cumulus into a smear on any pane wider
+   than the 100-unit viewBox it was authored at (review: Sky.tsx:104). */
+.sky-cloud {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
   pointer-events: none;
+  transform: translateX(-50%);
 }
-.sky-clouds ellipse { fill: var(--sky-cloud); }
+.sky-cloud-1 { top: 74px; left: 22%; width: 37px; height: 22px; }
+.sky-cloud-2 { top: 67px; left: 71%; width: 35px; height: 21px; }
+.sky-cloud ellipse { fill: var(--sky-cloud); }
 .sky-pies {
   position: relative;
   z-index: 1;
@@ -2907,10 +2931,23 @@ pre[data-fallback] .line::before {
   padding: 4px 0 0;
   transition: transform var(--dur-fast) var(--ease), opacity var(--dur) var(--ease);
 }
-.sky-pie:hover { transform: translateY(-2px); }
-.sky-pie:active { transform: scale(0.97); }
+/* :not(.sky-pie-portrait) — the plate's inert copy of the pie (Pie.tsx,
+   `interactive={false}`) reuses this class for its layout only; it is a
+   <div>, not a button, and must not pick up hover/press motion meant for
+   the clickable band tiles. */
+.sky-pie:not(.sky-pie-portrait):hover { transform: translateY(-2px); }
+.sky-pie:not(.sky-pie-portrait):active { transform: scale(0.97); }
+.sky-pie-portrait { cursor: default; }
 /* Other pies dim to 60% while one plate is open (spec section 4). */
 .sky-pies:has(.sky-pie.selected) .sky-pie:not(.selected) { opacity: 0.6; }
+/* The band tile whose plate is open hides its own disc for as long as the
+   plate stays open (reappearing the instant `.selected` is gone, i.e. on
+   close) — the plate's portrait disc animates from that slot's position and
+   scale, so showing both at once would double it (spec section 4,
+   "Motion": "The band disc hides for the duration and reappears on
+   close"). Scoped to `.sky-pies` so it never touches the plate's own
+   portrait disc, which also carries `.sky-pie-disc`. */
+.sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidden; }
 .sky-pie-label {
   max-width: 96px;
   overflow: hidden;
@@ -2945,11 +2982,16 @@ pre[data-fallback] .line::before {
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-overlay);
-  animation: pie-plate-in var(--dur) var(--ease);
+  /* Plate + content fade 160ms --ease after an 80ms delay (spec section 4,
+     "Motion") — no translate: the motion that reads as "opening" is the
+     disc's own scale-in below, not the card sliding. `both` holds the 0%
+     frame during the delay instead of flashing the plate at full opacity
+     for 80ms before the animation engine picks it up. */
+  animation: pie-plate-in var(--dur) var(--ease) 80ms both;
 }
 @keyframes pie-plate-in {
-  from { opacity: 0; transform: translateY(-4px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .pie-plate-left {
   flex: 0 0 240px;
@@ -2958,6 +3000,27 @@ pre[data-fallback] .line::before {
   align-items: center;
   gap: var(--space-2);
   padding-top: var(--space-2);
+}
+/* The plate pie renders at its FINAL size (200px, or 120px under a short
+   pane) and only its transform animates — scale(0.24) to scale(1), 240ms on
+   --ease-emphasis, will-change: transform — so WebKit paints the sharp SVG
+   at final size throughout instead of rasterising a 48px bitmap and
+   upscaling it (spec section 4). `transform-origin: top` approximates the
+   band slot's position (the portrait sits at the top of the plate's left
+   column, directly under the band) without a per-tile FLIP measurement,
+   which the M1 budget does not carry; a pixel-exact reuse of the clicked
+   tile's own rect is left for a later pass if the approximation reads
+   wrong in the demo. The band's own disc for this pie is hidden for as
+   long as the plate stays open (`.sky-pies .sky-pie.selected .sky-pie-disc`
+   above), so this is the only copy of the disc on screen while it runs. */
+.pie-plate-left .sky-pie-disc {
+  transform-origin: top center;
+  will-change: transform;
+  animation: pie-plate-disc-in 240ms var(--ease-emphasis);
+}
+@keyframes pie-plate-disc-in {
+  from { transform: scale(0.24); }
+  to { transform: scale(1); }
 }
 .pie-plate-readout {
   font-family: var(--font-mono);
@@ -3002,6 +3065,11 @@ pre[data-fallback] .line::before {
 }
 .pie-legend-row:hover { background: var(--bg-row-hover); }
 .pie-legend-row.active { background: var(--bg-row-selected); color: var(--fg); }
+.pie-legend-glyph {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
 .pie-legend-kind { flex: 1 1 auto; }
 .pie-legend-count,
 .pie-legend-share,
@@ -3012,6 +3080,36 @@ pre[data-fallback] .line::before {
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
+.pie-legend-comments {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+/* The filter's chip exit path (spec section 5) — Backspace on the layer
+   list (PiePlate.tsx) is the other. --r-sm, not --r-pill: this chip is an
+   ACTION (it clears the filter), and DESIGN.md's Don't list reserves the
+   pill shape for status, not actions (line 689). */
+.pie-slice-chip {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-row-selected);
+  color: var(--fg-strong);
+  font: inherit;
+  font-size: var(--text-caption);
+  padding: 3px var(--space-2);
+  cursor: pointer;
+}
+.pie-slice-chip:hover { background: var(--bg-row-hover); }
 .pie-legend-empty,
 .pie-layers-empty {
   color: var(--empty-fg);
