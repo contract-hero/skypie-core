@@ -12,30 +12,51 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import { CORE_DIR, SHELL_DIR } from "./app";
 import type { AppHandle } from "./app";
+import { run, waitUntilConnectable } from "./proc";
 
 const execFileAsync = promisify(execFile);
 
-/** Fixed per STATUS.md's own iOS E2E history — the one simulator this
- *  machine's harness targets. */
-export const SIMULATOR_UDID = "AF4CB22E-8E9F-4E83-ADFC-0FFF70B657FE";
+/** The simulator model the harness targets. `SKYPIE_E2E_SIM` names another
+ *  one (`xcrun simctl list devices` prints the names). */
+const SIMULATOR_NAME = process.env.SKYPIE_E2E_SIM ?? "iPhone 17 Pro";
+
+/** The last known-good udid on the machine this harness was written on.
+ *  Only reached when the lookup below finds no device by name — a hardcoded
+ *  udid that no longer exists is a worse failure than one that never did. */
+const FALLBACK_UDID = "AF4CB22E-8E9F-4E83-ADFC-0FFF70B657FE";
+
+/** Resolve `SIMULATOR_NAME` to a udid, so the harness follows a machine's
+ *  own simulator set instead of a literal that only ever matched one Mac. */
+function resolveSimulatorUdid(): string {
+  try {
+    const raw = execFileSync("xcrun", ["simctl", "list", "devices", "-j"], { encoding: "utf8" });
+    const parsed = JSON.parse(raw) as {
+      devices: Record<string, { udid: string; name: string; isAvailable?: boolean }[]>;
+    };
+    for (const runtime of Object.values(parsed.devices)) {
+      for (const device of runtime) {
+        if (device.name === SIMULATOR_NAME && device.isAvailable !== false) return device.udid;
+      }
+    }
+  } catch {
+    // No Xcode, or an unreadable listing — fall through to the literal.
+  }
+  console.warn(`no available simulator named ${SIMULATOR_NAME}; using ${FALLBACK_UDID}`);
+  return FALLBACK_UDID;
+}
+
+export const SIMULATOR_UDID = resolveSimulatorUdid();
 export const BUNDLE_ID = "ai.skypie.SkyPie";
 
-/** `core` (skypie-desktop's submodule) → the sibling `skypie-ios` repo. */
-export const IOS_SHELL_DIR = path.resolve(SHELL_DIR, "..", "skypie-ios");
+/** `core` (skypie-desktop's submodule) → the sibling `skypie-ios` repo.
+ *  `SKYPIE_IOS_SHELL` overrides it for a checkout kept somewhere else. */
+export const IOS_SHELL_DIR =
+  process.env.SKYPIE_IOS_SHELL ?? path.resolve(SHELL_DIR, "..", "skypie-ios");
 export const IOS_CORE_DIR = path.join(IOS_SHELL_DIR, "core");
 export const IOS_APP_PATH = path.join(
   IOS_SHELL_DIR,
   "src-tauri/gen/apple/build/arm64-sim/Sky Pie.app",
 );
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function run(cmd: string, args: string[], cwd?: string): void {
-  console.log(`$ ${cmd} ${args.join(" ")}`);
-  execFileSync(cmd, args, { cwd, stdio: "inherit" });
-}
 
 /**
  * Point `skypie-ios/core` (a separate checkout — the iOS shell has its own
@@ -95,7 +116,11 @@ export async function launchIos(opts: LaunchIosOptions): Promise<LaunchedIosApp>
     { env: { ...process.env, SIMCTL_CHILD_SKYPIE_E2E_PORT: String(opts.port) } },
   );
 
-  await waitForPort(opts.port, 30_000);
+  await waitUntilConnectable(
+    () => net.createConnection({ host: "127.0.0.1", port: opts.port }),
+    `the simulator app's TCP :${opts.port}`,
+    30_000,
+  );
 
   const app: LaunchedIosApp = {
     port: opts.port,
@@ -107,7 +132,7 @@ export async function launchIos(opts: LaunchIosOptions): Promise<LaunchedIosApp>
         // Already not running — nothing to terminate.
       }
     },
-    screenshot: (name) => screenshot(name),
+    screenshot,
   };
   return app;
 }
@@ -120,30 +145,11 @@ async function ensureBooted(): Promise<void> {
     // outcome most of the time on a dev machine — anything else is real.
     const msg = e instanceof Error ? e.message : String(e);
     if (!msg.includes("current state: Booted")) throw e;
+    // Already booted, so it has already finished booting: `bootstatus` would
+    // only add seconds of polling to a device that is ready right now.
+    return;
   }
   execFileSync("xcrun", ["simctl", "bootstatus", SIMULATOR_UDID], { stdio: "inherit" });
-}
-
-async function waitForPort(port: number, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (await canConnect(port)) return;
-    if (Date.now() > deadline) {
-      throw new Error(`the simulator app never opened TCP :${port} within ${timeoutMs}ms`);
-    }
-    await sleep(200);
-  }
-}
-
-function canConnect(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const s = net.createConnection({ host: "127.0.0.1", port });
-    s.once("connect", () => {
-      s.end();
-      resolve(true);
-    });
-    s.once("error", () => resolve(false));
-  });
 }
 
 const OUT_DIR = path.resolve(CORE_DIR, "ui", "e2e", "out");

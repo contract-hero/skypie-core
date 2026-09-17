@@ -27,8 +27,10 @@ pub mod bookmarks;
 pub mod watcher;
 pub mod remote;
 // macOS-only: the Unix socket `skypie-mcp` drives the app through. The MCP
-// server runs beside the desktop app; the phone has no such neighbour.
-#[cfg(target_os = "macos")]
+// server runs beside the desktop app; the phone has no such neighbour — so
+// the unix LISTENER inside is `cfg(target_os = "macos")`, while the request
+// dispatcher and the connection handler it exports compile everywhere: the
+// E2E harness's loopback TCP listener serves the very same dispatcher.
 pub mod ipc_server;
 // The E2E harness hook: `Request::E2eEval` served over the macOS unix socket
 // above AND, for iOS (which has none), an optional loopback TCP listener.

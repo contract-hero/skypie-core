@@ -262,7 +262,7 @@ pub fn run(context: tauri::Context) {
     // module itself carries the debug/feature gate (lib.rs), so there is
     // nothing further to gate here.
     #[cfg(any(feature = "e2e-hooks", debug_assertions))]
-    let builder = builder.manage(crate::e2e::E2eState::new());
+    let builder = builder.manage(crate::e2e::E2eState::default());
 
     builder
         .invoke_handler(tauri::generate_handler![
@@ -305,8 +305,6 @@ pub fn run(context: tauri::Context) {
             crate::annotations_api::annotations_reply,
             crate::annotations_api::annotations_set_status,
             crate::annotations_api::annotations_export,
-            #[cfg(any(feature = "e2e-hooks", debug_assertions))]
-            crate::e2e::e2e_bridge_enabled,
             #[cfg(any(feature = "e2e-hooks", debug_assertions))]
             crate::e2e::e2e_report,
             #[cfg(any(feature = "e2e-hooks", debug_assertions))]

@@ -2,12 +2,13 @@
 // it over its `app.sock` (the same socket `skypie-mcp` uses), and script its
 // actual webview via `Request::E2eEval` (crates/skypie-ipc, app/src/e2e.rs)
 // rather than re-implementing the UI's behaviour in the test.
-import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { request } from "./protocol";
+import { run, sleep, waitUntilConnectable } from "./proc";
 import { parseCombo } from "../../src/keyboard/shortcuts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -37,17 +38,6 @@ export interface LaunchedApp extends AppHandle {
   readonly stateDir: string;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Run a build step, streaming its output — a silent multi-minute build is
- *  indistinguishable from a hang. */
-function runBuild(cmd: string, args: string[], cwd: string): void {
-  console.log(`$ ${cmd} ${args.join(" ")}`);
-  execFileSync(cmd, args, { cwd, stdio: "inherit" });
-}
-
 export interface LaunchDesktopOptions {
   /** Scratch `SKYPIE_STATE_DIR` — isolates `app.sock`, `state.json`,
    *  `identity.key` etc. from the developer's real install. */
@@ -75,21 +65,32 @@ const DEV_URL = "http://localhost:1420";
  * own `pnpm dev`) is reused and left running.
  */
 export async function launchDesktop(opts: LaunchDesktopOptions): Promise<LaunchedApp> {
-  if (!opts.skipBuild) {
-    runBuild(
-      "cargo",
-      ["build", "--manifest-path", path.join(SHELL_DIR, "src-tauri", "Cargo.toml")],
-      SHELL_DIR,
-    );
+  // The dev server and `cargo build` need nothing from each other, and both
+  // take real time — so the server boots while the crate compiles.
+  const devServerStarting = ensureDevServer();
+  try {
+    if (!opts.skipBuild) {
+      run(
+        "cargo",
+        ["build", "--manifest-path", path.join(SHELL_DIR, "src-tauri", "Cargo.toml")],
+        SHELL_DIR,
+      );
+    }
+    if (!fs.existsSync(DESKTOP_BIN)) {
+      throw new Error(`built, but the binary is not at ${DESKTOP_BIN}`);
+    }
+  } catch (e) {
+    // The build failed, but the server may already be up: stop it rather
+    // than leave an orphan behind (and never leave the promise unhandled).
+    const stray = await devServerStarting.catch(() => null);
+    if (stray) await quitProcess(stray);
+    throw e;
   }
-  if (!fs.existsSync(DESKTOP_BIN)) {
-    throw new Error(`built, but the binary is not at ${DESKTOP_BIN}`);
-  }
-  const devServer = await ensureDevServer();
+  const devServer = await devServerStarting;
 
   fs.mkdirSync(opts.stateDir, { recursive: true });
   const sockPath = path.join(opts.stateDir, "app.sock");
-  // A stale socket from a previous crashed run would make `waitForSocket`
+  // A stale socket from a previous crashed run would make the wait below
   // connect to nothing and hang for the full timeout instead of the fresh
   // one `claim_socket` is about to bind.
   if (fs.existsSync(sockPath)) fs.rmSync(sockPath);
@@ -105,7 +106,7 @@ export async function launchDesktop(opts: LaunchDesktopOptions): Promise<Launche
     console.log(`[skypie] exited (code=${code}, signal=${signal})`);
   });
 
-  await waitForSocket(sockPath, 30_000);
+  await waitUntilConnectable(() => net.createConnection(sockPath), `app.sock at ${sockPath}`, 30_000);
 
   const app: LaunchedApp = {
     proc,
@@ -178,28 +179,6 @@ async function quitProcess(proc: ChildProcess): Promise<void> {
       clearTimeout(timer);
       resolve();
     });
-  });
-}
-
-async function waitForSocket(sockPath: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (fs.existsSync(sockPath) && (await canConnect(sockPath))) return;
-    if (Date.now() > deadline) {
-      throw new Error(`app.sock never came up at ${sockPath} within ${timeoutMs}ms`);
-    }
-    await sleep(200);
-  }
-}
-
-function canConnect(sockPath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const s = net.createConnection(sockPath);
-    s.once("connect", () => {
-      s.end();
-      resolve(true);
-    });
-    s.once("error", () => resolve(false));
   });
 }
 
