@@ -118,6 +118,130 @@ fn reorder_bookmarks(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), St
     Ok(())
 }
 
+// ─── Pies IPC (M2) ─────────────────────────────────────────────────────────
+// Every op below is a thin `#[tauri::command]` over a `pub(crate)
+// …_for(&AppHandle, …)` function — the convention `remote.rs` follows
+// (its own doc comment: "because the local socket server drives the same
+// operations ... and must not grow a second implementation of any of
+// them"). M5 adds `add_to_pie` on the agent socket, which will call these
+// same `_for` functions directly rather than duplicate them. Every write
+// emits the full list on `skypie://pies-updated`, exactly as `add_bookmark`
+// does for `skypie://bookmarks-updated`, so every `usePies()` subscriber —
+// the band, the picker, another window later — reconciles off one source.
+//
+// Rust command params stay single-word (`id`, `name`, `path`, `kind`),
+// matching every existing command in this file: Tauri's arg pipeline
+// converts a snake_case Rust param name to camelCase for the JS `invoke()`
+// call, and a single word has no case to convert.
+
+pub(crate) fn list_pies_for(_app: &tauri::AppHandle) -> Vec<crate::pies::Pie> {
+    crate::pies::list()
+}
+
+#[tauri::command]
+fn list_pies(app: tauri::AppHandle) -> Vec<crate::pies::Pie> {
+    list_pies_for(&app)
+}
+
+pub(crate) fn upsert_pie_for(
+    app: &tauri::AppHandle,
+    id: Option<&str>,
+    name: &str,
+) -> Result<crate::pies::Pie, String> {
+    let pie = crate::pies::upsert(id, name)?;
+    let _ = app.emit("skypie://pies-updated", crate::pies::list());
+    Ok(pie)
+}
+
+/// Create (`id` absent/null) or rename (`id` present) a pie. Returns the
+/// resulting `Pie` — the frontend needs the id a NEW pie was minted with,
+/// since `pies::upsert` (not the caller) chooses it.
+#[tauri::command]
+fn upsert_pie(
+    app: tauri::AppHandle,
+    id: Option<String>,
+    name: String,
+) -> Result<crate::pies::Pie, String> {
+    upsert_pie_for(&app, id.as_deref(), &name)
+}
+
+pub(crate) fn remove_pie_for(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    crate::pies::remove(id)?;
+    let _ = app.emit("skypie://pies-updated", crate::pies::list());
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_pie(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    remove_pie_for(&app, &id)
+}
+
+pub(crate) fn add_pie_member_for(
+    app: &tauri::AppHandle,
+    id: &str,
+    path: &str,
+    kind: crate::pies::PieMemberKind,
+    source: Option<&str>,
+) -> Result<(), String> {
+    crate::pies::add_member(id, std::path::Path::new(path), kind, source)?;
+    let _ = app.emit("skypie://pies-updated", crate::pies::list());
+    Ok(())
+}
+
+#[tauri::command]
+fn add_pie_member(
+    app: tauri::AppHandle,
+    id: String,
+    path: String,
+    kind: crate::pies::PieMemberKind,
+    source: Option<String>,
+) -> Result<(), String> {
+    add_pie_member_for(&app, &id, &path, kind, source.as_deref())
+}
+
+pub(crate) fn remove_pie_member_for(app: &tauri::AppHandle, id: &str, path: &str) -> Result<(), String> {
+    crate::pies::remove_member(id, std::path::Path::new(path))?;
+    let _ = app.emit("skypie://pies-updated", crate::pies::list());
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_pie_member(app: tauri::AppHandle, id: String, path: String) -> Result<(), String> {
+    remove_pie_member_for(&app, &id, &path)
+}
+
+pub(crate) fn relocate_pie_member_for(
+    app: &tauri::AppHandle,
+    id: &str,
+    old: &str,
+    new: &str,
+) -> Result<(), String> {
+    crate::pies::relocate_member(id, std::path::Path::new(old), std::path::Path::new(new))?;
+    let _ = app.emit("skypie://pies-updated", crate::pies::list());
+    Ok(())
+}
+
+#[tauri::command]
+fn relocate_pie_member(
+    app: tauri::AppHandle,
+    id: String,
+    old: String,
+    new: String,
+) -> Result<(), String> {
+    relocate_pie_member_for(&app, &id, &old, &new)
+}
+
+pub(crate) fn touch_pie_seen_for(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    crate::pies::touch_seen(id)?;
+    let _ = app.emit("skypie://pies-updated", crate::pies::list());
+    Ok(())
+}
+
+#[tauri::command]
+fn touch_pie_seen(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    touch_pie_seen_for(&app, &id)
+}
+
 /// Start (or replace) the filesystem watcher rooted at `path`. Each successful
 /// call drops any previous watcher handle, which shuts down its entire
 /// pipeline (watcher, flush thread, raw-event thread, and the bridge thread
@@ -281,6 +405,13 @@ pub fn run(context: tauri::Context) {
             add_bookmark,
             remove_bookmark,
             reorder_bookmarks,
+            list_pies,
+            upsert_pie,
+            remove_pie,
+            add_pie_member,
+            remove_pie_member,
+            relocate_pie_member,
+            touch_pie_seen,
             crate::share::share_file,
             crate::share::share_link,
             crate::remote::beam_offer,

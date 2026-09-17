@@ -24,6 +24,11 @@ pub mod annotations;
 pub mod annotations_api;
 pub mod recents;
 pub mod bookmarks;
+// User pies (M2). Cross-platform, not macOS-gated — same reasoning as
+// bookmarks/recents: the phone will read this shape too (spec section 8,
+// "Mirroring a Mac's user pies to the phone" is roadmap, not a macOS-only
+// concept), and nothing in here is macOS-specific.
+pub mod pies;
 pub mod watcher;
 pub mod remote;
 // macOS-only: the Unix socket `skypie-mcp` drives the app through. The MCP
