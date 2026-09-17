@@ -115,7 +115,9 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
   const label = labelOfWedges(wedges);
   const fresh = pie.fresh ?? 0;
 
-  // A 160ms --sky tone flash on the disc when `fresh` RISES (a new file
+  // A 160ms BRIGHTNESS pulse on the disc (`.sky-pie-flash`, a `filter:
+  // brightness` keyframe in styles.css — no tone, hue or fill changes at
+  // all, so it introduces no new colour departure) when `fresh` RISES (a new file
   // landed) — not on every render, and not on a drop back to 0 (opening the
   // pill/plate clears the pill instantly; flashing on the way out would
   // read as a second, contradictory event). `prevFresh` starts at the
@@ -227,8 +229,7 @@ const Pie = React.forwardRef<HTMLButtonElement | HTMLDivElement, PieProps>(funct
       // pill span's own aria-label below): `role="option"` is an ARIA
       // "presentational children" role, so a nested `role="button"` and its
       // aria-label are stripped from the accessibility tree and a
-      // screen-reader user was never told a pie had new files (review:
-      // Pie.tsx:264).
+      // screen-reader user was never told a pie had new files.
       aria-label={`${pie.name} — ${label}${fresh > 0 ? ` — ${fresh} new file${fresh === 1 ? "" : "s"}` : ""}`}
       tabIndex={tabIndex}
       onFocus={onFocus}

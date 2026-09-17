@@ -110,7 +110,19 @@ export function PiesProvider({
   const locateMember = React.useCallback(
     async (pieId: string, oldPath: string) => {
       if (!ipc.pickDirectory) return;
-      const picked = await ipc.pickDirectory();
+      // The picker itself can reject (the dialog plugin missing from this
+      // build, a permission denied). Outside a try, that rejection escaped
+      // this function, and the only caller `void`s the promise: the user
+      // clicked Locate…, no dialog opened, and nothing was said.
+      let picked: string | null;
+      try {
+        picked = await ipc.pickDirectory();
+      } catch (err: unknown) {
+        onNotice?.(
+          `Couldn't open the folder picker — ${messageOf(err, "the dialog could not be shown")}`,
+        );
+        return;
+      }
       // The user cancelled the native picker — not a refusal, nothing to say.
       if (!picked) return;
       try {

@@ -5,11 +5,13 @@
 import type { Pie, PieCensus } from "../ipc";
 import type { DerivedPie, DerivedPieFile } from "./derived-pies";
 import { kindOf } from "../render/kind";
-import { censusToFiles, freshCount } from "./pie-census";
+import { censusToFiles, freshCount } from "./derived-pies";
 
-/** Re-exported from `derived-pies.ts`, where it now lives beside the two
- *  built-in ids it tests against — `pie-census.ts` needs the predicate and
- *  cannot import this module, which imports `pie-census.ts` back. */
+/** Re-exported from `derived-pies.ts`, where it lives beside the two
+ *  built-in ids it tests against. Every import in this module now points
+ *  ONE way — at `derived-pies.ts`, which imports nothing from here — so
+ *  `pie-census.ts` can import `toDerivedPie` below without the two modules
+ *  forming a cycle. */
 export { isUserPieId } from "./derived-pies";
 
 /** A user pie's FILE members, adapted to the same shape a derived pie's

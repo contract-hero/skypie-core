@@ -107,8 +107,10 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
   // !readerMode` (App.tsx), so a plain mount effect IS the "on show"
   // trigger; `pieCensusCtx.refreshAll` is intentionally left out of the
   // deps array below (PiePlate.tsx's own seen_at effect follows the same
-  // "mount-only, not on every identity change" shape) — it already
-  // refreshes on every `pies` identity change on its own (`pie-census.ts`).
+  // "mount-only, not on every identity change" shape) — re-running it on
+  // every identity change would re-walk every folder of every pie for a
+  // callback that merely re-identified. A pie whose MEMBERS change is
+  // refetched on its own, per pie, by `pie-census.ts`'s members effect.
   React.useEffect(() => {
     pieCensusCtx.refreshAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -271,16 +273,27 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
           icon: <FolderPlus size={13} strokeWidth={2} />,
           onSelect: () => {
             if (!ipc.pickDirectory) return;
-            void ipc.pickDirectory().then((picked) => {
-              if (!picked) return;
-              // A bare `void` here used to swallow `add_member`'s own
-              // rejection (a folder that stops resolving between the
-              // native picker and this call)
-              // with no feedback at all.
-              piesCtx.addPieMember(pie.id, picked, "folder", "menu").catch((err: unknown) => {
-                onNotice(`Couldn't add that folder — ${messageOf(err, "the folder could not be added")}`);
+            void ipc
+              .pickDirectory()
+              .then((picked) => {
+                if (!picked) return;
+                // A bare `void` here used to swallow `add_member`'s own
+                // rejection (a folder that stops resolving between the
+                // native picker and this call)
+                // with no feedback at all.
+                piesCtx.addPieMember(pie.id, picked, "folder", "menu").catch((err: unknown) => {
+                  onNotice(`Couldn't add that folder — ${messageOf(err, "the folder could not be added")}`);
+                });
+              })
+              // The OUTER rejection, which had no handler at all:
+              // `pickDirectory` itself can fail (the dialog plugin missing
+              // from this build, a permission denied). The menu item then
+              // did nothing — no dialog, and nothing said why.
+              .catch((err: unknown) => {
+                onNotice(
+                  `Couldn't open the folder picker — ${messageOf(err, "the dialog could not be shown")}`,
+                );
               });
-            });
           },
         },
       ],
@@ -423,9 +436,15 @@ export default function Sky({ ipc, onOpenFile, onNotice }: SkyProps): React.Reac
                 onOpenNewest={(e) => {
                   // The SAME `newestPath(pie.files)` the ⌘Enter case above
                   // opens — the pill and the chord must never disagree about
-                  // which file "the newest" is.
+                  // which file "the newest" is. And the same FALLBACK: a
+                  // root change flushes the census cache, so the pill can
+                  // still be on screen with `pie.files` back to its
+                  // pre-census shape and no newest path to open. Clicking
+                  // it then did nothing at all; it zooms instead, exactly
+                  // as ⌘Enter does for an empty pie.
                   const path = newestPath(pie.files);
                   if (path) onOpenFile(path, openOptsFromClick(e));
+                  else setOpenPieId(pie.id);
                 }}
               />
             );

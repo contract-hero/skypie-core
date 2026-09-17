@@ -5,7 +5,7 @@
 // Derived pies are never persisted (spec section 9): there is no `seen_at`,
 // so they never show a freshness pill, and no `id` beyond the fixed
 // "builtin:*" ones below.
-import type { BookmarkEntry, PieCensus, RecentEntry } from "../ipc";
+import type { BookmarkEntry, PieCensus, PieMember, RecentEntry } from "../ipc";
 import { BEARINGS, HAZE_THRESHOLD, kindOf } from "../render/kind";
 import type { FileKind } from "../render/kind";
 import { isRemoteAddress } from "../utils/remote-address";
@@ -19,10 +19,8 @@ export const BUILTIN_RECENT_ID = "builtin:recent";
 
 /** True for a user pie's id — the built-in pies are exactly the two fixed
  *  ids above, and no user pie can ever carry one (`uuid::Uuid::now_v7()`
- *  never produces them). Lives HERE, beside the ids it is the predicate
- *  for, so `pie-census.ts` can use it without importing `pies.ts` — which
- *  imports `pie-census.ts` back. `pies.ts` re-exports it for its existing
- *  callers. */
+ *  never produces them). Lives HERE, beside the two ids it tests against.
+ *  `pies.ts` re-exports it for its existing callers. */
 export function isUserPieId(id: string): boolean {
   return id !== BUILTIN_PINNED_ID && id !== BUILTIN_RECENT_ID;
 }
@@ -65,6 +63,62 @@ export interface Wedge {
   count: number;
   /** 0..1 — share of the pie's total file count. */
   share: number;
+}
+
+/**
+ * Adapts a resolved `PieCensus` into the `DerivedPieFile[]` shape every
+ * other pie surface (`wedgesOf`, `Pie.tsx`, the flat layer list) already
+ * renders against — `kindOf` is applied here, once, so the Rust side never
+ * needs its own copy of the kind table (the M3 decision recorded in
+ * workspace.rs's own doc comment).
+ *
+ * Lives HERE, beside `DerivedPieFile` itself, rather than in
+ * `pie-census.ts`: `pies.ts` needs it for `toDerivedPie`, and
+ * `pie-census.ts` needs `toDerivedPie` — keeping it there made those two
+ * modules import each other, which only worked because every use happened
+ * to be at call time. `pie-census.ts` re-exports it so its existing
+ * importers are unaffected.
+ *
+ * `members` filters rather than trusts `census.files` verbatim: a folder
+ * member can be removed from the pie WHILE an in-flight `pie_census` call
+ * is still resolving (the request reads `pies::list()` at the moment it
+ * runs; the removal is a separate, later write). Without this filter a
+ * census that lands after the removal would still carry rows tagged with
+ * the now-gone member's path — `layersOf` (`pie-census.ts`) never builds a
+ * LAYER for a member that no longer exists, so those rows would silently
+ * vanish from every folder layer, but a direct-file row (`folder` absent)
+ * needs no such check, since a removed FILE member has nothing else to
+ * match against.
+ *
+ * No per-path dedupe: `workspace.rs::census_with_cap` reports each path at
+ * most once for the whole pie, covering both a FILE member inside a FOLDER
+ * member and two OVERLAPPING folder members. A second pass here would only
+ * hide a regression on that side.
+ */
+export function censusToFiles(census: PieCensus, members: PieMember[]): DerivedPieFile[] {
+  const memberPaths = new Set(members.map((m) => m.path));
+  const out: DerivedPieFile[] = [];
+  for (const f of census.files) {
+    if (f.folder !== undefined && !memberPaths.has(f.folder)) continue;
+    out.push({ path: f.path, kind: kindOf(f.path), mtime: f.mtime, folder: f.folder });
+  }
+  return out;
+}
+
+/** Freshness recomputed CLIENT-SIDE against the pie's CURRENT `seenAt`:
+ *  the census carries no `fresh` field at all, because `usePies.
+ *  touchPieSeen` bumps a pie's `seen_at` to `Date.now()` OPTIMISTICALLY
+ *  (before the backend echo lands), which is what clears the pill the
+ *  instant the plate opens (every real mtime is now behind "now") — a
+ *  server-side count would have been measured against whatever `seen_at`
+ *  was true when the census ran, and could already be wrong by the time it
+ *  rendered. `seenAt === 0` (never opened) always reads 0, so a pie nobody
+ *  has looked at yet does not present every pre-existing file as new.
+ *  Strictly newer: a file whose mtime EQUALS `seenAt` was already on
+ *  screen at that moment and is not new. */
+export function freshCount(files: DerivedPieFile[], seenAt: number): number {
+  if (seenAt === 0) return 0;
+  return files.reduce((n, f) => (f.mtime > seenAt ? n + 1 : n), 0);
 }
 
 /** Both `bookmarks.rs` and `recents.rs` store their timestamps in seconds

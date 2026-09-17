@@ -5,6 +5,7 @@ import {
   freshCount,
   layersOf,
   newestPath,
+  sameMembers,
 } from "./pie-census";
 import type { PieLayer } from "./pie-census";
 import type { PieCensus, PieMember } from "../ipc";
@@ -16,6 +17,7 @@ function census(overrides: Partial<PieCensus> = {}): PieCensus {
     files: [],
     missing: [],
     outside_root: [],
+    skipped: 0,
     truncated: false,
     ...overrides,
   };
@@ -53,6 +55,14 @@ describe("censusToFiles", () => {
   });
 
 });
+
+/** `layersOf`'s folder layer for `id` — narrowed, so a test reads
+ *  `missing`/`live` without a cast the discriminated union would reject. */
+function folderLayer(layers: PieLayer[], id: string): Extract<PieLayer, { kind: "folder" }> {
+  const layer = layers.find((l) => l.id === id);
+  if (!layer || layer.kind !== "folder") throw new Error(`no folder layer ${id}`);
+  return layer;
+}
 
 function treeChange(path: string): FsChange {
   return { kind: "modify", path, source: "tree" };
@@ -105,6 +115,52 @@ describe("freshCount", () => {
   it("is 0 for an empty pie", () => {
     expect(freshCount([], 100)).toBe(0);
   });
+
+  it("does not count a file whose mtime EQUALS seenAt", () => {
+    // Strictly newer: a file last written at the exact moment the plate
+    // was opened was already on screen then, so it is not new. This is the
+    // boundary the per-row "new" dot in PiePlate.tsx uses too.
+    expect(freshCount([file("/a", { mtime: 100 })], 100)).toBe(0);
+  });
+});
+
+describe("sameMembers", () => {
+  // The predicate that decides whether a `pies-updated` event is worth a
+  // re-walk. Getting it wrong either re-walks every folder of every pie on
+  // every plate open, or misses a real membership change entirely.
+  const base: PieMember[] = [
+    { kind: "folder", path: "/w/a", added_at: 1 },
+    { kind: "file", path: "/w/b.md", added_at: 2 },
+  ];
+
+  it("is false for a pie seen for the first time (no previous list)", () => {
+    expect(sameMembers(undefined, base)).toBe(false);
+  });
+
+  it("is false when a member's KIND flips", () => {
+    expect(sameMembers(base, [{ ...base[0], kind: "file" }, base[1]])).toBe(false);
+  });
+
+  it("is false when the same members are REORDERED", () => {
+    // Stored order is what `layersOf` renders, so a reorder changes the
+    // census's own output even though the set is identical.
+    expect(sameMembers(base, [base[1], base[0]])).toBe(false);
+  });
+
+  it("is false when a member is added or removed", () => {
+    expect(sameMembers(base, [base[0]])).toBe(false);
+  });
+
+  it("is TRUE when only added_at / source / origin differ", () => {
+    // This is what makes `touch_seen` — fired on every single plate open —
+    // a no-op here: those three describe the ADD, not what is on disk.
+    expect(
+      sameMembers(base, [
+        { ...base[0], added_at: 999, source: "menu" },
+        { ...base[1], added_at: 999, origin: { session_id: "s1" } },
+      ]),
+    ).toBe(true);
+  });
 });
 
 describe("newestPath", () => {
@@ -146,7 +202,6 @@ describe("layersOf", () => {
     const layers = layersOf(files, members, undefined);
     const filesLayer = layers.find((l) => l.id === "files") as PieLayer;
     expect(filesLayer.kind).toBe("files");
-    expect(filesLayer.memberPath).toBeNull();
     expect(filesLayer.rows.map((r) => r.path)).toEqual(["/w/direct.md"]);
   });
 
@@ -179,25 +234,33 @@ describe("layersOf", () => {
   it("flags a folder layer missing when its member is in census.missing", () => {
     const c = census({ missing: ["/w/a-dir"] });
     const layers = layersOf(files, members, c);
-    const aDir = layers.find((l) => l.id === "/w/a-dir") as PieLayer;
-    const bDir = layers.find((l) => l.id === "/w/b-dir") as PieLayer;
-    expect(aDir.missing).toBe(true);
-    expect(bDir.missing).toBe(false);
+    expect(folderLayer(layers, "/w/a-dir").missing).toBe(true);
+    expect(folderLayer(layers, "/w/b-dir").missing).toBe(false);
   });
 
   it("flags a folder layer not-live when its member is in census.outside_root", () => {
     const c = census({ outside_root: ["/w/b-dir"] });
     const layers = layersOf(files, members, c);
-    const bDir = layers.find((l) => l.id === "/w/b-dir") as PieLayer;
-    const aDir = layers.find((l) => l.id === "/w/a-dir") as PieLayer;
-    expect(bDir.live).toBe(false);
-    expect(aDir.live).toBe(true);
+    expect(folderLayer(layers, "/w/b-dir").live).toBe(false);
+    expect(folderLayer(layers, "/w/a-dir").live).toBe(true);
   });
 
-  it("defaults missing=false and live=true before any census has resolved", () => {
+  it("flags a folder layer unreadable when its member is in census.unreadable", () => {
+    // Distinct from `missing`: the folder is still there, so the plate
+    // offers Forget but not Locate….
+    const c = census({ unreadable: ["/w/a-dir"] });
+    const layers = layersOf(files, members, c);
+    expect(folderLayer(layers, "/w/a-dir").unreadable).toBe(true);
+    expect(folderLayer(layers, "/w/a-dir").missing).toBe(false);
+    expect(folderLayer(layers, "/w/b-dir").unreadable).toBe(false);
+  });
+
+  it("defaults missing/unreadable=false and live=true before any census has resolved", () => {
     const layers = layersOf(files, members, undefined);
-    for (const l of layers.filter((l) => l.kind === "folder")) {
+    for (const l of layers) {
+      if (l.kind !== "folder") continue;
       expect(l.missing).toBe(false);
+      expect(l.unreadable).toBe(false);
       expect(l.live).toBe(true);
     }
   });

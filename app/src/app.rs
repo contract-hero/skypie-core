@@ -306,7 +306,9 @@ pub(crate) fn pie_census_for(
         None => Ok(crate::workspace::PieCensus {
             files: Vec::new(),
             missing: Vec::new(),
+            unreadable: Vec::new(),
             outside_root: Vec::new(),
+            skipped: 0,
             truncated: false,
             truncated_at: None,
         }),

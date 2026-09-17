@@ -64,6 +64,7 @@ describe("pieFiles / toDerivedPie", () => {
       files: [{ path: "/w/a.md", mtime: 999, size: 10 }],
       missing: [],
       outside_root: [],
+      skipped: 0,
       truncated: false,
     };
     const derived = toDerivedPie(p, c);
@@ -85,6 +86,7 @@ describe("pieFiles / toDerivedPie", () => {
       ],
       missing: [],
       outside_root: [],
+      skipped: 0,
       truncated: false,
     };
     const derived = toDerivedPie(p, c);
@@ -97,6 +99,7 @@ describe("pieFiles / toDerivedPie", () => {
       files: [{ path: "/w/a.md", mtime: 1_700_000_000_000, size: 1 }],
       missing: [],
       outside_root: [],
+      skipped: 0,
       truncated: false,
     };
     const derived = toDerivedPie(p, c);
@@ -115,12 +118,31 @@ describe("bandOrder with a census", () => {
       files: [{ path: "/w/a.md", mtime: 1, size: 1 }],
       missing: [],
       outside_root: [],
+      skipped: 0,
       truncated: false,
     };
     const order = bandOrder(derived, userPies, (p) => toDerivedPie(p, p.id === "u1" ? c : undefined));
     expect(order[0].fresh).toBeUndefined();
     expect(order[1].fresh).toBeUndefined();
     expect(order.find((p) => p.id === "u1")?.census).toBe(c);
+  });
+
+  it("calls `derive` exactly once per USER pie, and never for a built-in", () => {
+    // `derive` is the memoized door onto the census cache
+    // (`usePieCensus().derive`). Calling it twice for one pie would derive
+    // the same pie twice per band render; calling it for a built-in would
+    // try to census a pie that is not persisted at all.
+    const derived: DerivedPie[] = [
+      { id: "builtin:pinned", name: "Pinned", files: [] },
+      { id: "builtin:recent", name: "Recent", files: [] },
+    ];
+    const userPies = [pie({ id: "u1", name: "Pricing" }), pie({ id: "u2", name: "Roadmap" })];
+    const seen: string[] = [];
+    bandOrder(derived, userPies, (p) => {
+      seen.push(p.id);
+      return toDerivedPie(p);
+    });
+    expect(seen).toEqual(["u1", "u2"]);
   });
 });
 
