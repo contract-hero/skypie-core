@@ -505,6 +505,18 @@ mod tests {
         assert_eq!(round_trip(&ok), ok);
     }
 
+    /// The release safety claim, executed. Without the feature and without
+    /// `debug_assertions` the variant is not in the enum at all, so the line
+    /// an E2E driver would send cannot parse as a `Request`. Run by
+    /// `cargo test -p skypie-ipc --release` (see `scripts/verify.sh`).
+    #[cfg(not(any(feature = "e2e-hooks", debug_assertions)))]
+    #[test]
+    fn a_release_build_cannot_even_parse_an_e2e_eval_line() {
+        let e = serde_json::from_str::<Request>(r#"{"op":"e2e_eval","js":"1+1"}"#)
+            .expect_err("a release build must not accept this verb");
+        assert!(e.to_string().contains("unknown variant"), "{e}");
+    }
+
     #[test]
     fn the_wire_shape_is_tagged_by_op() {
         let s = serde_json::to_string(&Request::ListDevices { probe: false }).unwrap();

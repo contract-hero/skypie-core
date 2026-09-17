@@ -5,7 +5,14 @@
 import type { Pie, PieCensus } from "../ipc";
 import type { DerivedPie, DerivedPieFile } from "./derived-pies";
 import { kindOf } from "../render/kind";
-import { censusToFiles, freshCount, newestPath } from "./pie-census";
+import { censusToFiles, freshCount, isUserPieId } from "./derived-pies";
+
+/** Re-exported from `derived-pies.ts`, where it lives beside the two
+ *  built-in ids it tests against. Every import in this module now points
+ *  ONE way — at `derived-pies.ts`, which imports nothing from here — so
+ *  `pie-census.ts` can import `toDerivedPie` below without the two modules
+ *  forming a cycle. */
+export { isUserPieId } from "./derived-pies";
 
 /** A user pie's FILE members, adapted to the same shape a derived pie's
  *  `files` already has, so `wedgesOf`/`groupByWedge` (derived-pies.ts) and
@@ -23,21 +30,19 @@ export function pieFiles(pie: Pie): DerivedPieFile[] {
 /** Adapts a persisted `Pie` to `DerivedPie`'s shape — the one interface
  *  `Pie.tsx`/`PiePlate.tsx` already render against. `census`, when given
  *  (M3), REPLACES `pieFiles`'s pre-census fallback with real files (folder
- *  contents plus real mtimes) and adds `fresh`/`newestFreshPath`/`census`;
- *  omitted (or before the pie's first census resolves), this is exactly
- *  M2's behavior — `added_at`-keyed direct-file members only, no pill. */
+ *  contents plus real mtimes) and adds `fresh`/`census`; omitted (or before
+ *  the pie's first census resolves), this is exactly M2's behavior —
+ *  `added_at`-keyed direct-file members only, no pill. */
 export function toDerivedPie(pie: Pie, census?: PieCensus): DerivedPie {
   if (!census) {
     return { id: pie.id, name: pie.name, files: pieFiles(pie) };
   }
   const files = censusToFiles(census, pie.members);
-  const fresh = freshCount(files, pie.seen_at);
   return {
     id: pie.id,
     name: pie.name,
     files,
-    fresh,
-    newestFreshPath: fresh > 0 ? newestPath(files) ?? undefined : undefined,
+    fresh: freshCount(files, pie.seen_at),
     census,
   };
 }
@@ -46,38 +51,84 @@ export function toDerivedPie(pie: Pie, census?: PieCensus): DerivedPie {
  *  pies in their stored order — `userPies` arrives already in that order
  *  (`pies::list()` never sorts), so this is a plain concatenation, not a
  *  sort. The tin is NOT part of this list; Sky.tsx appends it as its own
- *  trailing element. `censusFor` (M3, `usePieCensus().censusFor`) is
- *  optional — omitted, every user pie falls back to `toDerivedPie`'s own
- *  pre-census behavior, which is what lets a bare `IpcSurface` test double
- *  or an older `bandOrder(derived, userPies)` call site keep compiling. */
+ *  trailing element.
+ *
+ *  `derive` is REQUIRED, and is normally `usePieCensus().derive`: that one
+ *  memoizes per pie id, so a census landing for ONE pie re-derives only
+ *  that pie instead of the whole band. It used to be an optional
+ *  `censusFor`, which silently fell back to the pre-census shape — a
+ *  caller that forgot to pass it got a band with no freshness pills and no
+ *  folder layers, and nothing said so. A caller with no census at all
+ *  passes `toDerivedPie` itself. */
 export function bandOrder(
   derived: DerivedPie[],
   userPies: Pie[],
-  censusFor?: (id: string) => PieCensus | undefined,
+  derive: (pie: Pie) => DerivedPie,
 ): DerivedPie[] {
-  return [...derived, ...userPies.map((p) => toDerivedPie(p, censusFor?.(p.id)))];
+  return [...derived, ...userPies.map(derive)];
 }
 
-/** Pairs with `insertPieAt` for the 5-second delete undo (Sky.tsx):
- *  removing a pie from local state is optimistic and does NOT itself call
- *  `removePie` — the caller defers that IPC call until the undo window
- *  closes, so undoing never has to reconstruct a pie the backend already
- *  forgot. */
-export function withoutPie(pies: Pie[], id: string): Pie[] {
-  return pies.filter((p) => p.id !== id);
-}
-
-/** The undo half of `withoutPie`: re-insert `pie` at `index` (clamped into
- *  range), restoring the exact array shape a delete removed it from. */
-export function insertPieAt(pies: Pie[], pie: Pie, index: number): Pie[] {
-  const next = pies.slice();
-  const at = Math.max(0, Math.min(next.length, index));
-  next.splice(at, 0, pie);
+/** Adds `id` to a pending-delete set, returning a NEW set (React state must
+ *  not be mutated in place). Paired with `withoutPending` so the two
+ *  overlapping-delete transitions are one testable pair rather than two
+ *  inline `new Set(prev)` closures inside `usePies`. */
+export function withPending(pending: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(pending);
+  next.add(id);
   return next;
 }
 
+/** Removes `id` from a pending-delete set. Returns a new set, and leaves the
+ *  OTHER ids alone — two deletes whose undo windows overlap must not clear
+ *  each other, which is what a plain `setPendingDeletes(NO_PENDING)` did. */
+export function withoutPending(pending: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(pending);
+  next.delete(id);
+  return next;
+}
+
+/** What `PiesProvider.openPicker` should do with a caller-supplied path,
+ *  decided without touching React or the IPC surface so all three outcomes
+ *  are testable directly.
+ *
+ *  - `refuse`: a `skypie-remote://` address — M2 has no remote pie members.
+ *  - `canonicalize`: the normal path, resolved before the picker renders so
+ *    `holdsPath`'s exact-string compare lines up with the stored members.
+ *  - `open`: no `canonicalizePath` on this IPC surface (a test double, an
+ *    older build) — open uncanonicalized rather than hang on a promise that
+ *    will never resolve. */
+export type PickerPathPlan =
+  | { action: "refuse"; reason: string }
+  | { action: "canonicalize"; path: string }
+  | { action: "open"; path: string };
+
+export function pickerPathPlan(
+  path: string,
+  canCanonicalize: boolean,
+  isRemote: (p: string) => boolean,
+): PickerPathPlan {
+  if (isRemote(path)) return { action: "refuse", reason: "Can't add a pulled file to a pie yet" };
+  return canCanonicalize ? { action: "canonicalize", path } : { action: "open", path };
+}
+
+/** Hides every pie whose delete is still inside its undo window
+ *  (`usePies`'s `pendingDeletes`). The hook applies this to EVERY list it
+ *  reconciles, including one that arrives on a `skypie://pies-updated`
+ *  event from an unrelated write (another window's `touch_seen`, or M5's
+ *  agent socket). Without it such an event replaced the local list with the
+ *  server's still-has-it document and the deleted pie reappeared mid-undo.
+ *  Returns the SAME array when nothing is pending, so the common case adds
+ *  no new identity for React to re-render on. */
+export function subtractPending(pies: Pie[], pending: ReadonlySet<string>): Pie[] {
+  if (pending.size === 0) return pies;
+  return pies.filter((p) => !pending.has(p.id));
+}
+
 /** Whether `pie` already holds `path` as a member — the picker's check
- *  mark (spec section 6). */
+ *  mark (spec section 6). An EXACT string compare against the stored
+ *  (always canonical) member paths, which is why `openPicker` canonicalizes
+ *  before the picker renders: a non-canonical form of the very same file
+ *  answers false here. */
 export function holdsPath(pie: Pie, path: string): boolean {
   return pie.members.some((m) => m.path === path);
 }
@@ -96,14 +147,6 @@ export function uniqueName(pies: Pie[], wanted: string): string {
   while (taken.has(`${trimmed} ${n}`)) n += 1;
   return `${trimmed} ${n}`;
 }
-
-/** True for a user pie's id — every built-in pie's id is a fixed
- *  `"builtin:…"` literal (`derived-pies.ts`), and no user pie can ever be
- *  minted with that prefix (`uuid::Uuid::now_v7()` never produces one). */
-export function isUserPieId(id: string): boolean {
-  return !id.startsWith("builtin:");
-}
-
 /** M4, deep-link reveal (spec section 7, "What happens to the old
  *  sidebar" / "Deep-link reveal"): the first USER pie whose `files`
  *  include `path` exactly, or `null`. Built-ins are excluded — only a user

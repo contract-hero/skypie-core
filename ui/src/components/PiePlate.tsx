@@ -8,26 +8,32 @@
 // filter chip, and — only for a USER pie — the layer rows' context menu
 // gains "Remove from pie" / "Add to another pie…".
 //
-// M3: when the pie has any FOLDER member, the layer list becomes a tree —
-// one layer per folder (in stored member order) plus a trailing "Files"
-// layer for direct file members, each folder layer a `role="treeitem"`
-// header at `aria-level="1"` over its rows at `aria-level="2"` (spec
-// section 5). A pie with no folder members keeps the flat `role="listbox"`
-// shape unchanged from M1/M2 — `layersOf`/`PieLayer` (`state/pie-census.ts`)
-// only exist to feed the tree case.
+// M3: the layer list is ALWAYS built from `layersOf` (`state/pie-census.ts`)
+// — one layer per folder member in stored order, plus a trailing "Files"
+// layer for direct file members. It is DRAWN two ways: with folder headers
+// as a `role="tree"` (`treeitem` at `aria-level="1"` over rows at
+// `aria-level="2"`, spec section 5), or — when the only layer is the
+// unnamed "Files" one, which is every pie with no folder members — with no
+// headers at all, as the flat `role="listbox"` M1/M2 already shipped. One
+// list, one row renderer, one keyboard sequence; only the headers and the
+// container role differ. A list holding a MISSING row takes the tree roles
+// even with no headers: `role="option"` would strip that row's own Forget
+// button from the accessibility tree (see `treeRoles` below).
 import * as React from "react";
 import { FileCode, FileText, FileImage, FileJson, File as FileIconGlyph, MessageSquare, PieChart, XCircle } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import Pie from "./Pie";
-import { groupByWedge, wedgesOf } from "../state/derived-pies";
-import type { DerivedPie, DerivedPieFile } from "../state/derived-pies";
+import { BUILTIN_PINNED_ID, groupByWedge, wedgesOfGroups } from "../state/derived-pies";
+import type { DerivedPie, DerivedPieFile, Wedge } from "../state/derived-pies";
 import { isUserPieId } from "../state/pies";
 import { kindOf } from "../render/kind";
 import type { FileKind } from "../render/kind";
 import { layersOf, usePieCensus } from "../state/pie-census";
 import type { PieLayer } from "../state/pie-census";
+import type { PieMember } from "../ipc";
 import { FileGlyph } from "./FileIcon";
 import { basename, displayDir, displayPath } from "../utils/path";
+import { messageOf } from "../utils/error-message";
 import { formatAgo } from "../utils/beam-format";
 import { useEscape } from "../hooks/useEscape";
 import { useContextMenu } from "./ContextMenu";
@@ -37,30 +43,20 @@ import { useWorkspace } from "../state/workspace";
 import { useAnnotations } from "../state/annotations-context";
 import { openOptsFromClick } from "../state/TabsProvider";
 import type { OpenFileOptions } from "../state/TabsProvider";
-import type { IpcSurface } from "../ipc";
-import type { AppNoticeAction } from "../App";
 
-/** One entry in the layer list's roving-tabindex sequence — a folder
- *  layer's header, or a single file row. Shared between tree mode (real
- *  `PieLayer`s from `layersOf`) and flat mode (every row uses the same
- *  placeholder `FLAT_LAYER` below, since flat mode renders no headers at
- *  all and the `layer` field is never read for a "file" item). */
+/** One entry in the layer list, in DOM order — a folder layer's header, or
+ *  a single file row. Its INDEX in the array IS its roving-tabindex slot,
+ *  so nothing has to look one up: the render loop below walks this array
+ *  once and hands each item the index it is already at. */
 type NavItem =
-  | { type: "header"; layer: PieLayer }
-  | { type: "file"; layer: PieLayer; file: DerivedPieFile };
+  | { type: "header"; key: string; layer: PieLayer }
+  | { type: "file"; key: string; file: DerivedPieFile };
 
-/** Placeholder `layer` for a flat-mode "file" `NavItem` — flat mode never
- *  reads a row's `layer` field (there is no header to associate it with),
- *  so one shared constant avoids allocating a throwaway object per row. */
-const FLAT_LAYER: PieLayer = {
-  id: "flat",
-  label: "",
-  memberPath: null,
-  kind: "files",
-  missing: false,
-  live: true,
-  rows: [],
-};
+/** The member list of a pie that has none (or of a derived Pinned/Recent
+ *  pie, which has no `members` field at all). Hoisted so it keeps ONE
+ *  identity: a fresh `[]` per render re-ran every `useMemo` keyed on
+ *  `members` on every render of a pie with no members. */
+const NO_MEMBERS: PieMember[] = [];
 
 const KIND_LABELS: Record<FileKind, string> = {
   html: "HTML",
@@ -84,13 +80,14 @@ const KIND_ICON: Record<FileKind, LucideIcon> = {
   other: FileIconGlyph,
 };
 
-/** pane height < 480px is the spec's "short window" floor (section 4):
- *  the plate pie drops to 120px. Pane height ≈ window height − 2×--band-h
- *  (tab strip + toolbar, 40px each — section 2's own "pane = window − 40
- *  tab strip − 40 toolbar"), so this tracks window height directly instead
- *  of measuring the DOM, which keeps the plate's CSS clamp() and this
- *  threshold using the same arithmetic. */
-const SHORT_PANE_WINDOW_H = 480 + 80;
+/** pane height < 480px is the spec's "short window" floor (section 4): the
+ *  plate pie drops to 120px. The subtraction is the plate's own space model
+ *  — pane = window − 40 tab strip − 40 toolbar − 120 sky band − 32 margin —
+ *  the same 232px `.pie-plate`'s `clamp(280px, calc(100vh - 232px), 440px)`
+ *  uses (styles.css). Counting only the two 40px chrome bars engaged the
+ *  floor about 120px too late. Tracking window height directly, with no DOM
+ *  measurement, keeps the two in step. */
+const SHORT_PANE_WINDOW_H = 480 + 232;
 
 function usePaneShort(): boolean {
   const [short, setShort] = React.useState(
@@ -99,8 +96,10 @@ function usePaneShort(): boolean {
   React.useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const mql = window.matchMedia(`(max-height: ${SHORT_PANE_WINDOW_H - 1}px)`);
+    // No eager `onChange()`: the lazy initializer above already read the
+    // same window height with the same threshold, so calling it on mount
+    // only set the state it was already in.
     const onChange = () => setShort(mql.matches);
-    onChange();
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, []);
@@ -138,25 +137,25 @@ function usePaneNarrow(): boolean {
 
 /** `formatAgo` already returns the complete phrase "just now" for anything
  *  under 60s — appending " ago" unconditionally used to read "just now ago"
- *  for the normal case of a file opened or bookmarked in the last minute
- *  (review: PiePlate.tsx:229). One helper, both call sites below. */
-function mtimeAgo(mtimeMs: number): string {
+ *  for the normal case of a file opened or bookmarked in the last minute.
+ *  One helper, both call sites below. */
+export function mtimeAgo(mtimeMs: number): string {
   const ago = formatAgo(Math.floor(mtimeMs / 1000), Math.floor(Date.now() / 1000));
   return ago === "just now" ? ago : `${ago} ago`;
 }
 
-function lastOpenedLabel(pie: DerivedPie): string {
+export function lastOpenedLabel(pie: DerivedPie): string {
   const { files } = pie;
   // Pinned's mtime is bookmarked_at (derived-pies.ts), i.e. when the file
   // was starred, not when it was opened — "Last opened" claimed something
-  // the data does not support (review: PiePlate.tsx:59). Before a user
+  // the data does not support. Before a user
   // pie's first M3 census resolves, `mtime` is still `added_at` (pies.ts's
   // `pieFiles` fallback) — when the file was ADDED, not when it changed,
-  // the same category of mislabel (review: pies.ts:19); once `pie.census`
-  // is set, `mtime` is a REAL file mtime (`toDerivedPie`'s census branch),
-  // so the label graduates from "Last added" to "Last changed" the moment
-  // that first census lands.
-  const isPinned = pie.id === "builtin:pinned";
+  // the same category of mislabel; once `pie.census` is set, `mtime` is a
+  // REAL file mtime (`toDerivedPie`'s census branch), so the label
+  // graduates from "Last added" to "Last changed" the moment that first
+  // census lands.
+  const isPinned = pie.id === BUILTIN_PINNED_ID;
   const isUser = isUserPieId(pie.id);
   if (files.length === 0) return isPinned ? "Never pinned" : isUser ? "No files added" : "Never opened";
   const newest = Math.max(...files.map((f) => f.mtime));
@@ -164,17 +163,30 @@ function lastOpenedLabel(pie: DerivedPie): string {
   return `${verb} ${mtimeAgo(newest)}`;
 }
 
+/** The pie's dominant wedge — the biggest share. A tie keeps the FIRST
+ *  wedge, and `wedgesOfGroups` returns them in BEARINGS order, so a 50/50
+ *  pie reads out the kind nearer north (strict `>`, never `>=`). */
+export function dominantWedge(wedges: Wedge[]): Wedge | null {
+  return wedges.reduce<Wedge | null>(
+    (best, w) => (best === null || w.share > best.share ? w : best),
+    null,
+  );
+}
+
+/** The mono readout, e.g. `HTML · 60% · 9 files`. The count is the READOUT
+ *  KIND's file count, not the pie's total — the spec's own example only
+ *  works if 9 is the count behind the 60% (9/15, say); the pie total made
+ *  the two figures disagree for any pie that is not 100% one kind. */
+export function readoutLabel(wedge: Wedge | null): string {
+  if (!wedge) return "No files";
+  const files = `${wedge.count} file${wedge.count === 1 ? "" : "s"}`;
+  return `${KIND_LABELS[wedge.kind]} · ${Math.round(wedge.share * 100)}% · ${files}`;
+}
+
 export interface PiePlateProps {
   pie: DerivedPie;
   onClose: () => void;
   onOpenFile: (path: string, opts?: OpenFileOptions) => void;
-  /** M3: `pickDirectory` for "Locate…" on a missing folder member. */
-  ipc: IpcSurface;
-  /** M3: a refused "Locate…" (the picked replacement doesn't resolve)
-   *  surfaces through `AppShell`'s own `AppNotice`, the same bridge
-   *  `Sky.tsx`'s own folder-add failure already uses — optional so a bare
-   *  test double for `PiePlateProps` still renders without one. */
-  onNotice?: (text: string, action?: AppNoticeAction, durationMs?: number) => void;
   /** M4: deep-link reveal (App.tsx's `revealRoute === "plate"`) arms this
    *  with the file the reveal targeted — on mount, that row gets DOM focus
    *  and the roving-tabindex slot, INSTEAD OF the checked-legend-radio
@@ -201,8 +213,6 @@ export default function PiePlate({
   pie,
   onClose,
   onOpenFile,
-  ipc,
-  onNotice,
   focusPath,
   focusNonce,
   onFocusConsumed,
@@ -236,8 +246,7 @@ export default function PiePlate({
   // `members`/`seen_at` to `DerivedPie` keeps exactly one place that can go
   // stale rather than two. `undefined` for a derived Pinned/Recent pie.
   const rawPie = isUserPie ? piesCtx.pies.find((p) => p.id === pie.id) : undefined;
-  const members = rawPie?.members ?? [];
-  const treeMode = members.some((m) => m.kind === "folder");
+  const members = rawPie?.members ?? NO_MEMBERS;
   // The "new" dot's baseline is `seen_at` AS OF THE MOMENT THIS PLATE
   // OPENED, NOT the live `rawPie.seen_at` below, which the mount effect
   // right after this bumps to `Date.now()` on the very same open. Reading
@@ -263,7 +272,12 @@ export default function PiePlate({
   // same open/switch moment, so one effect covers both.
   React.useEffect(() => {
     if (isUserPie) {
-      void piesCtx.touchPieSeen(pie.id);
+      // Nothing to show the user for a failed stamp — `seen_at` drives the
+      // M3 freshness pill, not anything on screen now — but a dropped
+      // rejection here would hide a store that refuses every write.
+      piesCtx.touchPieSeen(pie.id).catch((err: unknown) => {
+        console.warn("skypie: touchPieSeen failed", err);
+      });
       pieCensusCtx.refresh(pie.id);
     }
     // Only on open (mount) / when the plate switches to a different pie —
@@ -271,106 +285,133 @@ export default function PiePlate({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pie.id]);
 
-  const wedges = React.useMemo(() => wedgesOf(pie.files), [pie.files]);
+  // One grouping pass per file list; the wedges are derived from it rather
+  // than regrouping the same files a second time.
   const groups = React.useMemo(() => groupByWedge(pie.files), [pie.files]);
+  const wedges = React.useMemo(() => wedgesOfGroups(groups), [groups]);
 
+  // The wedge the readout describes: the filtered kind while a slice is on,
+  // otherwise the pie's dominant kind.
+  const readoutWedge = React.useMemo<Wedge | null>(() => {
+    if (filterKind) return wedges.find((w) => w.kind === filterKind) ?? null;
+    return dominantWedge(wedges);
+  }, [filterKind, wedges]);
+  const readoutKind = filterKind ?? readoutWedge?.kind ?? null;
   // The cursor can point at a kind that just disappeared from `wedges` —
   // removing the last file of the focused kind through a layer row's
-  // "Remove from pie" leaves `focusedKindState` naming a kind with no
-  // radio at all, so `checked` is false for every row, every radio gets
-  // `tabIndex={-1}`, and the radiogroup falls out of the tab order
-  // entirely (review: PiePlate.tsx:119). `setFocusedLayer` already gets
-  // this same reset on the layer list below; the legend needed its own.
-  React.useEffect(() => {
-    if (focusedKindState && !wedges.some((w) => w.kind === focusedKindState)) {
-      setFocusedKindState(null);
+  // "Remove from pie" left `focusedKindState` naming a kind with no radio
+  // at all, so `checked` was false for every row, every radio got
+  // `tabIndex={-1}`, and the radiogroup fell out of the tab order entirely
+  //. Validating the cursor HERE, at render, is
+  // the same correction without the extra state round trip an effect
+  // needed — the bad frame that effect had to repair never renders.
+  const focusedKind =
+    focusedKindState && wedges.some((w) => w.kind === focusedKindState)
+      ? focusedKindState
+      : readoutKind;
+  const readout = React.useMemo(() => readoutLabel(readoutWedge), [readoutWedge]);
+  const lastOpened = React.useMemo(() => lastOpenedLabel(pie), [pie]);
+
+  // Per-kind legend facts, scanned once per (files, comment state) change
+  // instead of once per legend row per render.
+  const legendFacts = React.useMemo(() => {
+    const facts = new Map<FileKind, { newest: number; openComments: number }>();
+    for (const [kind, kindFiles] of groups) {
+      let newest = Number.NEGATIVE_INFINITY;
+      let openComments = 0;
+      for (const f of kindFiles) {
+        if (f.mtime > newest) newest = f.mtime;
+        openComments += openCountFor(f.path);
+      }
+      facts.set(kind, { newest, openComments });
     }
-  }, [wedges, focusedKindState]);
+    return facts;
+  }, [groups, openCountFor]);
 
-  const dominant = wedges.reduce<typeof wedges[number] | null>(
-    (best, w) => (best === null || w.share > best.share ? w : best),
-    null,
-  );
-  const readoutKind = filterKind ?? dominant?.kind ?? null;
-  const focusedKind = focusedKindState ?? readoutKind;
-  const readoutWedge = readoutKind ? wedges.find((w) => w.kind === readoutKind) ?? null : null;
-  // The count is the READOUT KIND's file count, not the pie's total — the
-  // spec's own example (`html · 60% · 9 files`) only works if 9 is the
-  // count behind the 60% (9/15, say); `pie.files.length` made the two
-  // figures disagree for any pie that is not 100% one kind (review:
-  // PiePlate.tsx:93).
-  const readout = readoutWedge
-    ? `${KIND_LABELS[readoutWedge.kind]} · ${Math.round(readoutWedge.share * 100)}% · ${readoutWedge.count} file${readoutWedge.count === 1 ? "" : "s"}`
-    : "No files";
+  // A direct FILE member that no longer resolves — one ROW like any other
+  // (spec section 5 dims it and offers Forget), so it joins the same list
+  // the live rows are in rather than trailing behind as a second one.
+  // `kindOf` works on the path string alone, so a missing file still
+  // respects the current slice filter even though it never reached
+  // `pie.files`/`pie.census`. `mtime: 0` is never rendered — `byRow`
+  // (pie-census.ts) sorts `missing` rows last, and the row itself shows
+  // "not found" where a live row shows its age.
+  const missingFileRows = React.useMemo<DerivedPieFile[]>(() => {
+    const missing = new Set(pie.census?.missing ?? []);
+    return members
+      .filter((m) => m.kind === "file" && missing.has(m.path))
+      .map((m) => ({ path: m.path, kind: kindOf(m.path), mtime: 0, missing: true as const }));
+  }, [members, pie.census]);
 
+  // ONE row list: the slice filter narrows the live rows through `groups`
+  // (which the legend and the readout already share) and the missing rows
+  // by the same kind test, and `layersOf` buckets and sorts whatever comes
+  // out. `groups`/`wedges` deliberately do NOT see the missing rows — a
+  // member with no file behind it must not weigh a wedge or the readout.
   const layerFiles = React.useMemo(() => {
-    const base = filterKind ? groups.get(filterKind) ?? [] : pie.files;
-    return [...base].sort((a, b) => b.mtime - a.mtime);
-  }, [filterKind, groups, pie.files]);
+    const live = filterKind ? groups.get(filterKind) ?? [] : pie.files;
+    const gone = filterKind ? missingFileRows.filter((f) => f.kind === filterKind) : missingFileRows;
+    return [...live, ...gone];
+  }, [filterKind, groups, pie.files, missingFileRows]);
 
-  // M3: one layer per folder member (in stored member order) plus a
-  // trailing "Files" layer — fed the SAME filtered set `layerFiles` already
-  // computed above, so the slice filter narrows a tree layer's rows exactly
-  // the way it narrows the flat list. Only rendered as a tree when
-  // `treeMode`; a pie with no folder members never calls this.
   const layers = React.useMemo(
     () => layersOf(layerFiles, members, pie.census),
     [layerFiles, members, pie.census],
   );
 
-  // A direct FILE member that no longer resolves — dims with "not found" +
-  // Forget in the trailing "Files" layer (spec section 5). `kindOf` works
-  // on the path string alone, so a missing file still respects the current
-  // slice filter even though it never reached `pie.files`/`pie.census`.
-  const missingFileRows = React.useMemo(() => {
-    const missing = new Set(pie.census?.missing ?? []);
-    return members.filter(
-      (m) => m.kind === "file" && missing.has(m.path) && (!filterKind || kindOf(m.path) === filterKind),
-    );
-  }, [members, pie.census, filterKind]);
+  // Headers are worth drawing only when they SAY something: a lone
+  // unnamed "Files" layer is the whole list, and labelling it "Files"
+  // above itself is noise — that case is exactly the M1/M2 flat listbox.
+  // The container role follows the same rule, so the role and the children
+  // it permits can never disagree.
+  const showHeaders = layers.length > 1 || layers[0]?.kind === "folder";
 
-  // The roving-tabindex NAVIGATION model — headers + file rows, in DOM
-  // order — is the same shape whether or not `treeMode` is on: in flat
-  // mode every item is a "file" and there are no headers at all, which is
-  // exactly the M1/M2 behavior this replaces. Missing-file rows are
-  // deliberately NOT part of this list (see FLAT_LAYER/renderFileRow's own
-  // notes) — they carry only a Forget button, reachable by ordinary Tab.
+  // `role="option"` is an ARIA "presentational children" role: it strips
+  // everything nested inside it from the accessibility tree, including a
+  // missing row's own Forget button — so in FLAT mode that button existed
+  // on screen and nowhere for a screen-reader user. `treeitem` has no such
+  // rule. A list holding a missing row is therefore a tree even with no
+  // headers drawn, and the ROW role follows the container, so the two can
+  // never disagree. Headers stay tied to `showHeaders` alone — a lone
+  // "Files" layer still paints no header, and `aria-level` still appears
+  // only when there is a level hierarchy to describe.
+  //
+  // (The alternative — folding Forget into the row's own `aria-label` plus
+  // a Backspace binding — is not taken: Backspace already clears the slice
+  // filter in this very list, `onLayerKeyDown`, and one key cannot mean two
+  // things in one list.)
+  const hasMissingRow = React.useMemo(
+    () => layers.some((layer) => layer.rows.some((f) => f.missing)),
+    [layers],
+  );
+  const treeRoles = showHeaders || hasMissingRow;
+
+  // Headers + rows in DOM order; each item's INDEX is its roving-tabindex
+  // slot. `key` is carried here rather than derived at render because a
+  // row's path is unique only within its layer.
   const navItems = React.useMemo<NavItem[]>(() => {
-    if (!treeMode) return layerFiles.map((file) => ({ type: "file", layer: FLAT_LAYER, file }));
     const items: NavItem[] = [];
     for (const layer of layers) {
-      items.push({ type: "header", layer });
-      for (const file of layer.rows) items.push({ type: "file", layer, file });
+      if (showHeaders) items.push({ type: "header", key: `h:${layer.id}`, layer });
+      for (const file of layer.rows) {
+        items.push({ type: "file", key: `f:${layer.id}:${file.path}`, file });
+      }
     }
     return items;
-  }, [treeMode, layerFiles, layers]);
+  }, [layers, showHeaders]);
 
-  // Keyed by LAYER id + path, not path alone — `censusToFiles` now dedupes
-  // a path across the whole pie, but two rows in the same render can still
-  // legitimately share a path across a transient state update; keying by
-  // layer+path means two rows can never collide onto one nav index even if
-  // they did (review: PiePlate.tsx:290/293).
-  const navIndexOf = React.useMemo(() => {
-    const map = new Map<string, number>();
-    navItems.forEach((item, i) => {
-      map.set(item.type === "header" ? `h:${item.layer.id}` : `f:${item.layer.id}:${item.file.path}`, i);
-    });
-    return map;
-  }, [navItems]);
-
-  const handleLocate = async (layer: PieLayer) => {
-    if (!ipc.pickDirectory || !layer.memberPath) return;
-    const picked = await ipc.pickDirectory();
-    if (!picked) return;
-    try {
-      await piesCtx.relocatePieMember(pie.id, layer.memberPath, picked);
-    } catch (err: unknown) {
-      onNotice?.(`Couldn't use that folder — ${String(err)}`);
-    }
-  };
-
+  // Both Forget buttons (a folder header's, and a missing FILE row's) go
+  // through this. `removePieMember` removes the layer OPTIMISTICALLY and
+  // rolls back on a refusal, so a dropped rejection read as success: the
+  // layer vanished, the member stayed on disk, and it came back on the next
+  // unrelated `pies-updated` event. Same handling the row context menu's
+  // "Remove from pie" already has.
   const handleForget = (path: string) => {
-    void piesCtx.removePieMember(pie.id, path);
+    piesCtx.removePieMember(pie.id, path).catch((err: unknown) => {
+      piesCtx.notice?.(
+        `Couldn't forget "${basename(path)}" — ${messageOf(err, "the member could not be removed")}`,
+      );
+    });
   };
 
   React.useEffect(() => {
@@ -383,7 +424,6 @@ export default function PiePlate({
   // end of `navItems` — no header or row then satisfies `navIndex ===
   // focusedLayer`, every item keeps `tabIndex={-1}`, and the whole layer
   // list drops out of the Tab order until the filter or the pie changes
-  // (review, minor: PiePlate.tsx:313).
   React.useEffect(() => {
     setFocusedLayer((i) => Math.min(i, Math.max(0, navItems.length - 1)));
   }, [navItems.length]);
@@ -393,8 +433,7 @@ export default function PiePlate({
   // in the global registry would. Guarded the same way App.tsx's reader-mode
   // Esc binding is: an open context menu (a layer row's "Copy Path" /
   // "Bookmark" / ...) still owns Esc and closes itself on the same window
-  // event, so one keypress must not ALSO close the plate underneath it
-  // (review: PiePlate.tsx:108).
+  // event, so one keypress must not ALSO close the plate underneath it.
   useEscape(() => {
     if (document.querySelector(".context-menu")) return;
     onClose();
@@ -410,7 +449,7 @@ export default function PiePlate({
       // ContextMenuProvider renders the row context menu at the app root,
       // outside plateRef — without this, a pointerdown on one of its own
       // items ("Copy Path", "Bookmark", ...) reads as an outside click and
-      // closes the plate the menu belongs to (review: PiePlate.tsx:115).
+      // closes the plate the menu belongs to.
       if (target instanceof Element && target.closest(".context-menu")) return;
       onClose();
     };
@@ -429,7 +468,12 @@ export default function PiePlate({
   // host and closes the plate via the outside-pointerdown handler above.
   React.useEffect(() => {
     const tabView = document.querySelector<HTMLElement>(".tab-view");
-    if (!tabView) return;
+    if (!tabView) {
+      // Without this element the iframe keeps swallowing the outside click,
+      // so the plate cannot be dismissed by pointer — say why.
+      console.error("skypie: .tab-view missing — the plate cannot block pointer events under it");
+      return;
+    }
     tabView.style.pointerEvents = "none";
     return () => {
       tabView.style.pointerEvents = "";
@@ -439,7 +483,7 @@ export default function PiePlate({
   // role="dialog" with no focus move, no aria-modal and no focus restore
   // meant a screen-reader user heard nothing open on Enter (the tile stayed
   // focused) and the layer list's own ↑/↓/Home/End did nothing until several
-  // Tabs landed inside (review: PiePlate.tsx:193). The plate does not trap
+  // Tabs landed inside. The plate does not trap
   // focus — Tab can still leave it — so aria-modal is explicitly "false"
   // rather than dropping role="dialog": that is what the attribute already
   // defaults to, made non-ambiguous here.
@@ -447,8 +491,7 @@ export default function PiePlate({
   // one level above every key handler that matters: `onLegendKeyDown` is
   // bound on `.pie-legend`, `onLayerKeyDown` on `.pie-layers`, and a keydown
   // whose target is the plate div reaches neither — ←/→ did nothing on
-  // open, until a Tab (or several) landed inside (review: PiePlate.tsx:220,
-  // reported against the spec's own M2 acceptance demo). Focus the CHECKED
+  // open, until a Tab (or several) landed inside. Focus the CHECKED
   // legend radio instead — `legendRefs` is already populated by the time
   // this effect runs (refs attach during commit, before effects), so the
   // radiogroup's own keydown handler is live from the very first keypress.
@@ -471,7 +514,12 @@ export default function PiePlate({
   React.useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
     return () => {
-      previouslyFocused?.focus?.();
+      // The tile that opened the plate can be gone by the time it closes (a
+      // bookmark unpinned while it was open). Focus would then fall to
+      // <body> and keyboard navigation would be lost with nothing to say so
+      // — fall back to the first tile (the band element itself is not focusable).
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+      else document.querySelector<HTMLElement>(".sky-band [data-pie-id]")?.focus();
     };
   }, []);
 
@@ -545,6 +593,10 @@ export default function PiePlate({
     file: DerivedPieFile,
     e: { metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean; button?: number },
   ) => {
+    // A `missing` row names a member with no file behind it — there is
+    // nothing to open, and asking would raise a "file not found" error the
+    // row itself already states.
+    if (file.missing) return;
     const opts = openOptsFromClick(e);
     onOpenFile(file.path, opts);
     // A plain click closes the plate; a ⌘-click (or middle-click) keeps it
@@ -576,16 +628,17 @@ export default function PiePlate({
     const current = focusedKind ? kinds.indexOf(focusedKind) : -1;
     switch (e.key) {
       case "ArrowRight":
+      case "ArrowLeft": {
         e.preventDefault();
-        focusRadio(kinds[(current + 1 + kinds.length) % kinds.length]);
+        const delta = e.key === "ArrowRight" ? 1 : -1;
+        focusRadio(kinds[(current + delta + kinds.length) % kinds.length]);
         break;
-      case "ArrowLeft":
-        e.preventDefault();
-        focusRadio(kinds[(current - 1 + kinds.length) % kinds.length]);
-        break;
+      }
       case "Enter":
         e.preventDefault();
-        if (focusedKind) setFilterKind((k) => (k === focusedKind ? null : focusedKind));
+        // Same path a click on the row takes, so keyboard and pointer
+        // cannot drift apart.
+        if (focusedKind) activateRadio(focusedKind);
         break;
       default:
         break;
@@ -656,11 +709,6 @@ export default function PiePlate({
       aria-modal="false"
       tabIndex={-1}
       data-testid="pie-plate"
-      // The plate is a DOM descendant of the band, which is itself a
-      // listbox with its own arrow/Home/End/Enter handling (Sky.tsx) — stop
-      // a key the plate's own rows already handled (its layer list's
-      // ↑/↓/Home/End/Enter) from also reaching the band underneath it.
-      onKeyDown={(e) => e.stopPropagation()}
     >
       <div className="pie-plate-left">
         {/* A static portrait of the pie already open — non-interactive
@@ -670,6 +718,10 @@ export default function PiePlate({
             — see the ARIA-ownership note on `onWedgeClick` in Pie.tsx. */}
         <Pie
           pie={pie}
+          // The plate already grouped these files for the legend and the
+          // layer filter; handing the wedges down stops the portrait from
+          // regrouping the very same list.
+          wedges={wedges}
           // `narrow`, not just `short` (review: styles.css:3458) — the left
           // rail only drops to 140px under `.pie-plate-narrow`, and narrow
           // can be true while short is false (a narrow-but-tall window, a
@@ -686,7 +738,7 @@ export default function PiePlate({
         {pie.census?.truncated ? (
           // spec section 4 fixes the left-column order as pie, readout,
           // "truncated · 20,000+", then "Last opened" — this used to render
-          // AFTER pie-plate-last-opened (review, minor: PiePlate.tsx:539).
+          // AFTER the recency line.
           // A plain count would keep moving as later folders are skipped,
           // so the label names the CAP instead of a number that would be
           // wrong the moment it's read.
@@ -694,7 +746,17 @@ export default function PiePlate({
             truncated · 20,000+
           </div>
         ) : null}
-        <div className="pie-plate-last-opened">{lastOpenedLabel(pie)}</div>
+        {pie.census?.skipped ? (
+          // Beside the truncated caption, and for the same reason: the
+          // wedges, the readout and the freshness count are all short by
+          // this many files, and only this line says so. A COUNT, not a
+          // list — the paths are in the log, and a plate is not a place to
+          // read a few thousand of them.
+          <div className="pie-plate-truncated" data-testid="pie-skipped">
+            {pie.census.skipped} file{pie.census.skipped === 1 ? "" : "s"} couldn&apos;t be read
+          </div>
+        ) : null}
+        <div className="pie-plate-recency">{lastOpened}</div>
       </div>
       <div className="pie-plate-right">
         {/* role="radiogroup": the legend rows AND the portrait's wedge
@@ -719,9 +781,10 @@ export default function PiePlate({
             <p className="pie-legend-empty">No files in this pie yet.</p>
           ) : (
             wedges.map((w) => {
-              const kindFiles = groups.get(w.kind) ?? [];
-              const newest = Math.max(...kindFiles.map((f) => f.mtime));
-              const openComments = kindFiles.reduce((sum, f) => sum + openCountFor(f.path), 0);
+              const { newest, openComments } = legendFacts.get(w.kind) ?? {
+                newest: Number.NEGATIVE_INFINITY,
+                openComments: 0,
+              };
               const cut = filterKind === w.kind;
               const checked = focusedKind === w.kind;
               const KindIcon = KIND_ICON[w.kind];
@@ -760,8 +823,7 @@ export default function PiePlate({
           // The filter's only documented ways out besides re-clicking the
           // same legend row (spec section 5): this chip, or Backspace while
           // the layer list has focus (onLayerKeyDown above). Neither shipped
-          // before, so nothing told the user how to leave the filtered view
-          // (review: PiePlate.tsx:223).
+          // before, so nothing told the user how to leave the filtered view.
           <button
             type="button"
             className="pie-slice-chip"
@@ -775,44 +837,48 @@ export default function PiePlate({
         <div
           ref={layerListRef}
           className="pie-layers"
-          role={treeMode ? "tree" : "listbox"}
+          role={treeRoles ? "tree" : "listbox"}
           aria-label={filterKind ? `${KIND_LABELS[filterKind]} files` : "All files"}
           data-testid="pie-layers"
           onKeyDown={onLayerKeyDown}
         >
-          {navItems.length === 0 && missingFileRows.length === 0 ? (
+          {navItems.length === 0 ? (
             <p className="pie-layers-empty">No files.</p>
-          ) : treeMode ? (
-            layers.map((layer) => (
-              <React.Fragment key={layer.id}>
-                {renderLayerHeader(layer)}
-                {layer.rows.map((file) =>
-                  renderFileRow(file, navIndexOf.get(`f:${layer.id}:${file.path}`) ?? -1, 2),
-                )}
-                {layer.kind === "files" ? missingFileRows.map((m) => renderMissingFileRow(m.path)) : null}
-              </React.Fragment>
-            ))
           ) : (
-            <>
-              {layerFiles.map((file, i) => renderFileRow(file, i))}
-              {missingFileRows.map((m) => renderMissingFileRow(m.path))}
-            </>
+            // The index IS the nav slot — one loop, no lookup table, and no
+            // way for a row's rendered slot to drift from the one the
+            // keyboard handler moves to.
+            navItems.map((item, i) =>
+              item.type === "header"
+                ? renderLayerHeader(item.layer, i, item.key)
+                : renderFileRow(item.file, i, item.key),
+            )
           )}
         </div>
       </div>
     </div>
   );
 
-  /** One folder layer's header row (spec section 5): the member-relative
-   *  mono path, plus whichever of "folder not found" (Locate…/Forget) or
-   *  "not live" applies. `role="treeitem" aria-level="1"` participates in
-   *  the SAME roving-tabindex sequence `onLayerKeyDown` drives — its own
-   *  slot comes from `navIndexOf`, exactly like a file row's. */
-  function renderLayerHeader(layer: PieLayer): React.ReactElement {
-    const navIndex = navIndexOf.get(`h:${layer.id}`) ?? -1;
-    const label = layer.kind === "folder" ? displayPath(layer.memberPath ?? layer.label, root) : layer.label;
+  /** One layer's header row (spec section 5): the workspace-relative mono
+   *  path, plus whichever of "folder not found" (Locate…/Forget), "can't
+   *  read this folder" (Forget only — the folder has not MOVED, so there
+   *  is nothing to re-point it at) or "not live" applies.
+   *  `role="treeitem" aria-level="1"` participates in the SAME
+   *  roving-tabindex sequence `onLayerKeyDown` drives — `navIndex` is its
+   *  slot in `navItems`, exactly like a file row's. */
+  function renderLayerHeader(layer: PieLayer, navIndex: number, key: string): React.ReactElement {
+    // The trailing "Files" layer carries no member state at all — that is
+    // what `PieLayer`'s discriminant buys, so there is nothing to null-check.
+    const folder = layer.kind === "folder" ? layer : null;
+    const label = folder ? displayPath(folder.memberPath, root) : layer.label;
+    const suffix = folder?.missing
+      ? " — folder not found"
+      : folder?.unreadable
+        ? " — can't read this folder"
+        : "";
     return (
       <div
+        key={key}
         className="pie-layer-header"
         data-testid="pie-layer-header"
         role="treeitem"
@@ -822,49 +888,95 @@ export default function PiePlate({
         onFocus={() => setFocusedLayer(navIndex)}
       >
         <span className="pie-layer-header-path">
-          <bdi>{layer.missing ? `${label} — folder not found` : label}</bdi>
+          <bdi>{`${label}${suffix}`}</bdi>
         </span>
-        {layer.missing ? (
+        {folder?.missing || folder?.unreadable ? (
           <span className="pie-layer-caption pie-layer-missing">
+            {folder.missing ? (
+              // Locate… only for a member that is GONE. An unreadable
+              // folder is still where it was, so re-pointing it at a
+              // replacement would quietly lose the original.
+              <button
+                type="button"
+                className="pie-mini-button"
+                data-testid="pie-locate"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void piesCtx.locateMember(pie.id, folder.memberPath);
+                }}
+              >
+                Locate…
+              </button>
+            ) : null}
             <button
               type="button"
-              data-testid="pie-locate"
-              onClick={(e) => {
-                e.stopPropagation();
-                void handleLocate(layer);
-              }}
-            >
-              Locate…
-            </button>
-            <button
-              type="button"
+              className="pie-mini-button"
               data-testid="pie-forget"
               onClick={(e) => {
                 e.stopPropagation();
-                if (layer.memberPath) handleForget(layer.memberPath);
+                handleForget(folder.memberPath);
               }}
             >
               Forget
             </button>
           </span>
-        ) : !layer.live ? (
+        ) : folder && !folder.live ? (
           <span className="pie-layer-caption">not live</span>
         ) : null}
       </div>
     );
   }
 
-  /** A single file row — shared by the flat listbox (`role="option"`, no
-   *  `aria-level`) and a tree layer's rows (`role="treeitem"
-   *  aria-level="2"`). `navIndex` is this row's slot in `navItems`; `-1`
-   *  (never found) renders unselected/untabbable rather than throwing. */
-  function renderFileRow(file: DerivedPieFile, navIndex: number, ariaLevel?: 2): React.ReactElement {
+  /** A single row — a live file, or (the `file.missing` branch) a direct
+   *  FILE member whose path no longer resolves: dimmed, "not found", and
+   *  Forget only, with no Locate… since there is nothing to re-point a
+   *  single file at. Both shapes are the SAME row in the same list, so
+   *  both take the same `role`/`aria-level`/roving-tabindex treatment and
+   *  a missing row cannot fall out of the keyboard sequence. `role` always
+   *  matches the container (`treeRoles`), which only permits one or the
+   *  other; `aria-level` appears only when headers are drawn, since that is
+   *  the only case with a level hierarchy to describe. `navIndex` is this
+   *  row's slot in `navItems`. */
+  function renderFileRow(file: DerivedPieFile, navIndex: number, key: string): React.ReactElement {
     const selected = navIndex === focusedLayer;
+    const ariaLevel = showHeaders ? (2 as const) : undefined;
+    const role = treeRoles ? "treeitem" : "option";
+    if (file.missing) {
+      return (
+        <div
+          key={key}
+          className="start-row start-row-missing"
+          title={file.path}
+          role={role}
+          aria-level={ariaLevel}
+          aria-selected={selected}
+          aria-disabled="true"
+          tabIndex={selected ? 0 : -1}
+          onFocus={() => setFocusedLayer(navIndex)}
+        >
+          <span className="start-row-icon">
+            <FileGlyph name={basename(file.path)} size={15} />
+          </span>
+          <span className="start-row-name">{basename(file.path)}</span>
+          <span className="start-row-dir">
+            <bdi>{displayDir(file.path, root)} — not found</bdi>
+          </span>
+          <button
+            type="button"
+            className="pie-mini-button"
+            data-testid="pie-forget"
+            onClick={() => handleForget(file.path)}
+          >
+            Forget
+          </button>
+        </div>
+      );
+    }
     return (
       <button
-        key={file.path}
+        key={key}
         type="button"
-        role={ariaLevel ? "treeitem" : "option"}
+        role={role}
         aria-level={ariaLevel}
         aria-selected={selected}
         className="start-row"
@@ -875,7 +987,7 @@ export default function PiePlate({
         // React's onClick never fires for the middle button — the same
         // .start-row shape in StartPage.tsx handles it this way, and spec
         // section 5 gives middle-click the same background-tab-plate-stays
-        // behaviour as ⌘-click (review: PiePlate.tsx:257).
+        // behaviour as ⌘-click.
         onAuxClick={(e) => {
           if (e.button === 1) openRow(file, e);
         }}
@@ -890,7 +1002,18 @@ export default function PiePlate({
               {
                 label: "Remove from pie",
                 icon: <XCircle size={13} strokeWidth={2} />,
-                onSelect: () => void piesCtx.removePieMember(pie.id, file.path),
+                // `removePieMember` removes the row optimistically and
+                // rolls back on a refusal; without this catch the
+                // rejection was dropped, so the row vanished, the removal
+                // never landed, and the row came back on the next
+                // unrelated event.
+                onSelect: () => {
+                  piesCtx.removePieMember(pie.id, file.path).catch((err: unknown) => {
+                    piesCtx.notice?.(
+                      `Couldn't remove "${basename(file.path)}" — ${messageOf(err, "the member could not be removed")}`,
+                    );
+                  });
+                },
               },
               {
                 label: "Add to another pie…",
@@ -918,53 +1041,13 @@ export default function PiePlate({
           // `seenAtAtOpen` is 0 for a derived pie (no `seen_at` at all) AND
           // for a user pie that has never been opened, and `file.mtime > 0`
           // is true for any real timestamp — without the guard, `mtime > 0`
-          // marked EVERY row "new" in both of those cases, the same
-          // `seen_at == 0` rule `workspace.rs::census_with_cap` and
-          // `freshCount` already enforce for the pill (review:
-          // PiePlate.tsx:756/762, blocker).
+          // marked EVERY row "new" in both of those cases. It is the same
+          // `seen_at == 0` rule `freshCount` (derived-pies.ts) enforces for
+          // the pill — and `freshCount` is the ONLY place that enforces it:
+          // the census serves no freshness at all.
           <span className="start-row-new" data-testid="pie-row-new" aria-hidden />
         ) : null}
       </button>
-    );
-  }
-
-  /** A direct FILE member that no longer resolves — dimmed, "not found",
-   *  Forget only (no Locate…: there is nothing to re-point a single file
-   *  at, unlike a folder). Not part of the roving-tabindex sequence — its
-   *  one action is the Forget button itself, reachable by ordinary Tab.
-   *  `role`/`aria-disabled` match the live rows' shape (`option` in flat
-   *  mode, `treeitem` at level 2 in tree mode) so the container's
-   *  `role="tree"`/`role="listbox"` — which only permits `treeitem`/
-   *  `option` children — announces this row as an item rather than
-   *  dropping it from, or breaking, the accessibility tree (review, minor:
-   *  PiePlate.tsx:772/774). It is always the LAST row of the trailing
-   *  "Files" layer (or the flat list), so leaving it out of `navItems`
-   *  does not put it ahead of any row the roving index still has to reach. */
-  function renderMissingFileRow(path: string): React.ReactElement {
-    return (
-      <div
-        key={path}
-        className="start-row start-row-missing"
-        title={path}
-        role={treeMode ? "treeitem" : "option"}
-        aria-level={treeMode ? 2 : undefined}
-        aria-disabled="true"
-      >
-        <span className="start-row-icon">
-          <FileGlyph name={basename(path)} size={15} />
-        </span>
-        <span className="start-row-name">{basename(path)}</span>
-        <span className="start-row-dir">
-          <bdi>{displayDir(path, root)} — not found</bdi>
-        </span>
-        <button
-          type="button"
-          data-testid="pie-forget"
-          onClick={() => handleForget(path)}
-        >
-          Forget
-        </button>
-      </div>
     );
   }
 }

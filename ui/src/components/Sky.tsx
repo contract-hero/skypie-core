@@ -13,11 +13,11 @@ import { FolderPlus, Pencil, Trash2 } from "lucide-react";
 import { useBookmarksContext } from "../state/bookmarks-context";
 import { useRecentsContext } from "../state/recents-context";
 import { usePiesContext } from "../state/pies-context";
-import { usePieCensus } from "../state/pie-census";
-import { pinnedPie, recentPie, shareLabel } from "../state/derived-pies";
+import { usePieCensus, newestPath } from "../state/pie-census";
+import { labelOfWedges, pinnedPie, recentPie, wedgesOf } from "../state/derived-pies";
 import type { DerivedPie } from "../state/derived-pies";
-import { bandOrder, insertPieAt, isUserPieId, uniqueName, withoutPie } from "../state/pies";
-import { newestPath } from "../state/pie-census";
+import { bandOrder, isUserPieId, uniqueName } from "../state/pies";
+import { messageOf } from "../utils/error-message";
 import Pie from "./Pie";
 import PiePlate from "./PiePlate";
 import Tooltip from "./Tooltip";
@@ -90,6 +90,24 @@ function TinGlyph(): React.ReactElement {
   );
 }
 
+/** One cumulus: three overlapping ellipses on a fixed 37×22 viewBox. The
+ *  band's two clouds differ only in where CSS puts them, so this renders
+ *  once and is placed twice — `className` carries the position. */
+function Cloud({ className }: { className: string }): React.ReactElement {
+  return (
+    <svg
+      className={`sky-cloud ${className}`}
+      viewBox="0 0 37 22"
+      aria-hidden
+      focusable="false"
+    >
+      <ellipse cx="10" cy="16" rx="10" ry="7" />
+      <ellipse cx="19" cy="9" rx="13" ry="9" />
+      <ellipse cx="28" cy="17" rx="9" ry="6" />
+    </svg>
+  );
+}
+
 export default function Sky({
   ipc,
   onOpenFile,
@@ -103,13 +121,17 @@ export default function Sky({
   const pieCensusCtx = usePieCensus();
   const contextMenu = useContextMenu();
 
-  const derived = React.useMemo<DerivedPie[]>(
-    () => [pinnedPie(bookmarks), recentPie(recents)],
-    [bookmarks, recents],
-  );
   const pies = React.useMemo<DerivedPie[]>(
-    () => bandOrder(derived, piesCtx.pies, pieCensusCtx.censusFor),
-    [derived, piesCtx.pies, pieCensusCtx.censusFor],
+    () =>
+      bandOrder([pinnedPie(bookmarks), recentPie(recents)], piesCtx.pies, pieCensusCtx.derive),
+    [bookmarks, recents, piesCtx.pies, pieCensusCtx.derive],
+  );
+  // One tooltip label per tile, keyed on the band list — building it in the
+  // map below grouped every pie's files afresh on every band render (one
+  // per recents/bookmarks tick).
+  const tileLabels = React.useMemo(
+    () => pies.map((pie) => labelOfWedges(wedgesOf(pie.files))),
+    [pies],
   );
   // Slots: every pie, then the tin — the tin's own roving-tabindex slot is
   // `pies.length`.
@@ -120,8 +142,10 @@ export default function Sky({
   // !readerMode` (App.tsx), so a plain mount effect IS the "on show"
   // trigger; `pieCensusCtx.refreshAll` is intentionally left out of the
   // deps array below (PiePlate.tsx's own seen_at effect follows the same
-  // "mount-only, not on every identity change" shape) — it already
-  // refreshes on every `pies` identity change on its own (`pie-census.ts`).
+  // "mount-only, not on every identity change" shape) — re-running it on
+  // every identity change would re-walk every folder of every pie for a
+  // callback that merely re-identified. A pie whose MEMBERS change is
+  // refetched on its own, per pie, by `pie-census.ts`'s members effect.
   React.useEffect(() => {
     pieCensusCtx.refreshAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -282,49 +306,42 @@ export default function Sky({
     itemRefs.current[clamped]?.focus();
   };
 
+  /** Commit the tin's name field. The input is closed only AFTER the write
+   *  lands: closing first and `void`-ing the promise threw away both the
+   *  typed name and the refusal message, so a refused create looked exactly
+   *  like a create that worked and then vanished. `upsert` can be refused
+   *  for a document this build cannot read, and those messages exist
+   *  precisely to be shown. Returns nothing; the caller does not wait. */
   const commitNewPie = async (): Promise<void> => {
     const name = newPieName.trim();
-    setCreatingNew(false);
-    setNewPieName("");
-    if (!name) return;
-    await piesCtx.upsertPie(null, uniqueName(piesCtx.pies, name));
+    if (!name) {
+      setCreatingNew(false);
+      setNewPieName("");
+      return;
+    }
+    try {
+      await piesCtx.upsertPie(null, uniqueName(piesCtx.pies, name));
+      setCreatingNew(false);
+      setNewPieName("");
+    } catch (err) {
+      // Keep the field open with the name still in it, so the user can
+      // retry or copy it out rather than retype it.
+      onNotice(`Couldn't create "${name}" — ${messageOf(err, "the pie could not be created")}`);
+    }
   };
 
-  // Optimistically hides the pie, defers the actual `removePie` IPC call
-  // until the undo window closes — so undoing never has to reconstruct
-  // anything the backend already forgot, it just puts the local copy back.
-  // `withoutPie`/`insertPieAt` (state/pies.ts) are exactly this pair.
-  // Known limitation: a `skypie://pies-updated` event that lands from an
-  // UNRELATED write during the 5s window (e.g. another window's touch_seen)
-  // would currently reintroduce the pie early, since it replaces the whole
-  // local list from the server's still-has-it document. Narrow enough
-  // (would need a second write racing the exact undo window) to accept for
-  // M2 rather than adding a pending-delete filter for it.
+  // The hide/defer/undo mechanics live in `usePies` (`removePieWithUndo`,
+  // whose doc comment explains why the pending-delete set has to be there
+  // and not here). Sky owns only the toast that offers the undo.
   const deletePieWithUndo = (pie: DerivedPie) => {
-    const rawPies = piesCtx.pies;
-    const index = rawPies.findIndex((p) => p.id === pie.id);
-    if (index < 0) return;
-    const removed = rawPies[index];
-    piesCtx.setPies((prev) => withoutPie(prev, pie.id));
     if (openPieId === pie.id) setOpenPieId(null);
-
-    let undone = false;
-    const timer = window.setTimeout(() => {
-      if (!undone) void piesCtx.removePie(pie.id);
-    }, UNDO_MS);
-
-    onNotice(
-      `Deleted "${pie.name}"`,
-      {
-        label: "Undo",
-        onClick: () => {
-          undone = true;
-          window.clearTimeout(timer);
-          piesCtx.setPies((prev) => insertPieAt(prev, removed, index));
-        },
-      },
-      UNDO_MS,
-    );
+    // The third argument reports a delete the backend refused after the
+    // undo window closed: the toast already said "Deleted", so silence left
+    // the user believing a pie was gone that is still on disk.
+    const undo = piesCtx.removePieWithUndo(pie.id, UNDO_MS, (err: unknown) => {
+      onNotice(`Couldn't delete "${pie.name}" — ${messageOf(err, "the pie could not be deleted")}`);
+    });
+    onNotice(`Deleted "${pie.name}"`, { label: "Undo", onClick: undo }, UNDO_MS);
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -359,12 +376,11 @@ export default function Sky({
         // from M1/M2. `openOptsFromClick(e)` reads the SAME modifier set a
         // mouse click on the pill would (see Pie.tsx/onOpenNewest below),
         // so ⌘Enter and a plain pill click agree on how the tab opens.
-        // Deliberately keyed off `pie.files`, NOT `pie.newestFreshPath` —
-        // the pill (and `newestFreshPath`) only exist when `fresh > 0`,
-        // which is never true for Pinned/Recent and often false for a user
-        // pie, so gating ⌘Enter on it used to make the chord silently zoom
-        // instead of open in the common case (review: Sky.tsx:199, reported
-        // three times). Only an EMPTY pie falls through to the zoom below.
+        // Deliberately keyed off `pie.files`, never off freshness: the
+        // pill only exists when `fresh > 0`, which is never true for
+        // Pinned/Recent and often false for a user pie, so gating ⌘Enter on
+        // it used to make the chord silently zoom instead of open in the
+        // common case. Only an EMPTY pie falls through to the zoom below.
         if (e.metaKey) {
           const path = newestPath(pie.files);
           if (path) {
@@ -379,8 +395,7 @@ export default function Sky({
       // one surface over (PiePlate.tsx's onLayerKeyDown clears the slice
       // filter on it, per spec section 5), and it is the reflex "go back"
       // key; binding it here too made an accidental destructive delete
-      // easier, with a 5s toast as the only safety net (review: Sky.tsx:179,
-      // reported twice).
+      // easier, with a 5s toast as the only safety net.
       case "Delete": {
         const pie = focusedIndex < tinIndex ? pies[focusedIndex] : null;
         if (pie && isUserPieId(pie.id)) {
@@ -390,15 +405,14 @@ export default function Sky({
         break;
       }
       case "Escape":
-        // Leaves the band (blurs the focused tile) without closing it — the
-        // plate owns its own Esc (useEscape) to close itself first.
-        // `stopPropagation` here is a bubble-phase call and cannot actually
-        // reach the reader-mode/comment-tool Escape bindings in App.tsx —
-        // those are capture-phase window listeners (`useShortcuts`,
-        // `useEscape`) that have already run before this handler ever sees
-        // the event, so this is a defensive no-op against any FUTURE
-        // bubble-phase listener rather than the guard an earlier comment
-        // here claimed it was (review: Sky.tsx:194).
+        // Leaves the band: blurs the focused tile without hiding the band —
+        // the plate owns its own Esc (useEscape) to close itself first.
+        //
+        // `stopPropagation` does NOT suppress App's `escape` bindings. The
+        // shortcut registry listens in the CAPTURE phase on `window`
+        // (keyboard/shortcuts.ts), so those bindings have already fired by
+        // the time this bubble-phase handler runs. The call only keeps the
+        // key from bubbling further up the React tree.
         e.stopPropagation();
         (document.activeElement as HTMLElement | null)?.blur();
         break;
@@ -421,17 +435,27 @@ export default function Sky({
           icon: <FolderPlus size={13} strokeWidth={2} />,
           onSelect: () => {
             if (!ipc.pickDirectory) return;
-            void ipc.pickDirectory().then((picked) => {
-              if (!picked) return;
-              // A bare `void` here used to swallow `add_member`'s own
-              // rejection (a folder that stops resolving between the
-              // native picker and this call) with no feedback at all
-              // (review: PiePicker.tsx:75, "Sky.tsx:217... swallows the
-              // same failure with a bare void").
-              piesCtx.addPieMember(pie.id, picked, "folder", "menu").catch((err: unknown) => {
-                onNotice(`Couldn't add that folder — ${String(err)}`);
+            void ipc
+              .pickDirectory()
+              .then((picked) => {
+                if (!picked) return;
+                // A bare `void` here used to swallow `add_member`'s own
+                // rejection (a folder that stops resolving between the
+                // native picker and this call)
+                // with no feedback at all.
+                piesCtx.addPieMember(pie.id, picked, "folder", "menu").catch((err: unknown) => {
+                  onNotice(`Couldn't add that folder — ${messageOf(err, "the folder could not be added")}`);
+                });
+              })
+              // The OUTER rejection, which had no handler at all:
+              // `pickDirectory` itself can fail (the dialog plugin missing
+              // from this build, a permission denied). The menu item then
+              // did nothing — no dialog, and nothing said why.
+              .catch((err: unknown) => {
+                onNotice(
+                  `Couldn't open the folder picker — ${messageOf(err, "the dialog could not be shown")}`,
+                );
               });
-            });
           },
         },
       ],
@@ -446,20 +470,46 @@ export default function Sky({
     ]);
   };
 
+  /** Same shape as `commitNewPie`: the inline rename input stays open when
+   *  the write is refused, and the refusal is shown. */
   const commitRename = async (id: string, name: string): Promise<void> => {
-    setRenamingId(null);
     const trimmed = name.trim();
-    if (!trimmed) return;
-    await piesCtx.upsertPie(id, trimmed);
+    if (!trimmed) {
+      setRenamingId(null);
+      return;
+    }
+    try {
+      await piesCtx.upsertPie(id, trimmed);
+      setRenamingId(null);
+    } catch (err) {
+      onNotice(`Couldn't rename to "${trimmed}" — ${messageOf(err, "the pie could not be renamed")}`);
+    }
   };
 
   const openPie = pies.find((p) => p.id === openPieId) ?? null;
+
+  // Stable identities: PiePlate subscribes window `pointerdown`/`blur` in an
+  // effect keyed on [onClose], so a fresh closure on every band render (one
+  // per recents/bookmarks tick) would tear down and re-add those listeners
+  // each time.
+  const closePlate = React.useCallback(() => setOpenPieId(null), []);
+  // One handler pair per pie, rebuilt only when the pie list itself changes
+  // — an inline arrow in the map below is a new function on every render,
+  // which is what a later `React.memo(Pie)` would trip over.
+  const handlers = React.useMemo(
+    () =>
+      pies.map((pie, i) => ({
+        onFocus: () => setFocusedIndex(i),
+        onOpen: () => setOpenPieId(pie.id),
+      })),
+    [pies],
+  );
 
   return (
     // The plate is a sibling of the listbox, not a DOM child of it: a
     // role="dialog" (with its own nested role="listbox" layer list) is not
     // a valid listbox child, and it used to make the band's option count
-    // depend on whether a plate happened to be open (review: Sky.tsx:138).
+    // depend on whether a plate happened to be open.
     // This shell only exists to give the plate's `position: absolute; top:
     // 100%` the same containing block `.sky-band` used to provide.
     <div className="sky-band-shell">
@@ -475,48 +525,21 @@ export default function Sky({
       >
         <div className="sky-glaze" aria-hidden />
         {/* Two separate fixed-size SVGs, positioned by CSS `left` percentage
-            (22% / 71% of the band width — DESIGN.md, "Sky band"). A single
+            (22% / 71% of the band width — `.sky-cloud-1` / `.sky-cloud-2`,
+            styles.css). A single
             SVG spanning the whole band with `preserveAspectRatio="none"`
             used to stretch every ellipse horizontally by paneWidth/100
             while its vertical scale stayed 1, turning each cumulus into a
-            flat smear at any pane wider than the 100-unit viewBox (review:
-            Sky.tsx:104). Only the CENTRE tracks the band width now; the
+            flat smear at any pane wider than the 100-unit viewBox. Only the
+            CENTRE tracks the band width now; the
             shapes themselves stay a fixed size at every pane width. */}
-        <svg
-          className="sky-cloud sky-cloud-1"
-          viewBox="0 0 37 22"
-          aria-hidden
-          focusable="false"
-        >
-          <clipPath id="sky-cloud-base-1">
-            <rect x="0" y="0" width="37" height="22" />
-          </clipPath>
-          <g clipPath="url(#sky-cloud-base-1)">
-            <ellipse cx="10" cy="16" rx="10" ry="7" />
-            <ellipse cx="19" cy="9" rx="13" ry="9" />
-            <ellipse cx="28" cy="17" rx="9" ry="6" />
-          </g>
-        </svg>
-        <svg
-          className="sky-cloud sky-cloud-2"
-          viewBox="0 0 35 21"
-          aria-hidden
-          focusable="false"
-        >
-          <clipPath id="sky-cloud-base-2">
-            <rect x="0" y="0" width="35" height="21" />
-          </clipPath>
-          <g clipPath="url(#sky-cloud-base-2)">
-            <ellipse cx="9" cy="15" rx="9" ry="6" />
-            <ellipse cx="18" cy="8" rx="12" ry="8" />
-            <ellipse cx="27" cy="16" rx="8" ry="5" />
-          </g>
-        </svg>
+        <Cloud className="sky-cloud-1" />
+        <Cloud className="sky-cloud-2" />
         {/* role="presentation": the listbox's real options are this div's
             CHILDREN in the DOM, but an ARIA listbox only owns options that
             are its own accessible children — nesting them one div deeper
             with no role in between used to make AT report the listbox as
-            empty (review, Sky.tsx minor). Presentation removes this div
+            empty. Presentation removes this div
             from the accessibility tree, so the Pie/tin options attach
             straight to the listbox above it. */}
         <div className="sky-pies" role="presentation">
@@ -532,7 +555,7 @@ export default function Sky({
                   // tabIndex) while it's mid-edit — the swap to a plain
                   // `<div>` used to drop the pie out of the listbox's option
                   // count for the whole rename, and if it was the roving
-                  // slot, out of the Tab order entirely (review: Sky.tsx:310).
+                  // slot, out of the Tab order entirely.
                   role="option"
                   aria-selected={pie.id === openPieId}
                   tabIndex={i === focusedIndex ? 0 : -1}
@@ -571,11 +594,21 @@ export default function Sky({
                 dropTarget={pie.id === dropTargetId}
                 active={activeCanonicalPath !== null && pie.files.some((f) => f.path === activeCanonicalPath)}
                 tabIndex={i === focusedIndex ? 0 : -1}
-                onFocus={() => setFocusedIndex(i)}
-                onOpen={() => setOpenPieId(pie.id)}
+                onFocus={handlers[i]?.onFocus}
+                onOpen={handlers[i]?.onOpen}
                 onContextMenu={isUser ? (e) => openPieContextMenu(e, pie) : undefined}
                 onOpenNewest={(e) => {
-                  if (pie.newestFreshPath) onOpenFile(pie.newestFreshPath, openOptsFromClick(e));
+                  // The SAME `newestPath(pie.files)` the ⌘Enter case above
+                  // opens — the pill and the chord must never disagree about
+                  // which file "the newest" is. And the same FALLBACK: a
+                  // root change flushes the census cache, so the pill can
+                  // still be on screen with `pie.files` back to its
+                  // pre-census shape and no newest path to open. Clicking
+                  // it then did nothing at all; it zooms instead, exactly
+                  // as ⌘Enter does for an empty pie.
+                  const path = newestPath(pie.files);
+                  if (path) onOpenFile(path, openOptsFromClick(e));
+                  else setOpenPieId(pie.id);
                 }}
               />
             );
@@ -584,9 +617,9 @@ export default function Sky({
             // Content is the share string ALONE (spec section 3: "html 58%
             // · md 25% · code 17%") — the name is already the tile's
             // visible label and already in its own `aria-label`, so
-            // prefixing it here just repeated it (review: Sky.tsx:357).
+            // prefixing it here just repeated it.
             return (
-              <Tooltip key={pie.id} content={shareLabel(pie.files)}>
+              <Tooltip key={pie.id} content={tileLabels[i] ?? ""}>
                 {tile}
               </Tooltip>
             );
@@ -621,8 +654,8 @@ export default function Sky({
                   }
                 }}
                 // Clicking away used to leave `creatingNew` true forever —
-                // no blur handler meant the field just sat there focus-less
-                // (review: Sky.tsx:310). The rename input above already
+                // no blur handler meant the field just sat there focus-less.
+                // The rename input above already
                 // cancels the same way.
                 onBlur={() => {
                   setCreatingNew(false);
@@ -665,10 +698,8 @@ export default function Sky({
           // PiePlate.tsx:479).
           key={openPie.id}
           pie={openPie}
-          onClose={() => setOpenPieId(null)}
+          onClose={closePlate}
           onOpenFile={onOpenFile}
-          ipc={ipc}
-          onNotice={onNotice}
           // Only when the CURRENTLY open pie is the one the reveal armed —
           // switching the plate to a different pie afterward (still
           // possible: nothing here locks the band) must not carry a stale

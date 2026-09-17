@@ -2,14 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   bandOrder,
   holdsPath,
-  insertPieAt,
   isUserPieId,
   pieFiles,
+  pickerPathPlan,
   pieHoldingPath,
   revealRoute,
+  subtractPending,
   toDerivedPie,
   uniqueName,
-  withoutPie,
+  withPending,
+  withoutPending,
 } from "./pies";
 import type { Pie, PieCensus } from "../ipc";
 import type { DerivedPie } from "./derived-pies";
@@ -64,15 +66,15 @@ describe("pieFiles / toDerivedPie", () => {
       files: [{ path: "/w/a.md", mtime: 999, size: 10 }],
       missing: [],
       outside_root: [],
+      skipped: 0,
       truncated: false,
-      fresh: 0,
     };
     const derived = toDerivedPie(p, c);
     expect(derived.files).toEqual([{ path: "/w/a.md", kind: "md", mtime: 999, folder: undefined }]);
     expect(derived.census).toBe(c);
   });
 
-  it("toDerivedPie's fresh/newestFreshPath follow the pie's seen_at", () => {
+  it("toDerivedPie's fresh follows the pie's seen_at", () => {
     const p = pie({
       id: "abc",
       name: "Pricing",
@@ -86,26 +88,24 @@ describe("pieFiles / toDerivedPie", () => {
       ],
       missing: [],
       outside_root: [],
+      skipped: 0,
       truncated: false,
-      fresh: 0,
     };
     const derived = toDerivedPie(p, c);
     expect(derived.fresh).toBe(1);
-    expect(derived.newestFreshPath).toBe("/w/new.md");
   });
 
-  it("toDerivedPie: seen_at === 0 (never opened) yields fresh 0 and no newestFreshPath", () => {
+  it("toDerivedPie: seen_at === 0 (never opened) yields fresh 0", () => {
     const p = pie({ id: "abc", name: "Pricing", seen_at: 0, members: [] });
     const c: PieCensus = {
       files: [{ path: "/w/a.md", mtime: 1_700_000_000_000, size: 1 }],
       missing: [],
       outside_root: [],
+      skipped: 0,
       truncated: false,
-      fresh: 0,
     };
     const derived = toDerivedPie(p, c);
     expect(derived.fresh).toBe(0);
-    expect(derived.newestFreshPath).toBeUndefined();
   });
 });
 
@@ -120,13 +120,31 @@ describe("bandOrder with a census", () => {
       files: [{ path: "/w/a.md", mtime: 1, size: 1 }],
       missing: [],
       outside_root: [],
+      skipped: 0,
       truncated: false,
-      fresh: 0,
     };
-    const order = bandOrder(derived, userPies, (id) => (id === "u1" ? c : undefined));
+    const order = bandOrder(derived, userPies, (p) => toDerivedPie(p, p.id === "u1" ? c : undefined));
     expect(order[0].fresh).toBeUndefined();
     expect(order[1].fresh).toBeUndefined();
     expect(order.find((p) => p.id === "u1")?.census).toBe(c);
+  });
+
+  it("calls `derive` exactly once per USER pie, and never for a built-in", () => {
+    // `derive` is the memoized door onto the census cache
+    // (`usePieCensus().derive`). Calling it twice for one pie would derive
+    // the same pie twice per band render; calling it for a built-in would
+    // try to census a pie that is not persisted at all.
+    const derived: DerivedPie[] = [
+      { id: "builtin:pinned", name: "Pinned", files: [] },
+      { id: "builtin:recent", name: "Recent", files: [] },
+    ];
+    const userPies = [pie({ id: "u1", name: "Pricing" }), pie({ id: "u2", name: "Roadmap" })];
+    const seen: string[] = [];
+    bandOrder(derived, userPies, (p) => {
+      seen.push(p.id);
+      return toDerivedPie(p);
+    });
+    expect(seen).toEqual(["u1", "u2"]);
   });
 });
 
@@ -137,42 +155,40 @@ describe("bandOrder", () => {
       { id: "builtin:recent", name: "Recent", files: [] },
     ];
     const userPies = [pie({ id: "u1", name: "Pricing" }), pie({ id: "u2", name: "Roadmap" })];
-    const order = bandOrder(derived, userPies).map((p) => p.id);
+    const order = bandOrder(derived, userPies, (p) => toDerivedPie(p)).map((p) => p.id);
     expect(order).toEqual(["builtin:pinned", "builtin:recent", "u1", "u2"]);
   });
 
   it("is a plain concatenation — it does not re-sort user pies", () => {
     const userPies = [pie({ id: "z" }), pie({ id: "a" })];
-    const order = bandOrder([], userPies).map((p) => p.id);
+    const order = bandOrder([], userPies, (p) => toDerivedPie(p)).map((p) => p.id);
     expect(order).toEqual(["z", "a"]);
   });
 });
 
-describe("withoutPie / insertPieAt — the undo pair", () => {
-  it("withoutPie removes exactly the named id", () => {
+describe("subtractPending — the delete-undo filter", () => {
+  it("returns the SAME array when nothing is pending", () => {
+    const pies = [pie({ id: "a" }), pie({ id: "b" })];
+    expect(subtractPending(pies, new Set())).toBe(pies);
+  });
+
+  it("hides every pending id and keeps the rest in order", () => {
     const pies = [pie({ id: "a" }), pie({ id: "b" }), pie({ id: "c" })];
-    expect(withoutPie(pies, "b").map((p) => p.id)).toEqual(["a", "c"]);
+    expect(subtractPending(pies, new Set(["b"])).map((p) => p.id)).toEqual(["a", "c"]);
+    expect(subtractPending(pies, new Set(["a", "c"])).map((p) => p.id)).toEqual(["b"]);
   });
 
-  it("insertPieAt restores a removed pie at its original index", () => {
-    const pies = [pie({ id: "a" }), pie({ id: "c" })];
-    const removed = pie({ id: "b" });
-    expect(insertPieAt(pies, removed, 1).map((p) => p.id)).toEqual(["a", "b", "c"]);
+  it("keeps a pie hidden in a list that arrived from an unrelated write", () => {
+    // The bug this exists for: a `skypie://pies-updated` event during the
+    // 5s undo window carries the server's document, which still holds the
+    // deleted pie.
+    const fromServer = [pie({ id: "a" }), pie({ id: "b" })];
+    expect(subtractPending(fromServer, new Set(["b"])).map((p) => p.id)).toEqual(["a"]);
   });
 
-  it("round-trips: insertPieAt(withoutPie(pies, id), pie, index) reconstructs the original order", () => {
-    const pies = [pie({ id: "a" }), pie({ id: "b" }), pie({ id: "c" }), pie({ id: "d" })];
-    const index = pies.findIndex((p) => p.id === "c");
-    const removedPie = pies[index];
-    const after = withoutPie(pies, "c");
-    const restored = insertPieAt(after, removedPie, index);
-    expect(restored.map((p) => p.id)).toEqual(pies.map((p) => p.id));
-  });
-
-  it("insertPieAt clamps an out-of-range index instead of throwing", () => {
+  it("ignores a pending id that is not in the list", () => {
     const pies = [pie({ id: "a" })];
-    expect(insertPieAt(pies, pie({ id: "b" }), 99).map((p) => p.id)).toEqual(["a", "b"]);
-    expect(insertPieAt(pies, pie({ id: "c" }), -5).map((p) => p.id)).toEqual(["c", "a"]);
+    expect(subtractPending(pies, new Set(["gone"])).map((p) => p.id)).toEqual(["a"]);
   });
 });
 
@@ -210,6 +226,68 @@ describe("isUserPieId", () => {
     expect(isUserPieId("builtin:pinned")).toBe(false);
     expect(isUserPieId("builtin:recent")).toBe(false);
     expect(isUserPieId("0199018c-fixture-uuid")).toBe(true);
+  });
+});
+
+describe("withPending / withoutPending", () => {
+  it("returns a new set rather than mutating the old one", () => {
+    const empty: ReadonlySet<string> = new Set<string>();
+    const one = withPending(empty, "a");
+    expect(empty.has("a")).toBe(false);
+    expect(one.has("a")).toBe(true);
+  });
+
+  it("keeps two overlapping deletes independent", () => {
+    // Both pies are mid-undo; clearing one must not un-hide the other.
+    let pending = withPending(withPending(new Set<string>(), "a"), "b");
+    expect([...pending].sort()).toEqual(["a", "b"]);
+    pending = withoutPending(pending, "a");
+    expect([...pending]).toEqual(["b"]);
+    expect(subtractPending([pie({ id: "a" }), pie({ id: "b" })], pending).map((p) => p.id)).toEqual([
+      "a",
+    ]);
+  });
+
+  it("removing an id that is not pending is a no-op", () => {
+    const pending = withPending(new Set<string>(), "a");
+    expect([...withoutPending(pending, "zzz")]).toEqual(["a"]);
+  });
+});
+
+describe("pickerPathPlan", () => {
+  const isRemote = (p: string) => p.startsWith("skypie-remote://");
+
+  it("refuses a pulled file — M2 has no remote pie members", () => {
+    const plan = pickerPathPlan("skypie-remote://node/x.md", true, isRemote);
+    expect(plan.action).toBe("refuse");
+    if (plan.action === "refuse") expect(plan.reason).toMatch(/pulled file/);
+  });
+
+  it("canonicalizes a local path when the command exists", () => {
+    expect(pickerPathPlan("/tmp/x.md", true, isRemote)).toEqual({
+      action: "canonicalize",
+      path: "/tmp/x.md",
+    });
+  });
+
+  it("opens uncanonicalized when the IPC surface has no canonicalizePath", () => {
+    expect(pickerPathPlan("/tmp/x.md", false, isRemote)).toEqual({
+      action: "open",
+      path: "/tmp/x.md",
+    });
+  });
+});
+
+describe("holdsPath is an exact compare", () => {
+  it("is false for a non-canonical form of a stored member", () => {
+    // The stored member is always canonical (/private/var/... on macOS);
+    // the /var form names the same file and must still answer false, which
+    // is exactly why `openPicker` canonicalizes before the picker renders.
+    const held = pie({
+      members: [{ kind: "file", path: "/private/var/tmp/a.md", added_at: 1 }],
+    });
+    expect(holdsPath(held, "/private/var/tmp/a.md")).toBe(true);
+    expect(holdsPath(held, "/var/tmp/a.md")).toBe(false);
   });
 });
 

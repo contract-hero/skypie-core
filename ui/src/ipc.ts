@@ -118,17 +118,34 @@ export interface CensusFile {
 
 export interface PieCensus {
   files: CensusFile[];
-  /** Member paths (file or folder) that no longer resolve. */
+  /** Member paths that no longer resolve — a `NotFound` error, or a path
+   *  that is now the wrong kind of thing. Any OTHER I/O failure lands in
+   *  `unreadable`, not here. */
   missing: string[];
+  /** Member paths that exist (or may exist) but could not be read —
+   *  captioned "can't read this folder" in the plate. Omitted on the wire
+   *  when empty, which is the normal case. */
+  unreadable?: string[];
   /** Member paths not under the canonical workspace root — captioned "not
    *  live" in the plate; these only refresh on sky show / plate open. */
   outside_root: string[];
+  /** Files the walk found but could not `stat`: they are in none of the
+   *  lists above, so this count is the only thing that says the pie is
+   *  short by that many. */
+  skipped: number;
   truncated: boolean;
-  /** Index into the pie's `members` of the member cut by the 20,000 cap. */
-  truncated_at?: number;
-  /** Count of `files` newer than the pie's `seen_at`; 0 when `seen_at ==
-   *  0` (never-opened). */
-  fresh: number;
+  /** The canonical PATH of the member cut by the 20,000 cap — a path, not
+   *  an index, because the receiver's own member list is read at a
+   *  different moment and an index into it can name the wrong member.
+   *  `missing`/`unreadable`/`outside_root` stay COMPLETE on a truncated
+   *  census; only `files` is partial. */
+  truncated_at?: string;
+  // No `fresh`: spec section 9 lists one, but the server cannot compute it
+  // correctly. `touchPieSeen` moves `seen_at` OPTIMISTICALLY on the client
+  // the instant a plate opens, so a count measured against the server's
+  // `seen_at` is already stale when it arrives — `pie-census.ts`'s
+  // `freshCount` derives it from `files` instead. See `PieCensus` in
+  // app/src/workspace.rs.
 }
 
 /** The persisted `pies` document (`state.json`'s `"pies"` key). An unknown
@@ -137,6 +154,16 @@ export interface PieCensus {
 export interface PiesDoc {
   v: 1;
   pies: Pie[];
+}
+
+/** What `listPies` and `skypie://pies-updated` carry: the pies, plus the
+ *  reason there are none when this build cannot read the document. An empty
+ *  `pies` array alone is ambiguous — "you have no pies" and "your pies are
+ *  on disk and unreadable by this build" looked identical in the band.
+ *  `usePies` raises `warning` as one notice (`pies::PiesList`). */
+export interface PiesList {
+  pies: Pie[];
+  warning?: string;
 }
 
 export interface SettingsState {
@@ -340,21 +367,26 @@ export interface IpcSurface {
   removeBookmark?(path: string): Promise<void>;
   reorderBookmarks?(paths: string[]): Promise<void>;
 
-  /** User pies, in stored (band) order. */
-  listPies?(): Promise<Pie[]>;
+  /** User pies, in stored (band) order, plus a `warning` when the document
+   *  could not be read at all — see `PiesList`. */
+  listPies?(): Promise<PiesList>;
   /** Create (`id` omitted) or rename (`id` given) a pie; resolves to the
    *  resulting `Pie` so a fresh create's real (server-minted) id comes
    *  back. */
   upsertPie?(id: string | null, name: string): Promise<Pie>;
   removePie?(id: string): Promise<void>;
   /** Adds `path` to pie `id`. Rejects if `path` cannot be canonicalized
-   *  (i.e. does not exist) — `pies::add_member`'s own contract. */
+   *  (i.e. does not exist), and also when `id` names no pie — a file added
+   *  to a pie another window just deleted is an error, not a silent drop. */
   addPieMember?(id: string, path: string, kind: "file" | "folder", source?: PieMemberSource): Promise<void>;
   removePieMember?(id: string, path: string): Promise<void>;
   relocatePieMember?(id: string, oldPath: string, newPath: string): Promise<void>;
   /** Stamp `seen_at` to now — called on every plate open for a user pie. */
   touchPieSeen?(id: string): Promise<void>;
-  /** M3: walk pie `id`'s members and report freshness. `root` is the
+  /** M3: walk pie `id`'s members and report every file they hold, plus
+   *  each member's state (`missing`/`unreadable`/`outside_root`).
+   *  Freshness is NOT reported — `pie-census.ts`'s `freshCount` derives it
+   *  client-side, see `PieCensus`. `root` is the
    *  current workspace root (or `null` with none open) — used only to
    *  classify `outside_root`. An unknown id resolves to an empty census,
    *  never a rejection (`pie_census_for`'s own contract). */
@@ -362,8 +394,9 @@ export interface IpcSurface {
   /** Resolves `path` to its canonical form (`std::fs::canonicalize`) —
    *  called before comparing a caller-supplied path (a tab entry, a tree
    *  row) against a pie's stored (always-canonical) members, e.g.
-   *  `PiePicker`'s checkmark. Rejects the same way `addPieMember` does when
-   *  the path cannot be resolved (review: pies.ts:57 / PiePicker.tsx:75). */
+   *  `PiePicker`'s checkmark. Runs the same canonicalisation gate the add
+   *  itself runs, and rejects the same way when the path cannot be
+   *  resolved. */
   canonicalizePath?(path: string): Promise<string>;
 
   listFilesRecursive?(root: string): Promise<FileIndex>;
@@ -557,8 +590,8 @@ class TauriIpc implements IpcSurface {
     await invoke<void>("reorder_bookmarks", { paths });
   }
 
-  async listPies(): Promise<Pie[]> {
-    return await invoke<Pie[]>("list_pies");
+  async listPies(): Promise<PiesList> {
+    return await invoke<PiesList>("list_pies");
   }
 
   async upsertPie(id: string | null, name: string): Promise<Pie> {

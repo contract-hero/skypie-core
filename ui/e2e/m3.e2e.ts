@@ -4,10 +4,11 @@
 // that folder and watch the +N pill tick within the watcher+census
 // debounce window, click the pill to open the newest file in one click
 // (no zoom), zoom the plate and read the folder layer tree (role="tree",
-// the member-relative header, the new-file marker), confirm seen_at
-// clears the pill and persists, then rename the folder on disk and use
-// Locate…/Forget on the resulting "folder not found" layer. See
-// ui/e2e/README.md.
+// the workspace-relative header, the new-file marker), confirm seen_at
+// clears the pill and persists, rename the folder on disk and use
+// Locate…/Forget on the resulting "folder not found" layer, and finally
+// delete a direct FILE member under the app to check its "not found" row is
+// not openable and that Forget removes it. See ui/e2e/README.md.
 //
 // launchDesktop({ skipBuild: false }): M3 changed Rust (workspace.rs's
 // pie_census, app.rs's pie_census command).
@@ -17,79 +18,7 @@ import * as path from "node:path";
 import { click, evalIn, keys, launchDesktop, quit, text, waitFor } from "./lib/app";
 import type { LaunchedApp } from "./lib/app";
 import { cleanupFixtureWorkspace, makeFixtureWorkspace, setWorkspaceRoot } from "./lib/fixtureWorkspace";
-
-// ── Small helpers, repeated from m2.e2e.ts rather than shared — this
-//    directory's own convention (each scenario stays a single,
-//    independently-readable file; ui/e2e/README.md). ──────────────────────
-
-/** Type into a React-controlled `<input>` the native-setter way — a bare
- *  `el.value = "…"` never fires React's own change handler. */
-async function typeIntoInput(app: LaunchedApp, selector: string, value: string): Promise<void> {
-  const js = `(function(){
-    var el = document.querySelector(${JSON.stringify(selector)});
-    if (!el) return false;
-    var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-    setter.call(el, ${JSON.stringify(value)});
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    return true;
-  })()`;
-  const ok = await evalIn(app, js);
-  if (!ok) throw new Error(`typeIntoInput: no element matches ${selector}`);
-}
-
-/** Dispatch a keydown on `document.activeElement` — component-level key
- *  handling (the band's own onKeyDown) is driven this way, not via
- *  `keys()`, which dispatches on `document` and only the global window-
- *  capture registry sees. */
-async function keyOnActiveElement(app: LaunchedApp, key: string): Promise<void> {
-  const js = `(function(){
-    var el = document.activeElement;
-    if (!el) return false;
-    el.dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(key)}, code: ${JSON.stringify(key)}, bubbles: true }));
-    return true;
-  })()`;
-  const ok = await evalIn(app, js);
-  if (!ok) throw new Error("keyOnActiveElement: document.activeElement is null");
-}
-
-interface OnDiskPies {
-  pies?: {
-    v?: number;
-    pies?: { id: string; name: string; seen_at?: number; members: { path: string }[] }[];
-  };
-}
-
-function readStateJson(stateDir: string): OnDiskPies | null {
-  const p = path.join(stateDir, "state.json");
-  if (!fs.existsSync(p)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(p, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Poll the on-disk state document (the debounced writer, ~250ms) until
- *  `predicate` is true of the parsed `pies` document. */
-async function waitForPersistedPies(
-  stateDir: string,
-  predicate: (doc: NonNullable<OnDiskPies["pies"]>) => boolean,
-  timeoutMs = 10_000,
-): Promise<NonNullable<OnDiskPies["pies"]>> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const doc = readStateJson(stateDir)?.pies;
-    if (doc && predicate(doc)) return doc;
-    if (Date.now() > deadline) {
-      throw new Error(`state.json's "pies" key never matched within ${timeoutMs}ms (last: ${JSON.stringify(doc)})`);
-    }
-    await sleep(150);
-  }
-}
+import { keyOnActiveElement, typeIntoInput, waitForPersistedPies } from "./lib/state";
 
 async function main(): Promise<void> {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "skypie-e2e-m3-state-"));
@@ -97,8 +26,12 @@ async function main(): Promise<void> {
   console.log(`fixture workspace: ${fixture.dir}`);
   console.log(`scratch state dir: ${stateDir}`);
 
-  let app: LaunchedApp = await launchDesktop({ stateDir, skipBuild: false });
+  // Inside the try, and nullable: created BEFORE it, a failing
+  // `launchDesktop` skipped the `finally` entirely and leaked both temp
+  // trees on every failed build. Same shape m1/m2 already use.
+  let app: LaunchedApp | null = null;
   try {
+    app = await launchDesktop({ stateDir, skipBuild: false });
     await waitFor(app, `document.querySelector(".toolbar") !== null`, 60_000);
     const root = fs.realpathSync(fixture.dir);
     await setWorkspaceRoot(app, root);
@@ -149,8 +82,10 @@ async function main(): Promise<void> {
     console.log(`ok: added the fixture subfolder ${canonicalSubfolder} as a folder member`);
 
     // ── Step 2b: establish a seen_at baseline ───────────────────────────────
-    // `fresh` (workspace.rs's pie_census, mirrored in pie-census.ts's
-    // freshCount) is deliberately 0 whenever `seen_at === 0` — "a
+    // Freshness is computed in exactly ONE place — `freshCount`
+    // (`ui/src/state/derived-pies.ts`). The census serves no `fresh` field
+    // at all, so there is nothing in Rust to mirror. It is
+    // deliberately 0 whenever `seen_at === 0` — "a
     // never-opened pie must not read every pre-existing file as new". A
     // brand-new pie's `seen_at` is 0 until its first plate open
     // (`touch_seen`), so the "+1 on a new write" checkpoint below needs one
@@ -265,11 +200,108 @@ async function main(): Promise<void> {
     await waitFor(app, `document.querySelector('[data-testid="pie-layer-header"]') === null`, 10_000);
     console.log("ok: Forget removed the layer");
 
+    // ── Step 8: a missing FILE member — a dimmed row that cannot be
+    //     opened, and Forget removes it ────────────────────────────────────
+    // The pie now holds no members at all, so this is also the FLAT case:
+    // one "Files" layer, no headers. The row must still be reachable and
+    // must still carry its Forget button in the accessibility tree, which
+    // is why a list holding a missing row takes the tree roles even with no
+    // headers drawn (PiePlate.tsx's `treeRoles`).
+    const doomed = path.join(fixture.dir, "doomed.md");
+    fs.writeFileSync(doomed, "# doomed\n");
+    const canonicalDoomed = fs.realpathSync(doomed);
+    await evalIn(
+      app,
+      `window.__TAURI_INTERNALS__.invoke("add_pie_member", {
+        id: ${JSON.stringify(pricingId)},
+        path: ${JSON.stringify(canonicalDoomed)},
+        kind: "file",
+        source: "menu",
+      })`,
+    );
+    await waitForPersistedPies(
+      stateDir,
+      (d) => (d.pies?.find((p) => p.id === pricingId)?.members.length ?? 0) === 1,
+    );
+    // Delete it under the app's feet, then reopen the plate so the "plate
+    // open" census runs against a member that no longer resolves.
+    await keys(app, "escape");
+    await waitFor(app, `document.querySelector('[data-testid="pie-plate"]') === null`, 10_000);
+    fs.rmSync(doomed);
+    await click(app, tileSelector);
+    await waitFor(app, `document.querySelector('[data-testid="pie-plate"]') !== null`, 10_000);
+    const missingRowSelector = ".start-row-missing";
+    await waitFor(app, `document.querySelector(${JSON.stringify(missingRowSelector)}) !== null`, 15_000);
+    const missingRowState = (await evalIn(
+      app,
+      `(function(){
+        var el = document.querySelector(${JSON.stringify(missingRowSelector)});
+        return {
+          tag: el.tagName,
+          role: el.getAttribute("role"),
+          disabled: el.getAttribute("aria-disabled"),
+          text: el.textContent,
+          hasForget: el.querySelector('[data-testid="pie-forget"]') !== null,
+          containerRole: document.querySelector('[data-testid="pie-layers"]').getAttribute("role"),
+        };
+      })()`,
+    )) as {
+      tag: string;
+      role: string | null;
+      disabled: string | null;
+      text: string;
+      hasForget: boolean;
+      containerRole: string | null;
+    };
+    // A <div>, not a <button>: there is nothing to open, so the row is not
+    // a control at all — only its own Forget button is.
+    if (missingRowState.tag !== "DIV") {
+      throw new Error(`expected the missing row to be a non-clickable DIV, got ${missingRowState.tag}`);
+    }
+    if (missingRowState.disabled !== "true") {
+      throw new Error(`expected the missing row to be aria-disabled, got ${JSON.stringify(missingRowState.disabled)}`);
+    }
+    if (missingRowState.role !== "treeitem" || missingRowState.containerRole !== "tree") {
+      throw new Error(
+        `expected the missing row and its container to take the tree roles (so the nested Forget ` +
+          `button survives in the a11y tree), got ${JSON.stringify(missingRowState.role)} in ` +
+          `${JSON.stringify(missingRowState.containerRole)}`,
+      );
+    }
+    if (missingRowState.text.indexOf("not found") === -1) {
+      throw new Error(`expected the missing row to read "not found", got ${JSON.stringify(missingRowState.text)}`);
+    }
+    if (!missingRowState.hasForget) throw new Error("expected the missing row to offer Forget");
+    const tabsBefore = await evalIn(app, `document.querySelectorAll(".tab").length`);
+    await click(app, missingRowSelector);
+    const tabsAfter = await evalIn(app, `document.querySelectorAll(".tab").length`);
+    if (tabsBefore !== tabsAfter) {
+      throw new Error(`clicking a missing row must open nothing; tabs went ${String(tabsBefore)} → ${String(tabsAfter)}`);
+    }
+    console.log("ok: the missing FILE member renders as a dimmed, unopenable treeitem row with Forget");
+
+    await click(app, `${missingRowSelector} [data-testid="pie-forget"]`);
+    await waitFor(app, `document.querySelector(${JSON.stringify(missingRowSelector)}) === null`, 10_000);
+    await waitForPersistedPies(
+      stateDir,
+      (d) => (d.pies?.find((p) => p.id === pricingId)?.members.length ?? 0) === 0,
+    );
+    console.log("ok: Forget removed the missing FILE member from the persisted pie");
+
     console.log("PASS");
   } finally {
-    await quit(app);
-    await cleanupFixtureWorkspace(fixture);
-    await fs.promises.rm(stateDir, { recursive: true, force: true });
+    // Each cleanup step guarded on its own: a failing `quit` must not mask
+    // the real error from the body above, nor skip the two removals under
+    // it.
+    if (app) {
+      await quit(app).catch((e: unknown) => console.error("cleanup: quit failed", e));
+    }
+    await cleanupFixtureWorkspace(fixture).catch((e: unknown) =>
+      console.error("cleanup: removing the fixture workspace failed", e),
+    );
+    await fs.promises
+      .rm(stateDir, { recursive: true, force: true })
+      .catch((e: unknown) => console.error("cleanup: removing the state dir failed", e));
   }
 }
 
