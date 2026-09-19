@@ -864,7 +864,12 @@ band with, so `IosStartPage.tsx` renders it, with no toggle, at the top of
 the start page instead — SAME `.sky-band`/`.sky-glaze`/`.sky-cloud`/
 `.sky-pies` markup as the macOS band (`SkyClouds.tsx` is the two cumulus,
 shared verbatim between both), still exactly 120px and never elastic, just
-flush under the phone's own title band rather than under a toolbar. Three
+flush under the phone's own title band rather than under a toolbar. It is a
+SIBLING of `.start-page-inner`, above it, not its first child: full-bleed
+chrome belongs outside the start page's padded 560px column, and put in
+that parent it needs no negative margins or `100vw` clawback to reach the
+screen edges. The one band rule iOS overrides is the gap before the
+wordmark below it. Three
 things this milestone deliberately leaves OUT, each because the phone has
 no counterpart for what it would mean:
 
@@ -879,6 +884,13 @@ no counterpart for what it would mean:
 - **No persistence.** `panes.sky_visible` has nothing to gate on iOS —
   the band is either present (at least one non-empty derived pie) or
   entirely absent, never a user-toggled posture.
+
+One more thing the phone does not inherit: the M1 rule that hides a band
+tile's own disc while its plate is open. That rule is keyed on
+`.sky-band-shell`, the wrapper whose containing block the plate drops out
+of — so it applies exactly where a plate can exist, and the phone's band,
+which is not in one, keeps its disc visible behind the sheet. Structure,
+not a `body.platform-*` class: where the band is mounted is what decides.
 
 Tapping a pie does not drop a plate — a plate assumes a pane wide enough
 to hold two columns beside the band it dropped from, which a phone is not

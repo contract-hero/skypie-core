@@ -8,6 +8,7 @@
 import type { BookmarkEntry, PieCensus, PieMember, RecentEntry } from "../ipc";
 import { BEARINGS, HAZE_THRESHOLD, kindOf } from "../render/kind";
 import type { FileKind } from "../render/kind";
+import { basename } from "../utils/path";
 import { isRemoteAddress } from "../utils/remote-address";
 
 /** The two built-in pies' fixed ids. Exported because other modules
@@ -29,14 +30,19 @@ export interface DerivedPieFile {
   path: string;
   kind: FileKind;
   mtime: number; // ms epoch — see the *1000 conversions below
-  /** M6: the SENDER-supplied filename (`ios-pies.ts`'s `receivedPie`/
-   *  `sharedPie`), when it differs from `path`'s own basename — a beam's
-   *  landed path can carry a disambiguating `-2`/`-3` suffix (`beam.rs`'s
-   *  `unique_name`) that the "Received" list above `PhonePieSheet.tsx` on
-   *  the same start page does not show, so the row would otherwise read a
-   *  different name for the same file (review: PhonePieSheet.tsx:70,
-   *  minor). Absent for every non-iOS pie, which has no such rename step. */
-  name?: string;
+  /** The filename a row displays. REQUIRED, and filled by every builder in
+   *  this file and in `ios-pies.ts` — so no call site has to carry a
+   *  `?? basename(path)` fallback, and no two surfaces can disagree about
+   *  which name a file has.
+   *
+   *  It is not always `basename(path)`: the iOS builders fill it with the
+   *  SENDER-supplied filename, because a beam's landed path can carry a
+   *  disambiguating `-2`/`-3` suffix (`beam.rs`'s `unique_name`) the
+   *  "Received" list on the same start page does not show, and a Shared
+   *  member's path is a `skypie-remote://` address rather than a local
+   *  path. The local builders here fill it with `basename(path)`, which is
+   *  exactly what their call sites computed before. */
+  name: string;
   /** M3: the folder MEMBER this file was found under (a census file) —
    *  absent for a direct file member, a built-in pie's file, or any file
    *  from before the census resolves. `pie-census.ts`'s `layersOf` groups
@@ -108,7 +114,13 @@ export function censusToFiles(census: PieCensus, members: PieMember[]): DerivedP
   const out: DerivedPieFile[] = [];
   for (const f of census.files) {
     if (f.folder !== undefined && !memberPaths.has(f.folder)) continue;
-    out.push({ path: f.path, kind: kindOf(f.path), mtime: f.mtime, folder: f.folder });
+    out.push({
+      path: f.path,
+      name: basename(f.path),
+      kind: kindOf(f.path),
+      mtime: f.mtime,
+      folder: f.folder,
+    });
   }
   return out;
 }
@@ -132,8 +144,11 @@ export function freshCount(files: DerivedPieFile[], seenAt: number): number {
 /** Both `bookmarks.rs` and `recents.rs` store their timestamps in seconds
  *  (`SystemTime::as_secs`); every other timestamp in the frontend (mtime,
  *  `Date.now()`) is milliseconds. Convert once, here, so nothing downstream
- *  has to remember which store is on which clock. */
-function secsToMs(secs: number): number {
+ *  has to remember which store is on which clock. Exported because
+ *  `ios-pies.ts` sits on the same trap (`beam_list_received` and
+ *  `remote_list_shared` are seconds too) and a second copy of the `* 1000`
+ *  there is one more place for the units to drift. */
+export function secsToMs(secs: number): number {
   return secs * 1000;
 }
 
@@ -155,6 +170,7 @@ export function pinnedPie(bookmarks: BookmarkEntry[]): DerivedPie {
       .filter((b) => isLocalFile(b.path))
       .map((b) => ({
         path: b.path,
+        name: basename(b.path),
         kind: kindOf(b.path),
         mtime: secsToMs(b.bookmarked_at),
       })),
@@ -169,6 +185,7 @@ export function recentPie(recents: RecentEntry[]): DerivedPie {
       .filter((r) => isLocalFile(r.path))
       .map((r) => ({
         path: r.path,
+        name: basename(r.path),
         kind: kindOf(r.path),
         mtime: secsToMs(r.opened_at),
       })),

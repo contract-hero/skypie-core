@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { iosPies, mtimeAgo, pieRows, receivedPie, sharedPie } from "./ios-pies";
+import { iosPies, pieRows, receivedPie, sharedPie } from "./ios-pies";
 import type { BeamReceivedEntry, SharedEntry } from "../ipc";
 import type { DerivedPie } from "./derived-pies";
+import { basename } from "../utils/path";
 
 describe("receivedPie", () => {
   it("converts received_at seconds to ms", () => {
@@ -129,9 +130,9 @@ describe("pieRows", () => {
       id: "builtin:received",
       name: "Received",
       files: [
-        { path: "/a", kind: "html", mtime: 10 },
-        { path: "/b", kind: "html", mtime: 30 },
-        { path: "/c", kind: "html", mtime: 20 },
+        { path: "/a", name: basename("/a"), kind: "html", mtime: 10 },
+        { path: "/b", name: basename("/b"), kind: "html", mtime: 30 },
+        { path: "/c", name: basename("/c"), kind: "html", mtime: 20 },
       ],
     };
     expect(pieRows(pie).map((f) => f.path)).toEqual(["/b", "/c", "/a"]);
@@ -142,9 +143,9 @@ describe("pieRows", () => {
       id: "builtin:received",
       name: "Received",
       files: [
-        { path: "/first", kind: "html", mtime: 10 },
-        { path: "/second", kind: "html", mtime: 10 },
-        { path: "/third", kind: "html", mtime: 10 },
+        { path: "/first", name: basename("/first"), kind: "html", mtime: 10 },
+        { path: "/second", name: basename("/second"), kind: "html", mtime: 10 },
+        { path: "/third", name: basename("/third"), kind: "html", mtime: 10 },
       ],
     };
     expect(pieRows(pie).map((f) => f.path)).toEqual(["/first", "/second", "/third"]);
@@ -152,29 +153,11 @@ describe("pieRows", () => {
 
   it("does not mutate pie.files", () => {
     const files = [
-      { path: "/a", kind: "html" as const, mtime: 10 },
-      { path: "/b", kind: "html" as const, mtime: 30 },
+      { path: "/a", name: basename("/a"), kind: "html" as const, mtime: 10 },
+      { path: "/b", name: basename("/b"), kind: "html" as const, mtime: 30 },
     ];
     const pie: DerivedPie = { id: "builtin:received", name: "Received", files };
     pieRows(pie);
     expect(files.map((f) => f.path)).toEqual(["/a", "/b"]);
-  });
-});
-
-describe("mtimeAgo", () => {
-  it('reads "just now", with no trailing " ago", under 60 seconds', () => {
-    const nowSecsValue = 1_700_000_100;
-    expect(mtimeAgo(1_700_000_070_000, nowSecsValue)).toBe("just now");
-  });
-
-  it('appends " ago" once the age reaches a minute', () => {
-    const nowSecsValue = 1_700_000_100;
-    // Exactly 60s old — formatAgo's own >= 60 branch.
-    expect(mtimeAgo(1_700_000_040_000, nowSecsValue)).toBe("1 min ago");
-  });
-
-  it('formats an older mtime with its own unit, still " ago"', () => {
-    const nowSecsValue = 1_700_010_000; // +10,000s
-    expect(mtimeAgo(1_700_000_000_000, nowSecsValue)).toBe("3 h ago");
   });
 });

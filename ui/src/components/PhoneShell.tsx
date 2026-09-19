@@ -24,7 +24,7 @@ import ReceivedDrawer from "./ReceivedDrawer";
 import { useActiveTab, useTabs, useTabsDispatch } from "../state/TabsProvider";
 import type { OpenFileOptions } from "../state/TabsProvider";
 import { useRemoteActions } from "../state/remote";
-import { IosPiesProvider, useIosPies } from "../state/ios-pies-context";
+import { IosPiesProvider } from "../state/ios-pies-context";
 import { canGoBack, canGoForward, currentEntry } from "../state/tabs";
 import { basename } from "../utils/path";
 import { parseRemoteAddress } from "../utils/remote-address";
@@ -45,24 +45,19 @@ export interface PhoneShellProps {
   workspaceRoot: string | null;
 }
 
-type Sheet = null | "library" | "tabs" | "comments" | "pie";
+/** Exactly one sheet is open at a time, and this is the only thing that
+ *  says which — `PhoneSheet` owns the one scrim beneath it. The Sky band's
+ *  pie sheet is a MEMBER of this union rather than a second piece of state
+ *  beside it: as two states mirrored by an effect, opening Library while a
+ *  pie sheet was up could stack two sheets and two scrims, and every
+ *  open-a-sheet path had to remember to reset the other one by hand. A
+ *  union makes that unrepresentable — one `setSheet` closes whatever was
+ *  open, whichever kind it was. The open pie is carried by ID, never as a
+ *  snapshotted `DerivedPie`; `PhonePieSheet` looks it up fresh, so a beam
+ *  landing while the sheet is open updates its rows with no re-tap. */
+type Sheet = null | "library" | "tabs" | "comments" | { kind: "pie"; id: string };
 
-// M6: `IosPiesProvider` must be an ANCESTOR of the component that reads
-// `useIosPies()` below, and it is rendered INSIDE this file's own return
-// tree (PhoneShell.tsx's brief: "wrap its returned tree in
-// IosPiesProvider") — never in App.tsx's ProviderShell, which mounts on
-// macOS too. A component cannot consume a context its own function body
-// also provides, so the real work moves to `PhoneShellInner`, mounted as
-// the provider's child.
-export default function PhoneShell(props: PhoneShellProps): React.ReactElement {
-  return (
-    <IosPiesProvider ipc={props.ipc}>
-      <PhoneShellInner {...props} />
-    </IosPiesProvider>
-  );
-}
-
-function PhoneShellInner({
+export default function PhoneShell({
   ipc,
   onOpenFile,
   onOpenSettings,
@@ -76,37 +71,18 @@ function PhoneShellInner({
   const entry = currentEntry(active);
   const [sheet, setSheet] = React.useState<Sheet>(null);
 
-  // M6: the Sky band's own pie sheet. `openPie` is looked up by id against
-  // the context's live pie list on EVERY render — never snapshotted — so a
-  // beam landing while the sheet is open still updates what it shows.
-  const { pies: iosPiesList, openPieId, setOpenPieId } = useIosPies();
-  const openPie = openPieId ? iosPiesList.find((p) => p.id === openPieId) ?? null : null;
+  // The band's own selection mark, and the id `PhonePieSheet` resolves.
+  const openPieId = typeof sheet === "object" && sheet !== null ? sheet.id : null;
+  const openPie = React.useCallback((id: string) => setSheet({ kind: "pie", id }), []);
 
-  // Exactly one sheet is open at a time; `PhoneSheet` owns the scrim (its
-  // own file comment). `openPieId` lives in `IosPiesProvider`, an ancestor
-  // of both this component and `IosStartPage.tsx` (which is what actually
-  // sets it, from the band) — mirroring it into `sheet` here is what makes
-  // opening Library/Tabs/Comments close a live pie sheet, and vice versa,
-  // rather than stacking two sheets (and two scrims) on top of each other.
-  React.useEffect(() => {
-    if (openPieId) setSheet("pie");
-    else setSheet((s) => (s === "pie" ? null : s));
-  }, [openPieId]);
+  const closeSheet = React.useCallback(() => setSheet(null), []);
 
-  const closeSheet = React.useCallback(() => {
-    setSheet(null);
-    setOpenPieId(null);
-  }, [setOpenPieId]);
-
-  // The three toggle buttons below all want the same "open this, or close
-  // it if it's already open — and always drop any live pie sheet" shape.
-  const toggleSheet = React.useCallback(
-    (kind: Exclude<Sheet, "pie" | null>) => {
-      setOpenPieId(null);
-      setSheet((s) => (s === kind ? null : kind));
-    },
-    [setOpenPieId],
-  );
+  // The three toggle buttons below all want the same "open this, or close it
+  // if it's already open" shape. Assigning over `sheet` is what drops a live
+  // pie sheet — there is nothing else to reset.
+  const toggleSheet = React.useCallback((kind: "library" | "tabs" | "comments") => {
+    setSheet((s) => (s === kind ? null : kind));
+  }, []);
 
   const [renderedText, setRenderedText] = React.useState("");
   const contentRef = React.useRef<HTMLDivElement | null>(null);
@@ -120,10 +96,7 @@ function PhoneShellInner({
   const remote = activePath ? parseRemoteAddress(activePath) : null;
   const from = remote ? deviceLabel(remote.peer) : null;
 
-  const openSheet = React.useCallback(() => {
-    setOpenPieId(null);
-    setSheet("comments");
-  }, [setOpenPieId]);
+  const openSheet = React.useCallback(() => setSheet("comments"), []);
 
   // The tool's rules are shared with the desktop shell — see the hook. On a
   // phone a rail cannot sit beside the document, so the pick IS the entry
@@ -148,10 +121,9 @@ function PhoneShellInner({
     (sel: PendingSelection | null, text: string) => {
       if (sel) setPending(sel);
       if (text) setRenderedText(text);
-      setOpenPieId(null);
       setSheet("comments");
     },
-    [setPending, setOpenPieId],
+    [setPending],
   );
 
   // A pick inside the artifact opens the comments sheet straight at the
@@ -197,192 +169,206 @@ function PhoneShellInner({
   );
 
   return (
-    <div className="phone-shell">
-      <header className="phone-titlebar">
-        <span className={"phone-title" + (title ? "" : " phone-title-brand")}>
-          {title ?? "Sky Pie"}
-        </span>
-        {from ? <span className="phone-title-from">from {from}</span> : null}
-      </header>
+    // M6: `IosPiesProvider` wraps this file's own tree and NEVER App.tsx's
+    // ProviderShell, which mounts on macOS too. This component consumes
+    // nothing from it — the band reads it through `IosStartPage.tsx` and
+    // the sheet through `PhonePieSheet.tsx`, both descendants — so there is
+    // no "a component cannot consume the context it provides" split here.
+    <IosPiesProvider ipc={ipc}>
+      <div className="phone-shell">
+        <header className="phone-titlebar">
+          <span className={"phone-title" + (title ? "" : " phone-title-brand")}>
+            {title ?? "Sky Pie"}
+          </span>
+          {from ? <span className="phone-title-from">from {from}</span> : null}
+        </header>
 
-      <div
-        ref={contentRef}
-        className={"phone-content" + (tool && !isFrame ? " comment-tool-on" : "")}
-        id="tab-panel"
-        role="tabpanel"
-        aria-labelledby={`tab-${active.id}`}
-        onClickCapture={onToolClick}
-      >
-        <TabView
-          onOpenFile={onOpenFile}
-          onPickFile={onPickFile}
-          onPickWorkspace={onPickWorkspace}
-          workspaceRoot={workspaceRoot}
-          onOpenSettings={onOpenSettings}
-        />
-      </div>
-
-      <nav className="phone-bar" aria-label="Reader controls">
-        <button
-          type="button"
-          className="phone-bar-button"
-          aria-label="Library"
-          onClick={() => toggleSheet("library")}
+        <div
+          ref={contentRef}
+          className={"phone-content" + (tool && !isFrame ? " comment-tool-on" : "")}
+          id="tab-panel"
+          role="tabpanel"
+          aria-labelledby={`tab-${active.id}`}
+          onClickCapture={onToolClick}
         >
-          <LibraryBig size={20} strokeWidth={1.8} />
-        </button>
-        <button
-          type="button"
-          className="phone-bar-button"
-          aria-label="Back"
-          disabled={!canGoBack(active)}
-          onClick={() => dispatch({ type: "GO_BACK" })}
-        >
-          <ChevronLeft size={22} strokeWidth={1.8} />
-        </button>
-        <button
-          type="button"
-          className="phone-bar-button"
-          aria-label="Forward"
-          disabled={!canGoForward(active)}
-          onClick={() => dispatch({ type: "GO_FORWARD" })}
-        >
-          <ChevronRight size={22} strokeWidth={1.8} />
-        </button>
-        <button
-          type="button"
-          className="phone-bar-button"
-          aria-label={
-            openCount > 0 ? `Comments (${openCount} open)` : "Comments"
-          }
-          disabled={!activePath}
-          onClick={() => toggleSheet("comments")}
-        >
-          <MessageSquare size={20} strokeWidth={1.8} />
-          {openCount > 0 ? <span className="phone-bar-badge">{openCount}</span> : null}
-        </button>
-        <button
-          type="button"
-          className={"phone-bar-button" + (tool ? " phone-bar-button-tool" : "")}
-          aria-label={tool ? "Put the comment tool down" : "Comment tool"}
-          aria-pressed={tool}
-          disabled={!activePath}
-          onClick={() => setTool((v) => !v)}
-        >
-          <MessageSquarePlus size={20} strokeWidth={1.8} />
-        </button>
-        <button
-          type="button"
-          className="phone-bar-button"
-          aria-label={`Open tabs (${tabs.length})`}
-          onClick={() => toggleSheet("tabs")}
-        >
-          <span className="phone-tab-count">{tabs.length}</span>
-        </button>
-      </nav>
-
-      {sheet === "library" ? (
-        <PhoneSheet
-          label="Library"
-          title="Library"
-          onClose={closeSheet}
-          actions={
-            <button
-              type="button"
-              className="phone-sheet-action"
-              aria-label="Settings"
-              onClick={() => {
-                closeSheet();
-                onOpenSettings();
-              }}
-            >
-              <SettingsIcon size={17} strokeWidth={1.8} />
-            </button>
-          }
-        >
-          <ReceivedDrawer onOpen={closeSheet} />
-        </PhoneSheet>
-      ) : null}
-
-      {sheet === "comments" ? (
-        <PhoneSheet label="Comments" title="Comments" tall onClose={closeSheet}>
-          <CommentRail
-            text={docText}
-            contentHash={null}
-            pending={pending}
-            onClearPending={() => setPending(null)}
-            // The phone has no rail beside the document to scroll INTO, so
-            // selecting a thread dismisses the sheet and shows the anchor.
-            onSelectAnchor={(anchored) => {
-              showAnchor(anchored);
-              closeSheet();
-            }}
+          {/* `onOpenPie`/`openPieId` are forwarded down to `IosStartPage`'s
+              Sky band (through `TabView` and `StartPage`, which only pass
+              them on). The band cannot reach `sheet` any other way: it is
+              mounted inside the empty tab, not by this file. */}
+          <TabView
+            onOpenFile={onOpenFile}
+            onPickFile={onPickFile}
+            onPickWorkspace={onPickWorkspace}
+            workspaceRoot={workspaceRoot}
+            onOpenSettings={onOpenSettings}
+            onOpenPie={openPie}
+            openPieId={openPieId}
           />
-        </PhoneSheet>
-      ) : null}
+        </div>
 
-      {sheet === "tabs" ? (
-        <PhoneSheet
-          label="Open tabs"
-          title="Tabs"
-          onClose={closeSheet}
-          actions={
-            <button
-              type="button"
-              className="phone-sheet-action"
-              aria-label="New tab"
-              onClick={() => {
-                dispatch({ type: "OPEN_NEW_TAB" });
+        <nav className="phone-bar" aria-label="Reader controls">
+          <button
+            type="button"
+            className="phone-bar-button"
+            aria-label="Library"
+            onClick={() => toggleSheet("library")}
+          >
+            <LibraryBig size={20} strokeWidth={1.8} />
+          </button>
+          <button
+            type="button"
+            className="phone-bar-button"
+            aria-label="Back"
+            disabled={!canGoBack(active)}
+            onClick={() => dispatch({ type: "GO_BACK" })}
+          >
+            <ChevronLeft size={22} strokeWidth={1.8} />
+          </button>
+          <button
+            type="button"
+            className="phone-bar-button"
+            aria-label="Forward"
+            disabled={!canGoForward(active)}
+            onClick={() => dispatch({ type: "GO_FORWARD" })}
+          >
+            <ChevronRight size={22} strokeWidth={1.8} />
+          </button>
+          <button
+            type="button"
+            className="phone-bar-button"
+            aria-label={
+              openCount > 0 ? `Comments (${openCount} open)` : "Comments"
+            }
+            disabled={!activePath}
+            onClick={() => toggleSheet("comments")}
+          >
+            <MessageSquare size={20} strokeWidth={1.8} />
+            {openCount > 0 ? <span className="phone-bar-badge">{openCount}</span> : null}
+          </button>
+          <button
+            type="button"
+            className={"phone-bar-button" + (tool ? " phone-bar-button-tool" : "")}
+            aria-label={tool ? "Put the comment tool down" : "Comment tool"}
+            aria-pressed={tool}
+            disabled={!activePath}
+            onClick={() => setTool((v) => !v)}
+          >
+            <MessageSquarePlus size={20} strokeWidth={1.8} />
+          </button>
+          <button
+            type="button"
+            className="phone-bar-button"
+            aria-label={`Open tabs (${tabs.length})`}
+            onClick={() => toggleSheet("tabs")}
+          >
+            <span className="phone-tab-count">{tabs.length}</span>
+          </button>
+        </nav>
+
+        {sheet === "library" ? (
+          <PhoneSheet
+            label="Library"
+            title="Library"
+            onClose={closeSheet}
+            actions={
+              <button
+                type="button"
+                className="phone-sheet-action"
+                aria-label="Settings"
+                onClick={() => {
+                  closeSheet();
+                  onOpenSettings();
+                }}
+              >
+                <SettingsIcon size={17} strokeWidth={1.8} />
+              </button>
+            }
+          >
+            <ReceivedDrawer onOpen={closeSheet} />
+          </PhoneSheet>
+        ) : null}
+
+        {sheet === "comments" ? (
+          <PhoneSheet label="Comments" title="Comments" tall onClose={closeSheet}>
+            <CommentRail
+              text={docText}
+              contentHash={null}
+              pending={pending}
+              onClearPending={() => setPending(null)}
+              // The phone has no rail beside the document to scroll INTO, so
+              // selecting a thread dismisses the sheet and shows the anchor.
+              onSelectAnchor={(anchored) => {
+                showAnchor(anchored);
                 closeSheet();
               }}
-            >
-              <Plus size={17} strokeWidth={1.8} />
-            </button>
-          }
-        >
-          <ul className="phone-tab-list">
-            {tabs.map((tab) => {
-              const tabEntry = currentEntry(tab);
-              const label = tabEntry ? basename(tabEntry.path) : "New tab";
-              return (
-                <li
-                  key={tab.id}
-                  className={
-                    "phone-tab-row" + (tab.id === activeTabId ? " is-active" : "")
-                  }
-                >
-                  <button
-                    type="button"
-                    className="phone-tab-row-label"
-                    onClick={() => {
-                      dispatch({ type: "ACTIVATE_TAB", tabId: tab.id });
-                      closeSheet();
-                    }}
-                  >
-                    <span className="phone-tab-row-name">{label}</span>
-                    {tabEntry ? (
-                      <span className="phone-tab-row-path">{tabEntry.path}</span>
-                    ) : null}
-                  </button>
-                  <button
-                    type="button"
-                    className="phone-sheet-action"
-                    aria-label={`Close ${label}`}
-                    onClick={() => dispatch({ type: "CLOSE_TAB", tabId: tab.id })}
-                  >
-                    <X size={15} strokeWidth={1.8} />
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </PhoneSheet>
-      ) : null}
+            />
+          </PhoneSheet>
+        ) : null}
 
-      {/* M6: the Sky band's own pie sheet. `openPie` is re-derived above on
-          every render from the context's live list, so a beam landing
-          while this is open updates its rows without a re-tap. */}
-      {openPie ? <PhonePieSheet pie={openPie} onClose={closeSheet} /> : null}
-    </div>
+        {sheet === "tabs" ? (
+          <PhoneSheet
+            label="Open tabs"
+            title="Tabs"
+            onClose={closeSheet}
+            actions={
+              <button
+                type="button"
+                className="phone-sheet-action"
+                aria-label="New tab"
+                onClick={() => {
+                  dispatch({ type: "OPEN_NEW_TAB" });
+                  closeSheet();
+                }}
+              >
+                <Plus size={17} strokeWidth={1.8} />
+              </button>
+            }
+          >
+            <ul className="phone-tab-list">
+              {tabs.map((tab) => {
+                const tabEntry = currentEntry(tab);
+                const label = tabEntry ? basename(tabEntry.path) : "New tab";
+                return (
+                  <li
+                    key={tab.id}
+                    className={
+                      "phone-tab-row" + (tab.id === activeTabId ? " is-active" : "")
+                    }
+                  >
+                    <button
+                      type="button"
+                      className="phone-tab-row-label"
+                      onClick={() => {
+                        dispatch({ type: "ACTIVATE_TAB", tabId: tab.id });
+                        closeSheet();
+                      }}
+                    >
+                      <span className="phone-tab-row-name">{label}</span>
+                      {tabEntry ? (
+                        <span className="phone-tab-row-path">{tabEntry.path}</span>
+                      ) : null}
+                    </button>
+                    <button
+                      type="button"
+                      className="phone-sheet-action"
+                      aria-label={`Close ${label}`}
+                      onClick={() => dispatch({ type: "CLOSE_TAB", tabId: tab.id })}
+                    >
+                      <X size={15} strokeWidth={1.8} />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </PhoneSheet>
+        ) : null}
+
+        {/* M6: the Sky band's own pie sheet. It resolves `pieId` against the
+            provider's live list on every render, so a beam landing while it
+            is open updates its rows without a re-tap — and it renders
+            nothing at all once that pie is gone. */}
+        {openPieId !== null ? <PhonePieSheet pieId={openPieId} onClose={closeSheet} /> : null}
+      </div>
+    </IosPiesProvider>
   );
 }

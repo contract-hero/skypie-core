@@ -33,53 +33,21 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { click, evalIn, quit, text, waitFor } from "./lib/app";
-import { launchIos } from "./lib/ios";
-import type { LaunchedIosApp } from "./lib/ios";
+import {
+  activateTabByLabel,
+  click,
+  clickButtonByAriaLabelPrefix,
+  evalIn,
+  quit,
+  text,
+  waitFor,
+} from "./lib/app";
+import { SKIP_BUILD, launchIos } from "./lib/ios";
 
 // Same fixed port `ios-smoke.ts` uses — scenarios run sequentially, never
 // concurrently, so one fixed port stays easy to spot stuck (`lsof -i`)
 // rather than hunting a random one.
 const E2E_PORT = 17_845;
-
-/** Activates the phone Tabs sheet's row whose visible name is `label` —
- *  used both to get back to the empty "New tab" (so the start page and its
- *  Sky band remount after opening a file) and to bring a file's tab back to
- *  the front (so Comments has an active document to open against).
- *  Repeated from the small-helper convention m2/m5.e2e.ts already use. */
-async function activateTabByLabel(app: LaunchedIosApp, label: string): Promise<void> {
-  const js = `(function(){
-    var rows = Array.from(document.querySelectorAll(".phone-tab-row"));
-    var row = rows.find(function(r){
-      var el = r.querySelector(".phone-tab-row-name");
-      return el && el.textContent === ${JSON.stringify(label)};
-    });
-    if (!row) return false;
-    row.querySelector(".phone-tab-row-label").click();
-    return true;
-  })()`;
-  const ok = await evalIn(app, js);
-  if (!ok) throw new Error(`activateTabByLabel: no tab row labeled ${JSON.stringify(label)}`);
-}
-
-/** `element.click()` via a JS predicate rather than a CSS selector — for
- *  the two phone-bar buttons whose `aria-label` is dynamic (a live count)
- *  or has extra "(N open)" text. Repeated from m2/m5/the earlier
- *  desktop-driven m6.e2e.ts's own convention. */
-async function clickButtonByAriaLabelPrefix(app: LaunchedIosApp, prefix: string): Promise<void> {
-  const js = `(function(){
-    var buttons = Array.from(document.querySelectorAll("button"));
-    var btn = buttons.find(function(b){
-      var label = b.getAttribute("aria-label") || "";
-      return label.indexOf(${JSON.stringify(prefix)}) === 0;
-    });
-    if (!btn) return false;
-    btn.click();
-    return true;
-  })()`;
-  const ok = await evalIn(app, js);
-  if (!ok) throw new Error(`clickButtonByAriaLabelPrefix: no button with aria-label starting ${JSON.stringify(prefix)}`);
-}
 
 async function main(): Promise<void> {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "skypie-e2e-m6-ios-state-"));
@@ -108,7 +76,11 @@ async function main(): Promise<void> {
   }
   const newestBasename = "pricing.html";
 
-  const app = await launchIos({ port: E2E_PORT, env: { SKYPIE_STATE_DIR: stateDir } });
+  const app = await launchIos({
+    port: E2E_PORT,
+    skipBuild: SKIP_BUILD,
+    env: { SKYPIE_STATE_DIR: stateDir },
+  });
   try {
     // ── Checkpoint 1: real phone chrome, no desktop chrome — the UA/compiled
     //    platform_info alone, no e2e override needed ────────────────────
@@ -130,14 +102,32 @@ async function main(): Promise<void> {
         return {
           role: b.getAttribute("role"),
           ariaLabel: b.getAttribute("aria-label"),
+          parentClass: b.parentElement.className,
           isFirstChild: b.parentElement.firstElementChild === b,
           height: Math.round(b.getBoundingClientRect().height),
         };
       })()`,
-    )) as { role: string; ariaLabel: string; isFirstChild: boolean; height: number };
+    )) as {
+      role: string;
+      ariaLabel: string;
+      parentClass: string;
+      isFirstChild: boolean;
+      height: number;
+    };
     if (bandFacts.role !== "listbox") throw new Error(`expected role="listbox", got ${JSON.stringify(bandFacts.role)}`);
     if (bandFacts.ariaLabel !== "Pies") throw new Error(`expected aria-label="Pies", got ${JSON.stringify(bandFacts.ariaLabel)}`);
-    if (!bandFacts.isFirstChild) throw new Error("expected the band to be .start-page-inner's first child");
+    // The band is a SIBLING of `.start-page-inner`, ABOVE it — full-bleed
+    // chrome does not belong inside the start page's padded 560px column,
+    // and outside it the band needs no negative-margin clawback to reach
+    // the screen edges (styles.css, the M6 phone-band block). Asserting the
+    // PARENT as well as the position is what keeps it from drifting back
+    // inside that column and passing on "first child" alone.
+    if (bandFacts.parentClass !== "start-page") {
+      throw new Error(
+        `expected the band's parent to be .start-page, got ${JSON.stringify(bandFacts.parentClass)}`,
+      );
+    }
+    if (!bandFacts.isFirstChild) throw new Error("expected the band to be .start-page's first child");
     if (bandFacts.height !== 120) throw new Error(`expected a 120px band, got ${bandFacts.height}px`);
     console.log("ok: the band is first, role=listbox, aria-label=Pies, 120px tall");
 

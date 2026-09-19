@@ -101,10 +101,18 @@ function syncIosCoreToThisCommit(): string {
   return sha;
 }
 
+/** `SKYPIE_E2E_SKIP_BUILD=1` — reuse the simulator bundle already built,
+ *  skipping the `skypie-ios/core` sync and `build-ios-sim.sh`. An iOS build
+ *  is minutes, and iterating on a scenario's ASSERTIONS rebuilds nothing
+ *  that matters. Read here, once, so every `launchIos` scenario honours the
+ *  same variable instead of each inventing its own. NEVER default on: a
+ *  normal run must test HEAD, not whatever was last left in the bundle. */
+export const SKIP_BUILD = process.env.SKYPIE_E2E_SKIP_BUILD === "1";
+
 export interface LaunchIosOptions {
   port: number;
   /** Skip the build (core sync + `build-ios-sim.sh`) — the caller already
-   *  did it. Default: build. */
+   *  did it, or `SKIP_BUILD` above says so. Default: build. */
   skipBuild?: boolean;
   /** Extra env vars for the launched app, e.g. `{ SKYPIE_STATE_DIR: dir }`
    *  to point a real simulator run at a seeded scratch state dir —

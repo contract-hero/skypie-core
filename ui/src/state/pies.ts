@@ -4,6 +4,7 @@
 // below is a plain function over plain data).
 import type { Pie, PieCensus } from "../ipc";
 import type { DerivedPie, DerivedPieFile } from "./derived-pies";
+import { basename } from "../utils/path";
 import { kindOf } from "../render/kind";
 import { censusToFiles, freshCount, isUserPieId } from "./derived-pies";
 // `DropTarget` is what the hit test produces and `dropPieName` is the name
@@ -31,7 +32,7 @@ export { isUserPieId } from "./derived-pies";
 export function pieFiles(pie: Pie): DerivedPieFile[] {
   return pie.members
     .filter((m) => m.kind === "file")
-    .map((m) => ({ path: m.path, kind: kindOf(m.path), mtime: m.added_at }));
+    .map((m) => ({ path: m.path, name: basename(m.path), kind: kindOf(m.path), mtime: m.added_at }));
 }
 
 /** Adapts a persisted `Pie` to `DerivedPie`'s shape — the one interface

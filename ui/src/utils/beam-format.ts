@@ -54,3 +54,21 @@ export function formatAgo(then: number, now: number): string {
   if (ago < 86400) return `${Math.round(ago / 3600)} h`;
   return `${Math.round(ago / 86400)} d`;
 }
+
+/** A file row's age, e.g. "just now", "5 min ago", "3 h ago" — the one copy
+ *  shared by the desktop plate (`PiePlate.tsx`) and the phone sheet
+ *  (`ios-pies.ts`), which each carried their own identical version before.
+ *
+ *  It lives HERE, beside `formatAgo`, because the whole reason it exists is
+ *  `formatAgo`'s own contract: that function already returns the complete
+ *  phrase "just now" for anything under 60s, so appending " ago"
+ *  unconditionally reads "just now ago". Keeping the two apart is what let
+ *  the rule be rediscovered — and re-implemented — twice.
+ *
+ *  `nowSecsValue` defaults to the real clock so a render site needs no
+ *  second argument; a test passes a fixed "now" to reach the under-60s
+ *  branch deterministically. */
+export function mtimeAgo(mtimeMs: number, nowSecsValue: number = nowSecs()): string {
+  const ago = formatAgo(Math.floor(mtimeMs / 1000), nowSecsValue);
+  return ago === "just now" ? ago : `${ago} ago`;
+}

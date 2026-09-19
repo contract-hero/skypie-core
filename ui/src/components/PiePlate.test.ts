@@ -1,23 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { dominantWedge, lastOpenedLabel, mtimeAgo, readoutLabel } from "./PiePlate";
+import { dominantWedge, lastOpenedLabel, readoutLabel } from "./PiePlate";
 import type { DerivedPie, Wedge } from "../state/derived-pies";
+import { basename } from "../utils/path";
 
 const pie = (id: string, mtimes: number[]): DerivedPie => ({
   id,
   name: id === "builtin:pinned" ? "Pinned" : "Recent",
-  files: mtimes.map((mtime, i) => ({ path: `/w/f${i}.html`, kind: "html", mtime })),
-});
-
-describe("mtimeAgo", () => {
-  it("says 'just now' without appending ' ago'", () => {
-    expect(mtimeAgo(Date.now())).toBe("just now");
-    expect(mtimeAgo(Date.now() - 10_000)).toBe("just now");
-  });
-
-  it("appends ' ago' to every longer phrase", () => {
-    expect(mtimeAgo(Date.now() - 5 * 60_000)).toMatch(/ ago$/);
-    expect(mtimeAgo(Date.now() - 3 * 3_600_000)).toMatch(/ ago$/);
-  });
+  files: mtimes.map((mtime, i) => ({ path: `/w/f${i}.html`, name: basename(`/w/f${i}.html`), kind: "html", mtime })),
 });
 
 describe("lastOpenedLabel", () => {

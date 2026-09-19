@@ -34,7 +34,7 @@ import type { PieMember } from "../ipc";
 import { FileGlyph } from "./FileIcon";
 import { basename, displayDir, displayPath } from "../utils/path";
 import { messageOf } from "../utils/error-message";
-import { formatAgo } from "../utils/beam-format";
+import { mtimeAgo } from "../utils/beam-format";
 import { useEscape } from "../hooks/useEscape";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useContextMenu } from "./ContextMenu";
@@ -110,15 +110,6 @@ const NARROW_PANE_WINDOW_W = 760;
 
 function usePaneNarrow(): boolean {
   return useMediaQuery(`(max-width: ${NARROW_PANE_WINDOW_W}px)`);
-}
-
-/** `formatAgo` already returns the complete phrase "just now" for anything
- *  under 60s — appending " ago" unconditionally used to read "just now ago"
- *  for the normal case of a file opened or bookmarked in the last minute.
- *  One helper, both call sites below. */
-export function mtimeAgo(mtimeMs: number): string {
-  const ago = formatAgo(Math.floor(mtimeMs / 1000), Math.floor(Date.now() / 1000));
-  return ago === "just now" ? ago : `${ago} ago`;
 }
 
 export function lastOpenedLabel(pie: DerivedPie): string {
@@ -300,7 +291,13 @@ export default function PiePlate({
     const missing = new Set(pie.census?.missing ?? []);
     return members
       .filter((m) => m.kind === "file" && missing.has(m.path))
-      .map((m) => ({ path: m.path, kind: kindOf(m.path), mtime: 0, missing: true as const }));
+      .map((m) => ({
+        path: m.path,
+        name: basename(m.path),
+        kind: kindOf(m.path),
+        mtime: 0,
+        missing: true as const,
+      }));
   }, [members, pie.census]);
 
   // ONE row list: the slice filter narrows the live rows through `groups`
@@ -887,9 +884,9 @@ export default function PiePlate({
           onFocus={() => setFocusedLayer(navIndex)}
         >
           <span className="start-row-icon">
-            <FileGlyph name={basename(file.path)} size={15} />
+            <FileGlyph name={file.name} size={15} />
           </span>
-          <span className="start-row-name">{basename(file.path)}</span>
+          <span className="start-row-name">{file.name}</span>
           <span className="start-row-dir">
             <bdi>{displayDir(file.path, root)} — not found</bdi>
           </span>
@@ -958,9 +955,9 @@ export default function PiePlate({
         }}
       >
         <span className="start-row-icon">
-          <FileGlyph name={basename(file.path)} size={15} />
+          <FileGlyph name={file.name} size={15} />
         </span>
-        <span className="start-row-name">{basename(file.path)}</span>
+        <span className="start-row-name">{file.name}</span>
         <span className="start-row-dir">
           <bdi>{displayDir(file.path, root)}</bdi>
         </span>

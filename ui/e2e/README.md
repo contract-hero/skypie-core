@@ -81,13 +81,26 @@ git remote) before it builds, so commit first. It targets the simulator named
 `iPhone 17 Pro`; `SKYPIE_E2E_SIM` names another, and `SKYPIE_IOS_SHELL` points
 at an `skypie-ios` checkout kept somewhere other than beside this one.
 
+`SKYPIE_E2E_SKIP_BUILD=1` makes every `launchIos` scenario reuse the
+simulator bundle already installed, skipping both the `skypie-ios/core` sync
+and `build-ios-sim.sh`. An iOS build is minutes, and iterating on a
+scenario's own assertions rebuilds nothing that matters. It is never the
+default, and it must be off for any run whose result you intend to trust: a
+real run tests HEAD, a skipped one tests whatever was last built.
+
+```
+SKYPIE_E2E_SKIP_BUILD=1 pnpm -C ui e2e:m6   # assertions only, no rebuild
+```
+
 Scenarios live beside this file (`smoke.ts`, `ios-smoke.ts`, and one
 `<milestone>.e2e.ts` per feature milestone); each is an explicit `pnpm`
 script in `ui/package.json`, there is no glob — a file nothing references
 runs nowhere. The helpers in `lib/` (`launchDesktop`, `launchIos`, `evalIn`, `keys`, `click`,
-`text`, `waitFor`, `quit`, `makeFixtureWorkspace`, `setWorkspaceRoot`,
+`text`, `waitFor`, `quit`, `openViaQuickOpen`, `activateTabByLabel`,
+`clickButtonByAriaLabelPrefix`, `makeFixtureWorkspace`, `setWorkspaceRoot`,
 `cleanupFixtureWorkspace`, and the iOS handle's `screenshot`) are the whole
-API. `out/` holds screenshots and is not tracked.
+API — a scenario that needs a new one puts it there rather than beside its
+own `main()`. `out/` holds screenshots and is not tracked.
 
 ## Verifying a change to the harness
 

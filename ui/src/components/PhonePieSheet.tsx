@@ -12,71 +12,49 @@ import * as React from "react";
 import PhoneSheet from "./PhoneSheet";
 import Pie from "./Pie";
 import { FileGlyph } from "./FileIcon";
-import { shareLabel } from "../state/derived-pies";
-import type { DerivedPie, DerivedPieFile } from "../state/derived-pies";
-import { mtimeAgo, pieRows } from "../state/ios-pies";
-import { basename } from "../utils/path";
-import { nowSecs } from "../utils/beam-format";
+import { labelOfWedges, wedgesOf } from "../state/derived-pies";
+import type { DerivedPieFile } from "../state/derived-pies";
+import { pieRows } from "../state/ios-pies";
+import { useIosPies } from "../state/ios-pies-context";
+import { mtimeAgo, nowSecs } from "../utils/beam-format";
+import { useRovingFocus } from "../hooks/useRovingFocus";
 import { useTabsDispatch } from "../state/TabsProvider";
 
 export interface PhonePieSheetProps {
-  pie: DerivedPie;
+  /** The pie is taken by ID and resolved below against the provider's LIVE
+   *  list, never handed in as a snapshotted object: a beam landing while
+   *  this sheet is open has to change what it shows, with no re-tap. */
+  pieId: string;
   onClose: () => void;
 }
 
-export default function PhonePieSheet({ pie, onClose }: PhonePieSheetProps): React.ReactElement {
+export default function PhonePieSheet({
+  pieId,
+  onClose,
+}: PhonePieSheetProps): React.ReactElement | null {
   const dispatch = useTabsDispatch();
+  const { pies } = useIosPies();
+  const pie = pies.find((p) => p.id === pieId) ?? null;
 
-  // Newest first — the same order PiePlate.tsx's own layer list uses, so
-  // the row a beam or a share just added is always on top. The sort itself
-  // moved to ios-pies.ts (review: PhonePieSheet.tsx:43, minor) — this stays
-  // the only place that needs the RESULT.
-  const rows = React.useMemo(() => pieRows(pie), [pie]);
+  // Newest first — `pie-census.ts`'s own `byRow`, the comparator the desktop
+  // plate's layer list already uses, so the row a beam or a share just added
+  // is on top for the same reason on both platforms.
+  const rows = React.useMemo(() => (pie ? pieRows(pie) : []), [pie]);
+
+  // Grouped ONCE for this render, then handed to both consumers. `Pie`
+  // groups `pie.files` itself when no `wedges` prop arrives, and the readout
+  // (`shareLabel`) grouped the identical list a second time — two full
+  // passes over every file, per render, for one disc and one string.
+  const wedges = React.useMemo(() => wedgesOf(pie?.files ?? []), [pie]);
 
   // M6 review (major): the list declared role="listbox"/role="option" but
   // implemented no roving tabindex and no arrow-key handling — every row
   // stayed in the tab order and ArrowUp/ArrowDown/Home/End did nothing.
   // Spec line 154 says the layer list is the SAME on iOS as on macOS, and
   // spec line 134 defines that as role="listbox", roving tabindex,
-  // arrow/Home/End — mirrored here from PiePlate.tsx's own
-  // onLayerKeyDown, minus the folder-header/tree branch this flat,
-  // folder-less list never needs.
-  const [focusedRow, setFocusedRow] = React.useState(0);
-  const rowRefs = React.useRef<Array<HTMLButtonElement | null>>([]);
-  const setRowRef = (i: number) => (el: HTMLButtonElement | null) => {
-    rowRefs.current[i] = el;
-  };
-  React.useEffect(() => {
-    setFocusedRow((i) => Math.min(i, Math.max(0, rows.length - 1)));
-  }, [rows.length]);
-  const focusRow = (index: number): void => {
-    const clamped = Math.max(0, Math.min(rows.length - 1, index));
-    setFocusedRow(clamped);
-    rowRefs.current[clamped]?.focus();
-  };
-  const onListKeyDown = (e: React.KeyboardEvent): void => {
-    if (rows.length === 0) return;
-    switch (e.key) {
-      case "ArrowDown":
-        e.preventDefault();
-        focusRow(focusedRow + 1);
-        break;
-      case "ArrowUp":
-        e.preventDefault();
-        focusRow(focusedRow - 1);
-        break;
-      case "Home":
-        e.preventDefault();
-        focusRow(0);
-        break;
-      case "End":
-        e.preventDefault();
-        focusRow(rows.length - 1);
-        break;
-      default:
-        break;
-    }
-  };
+  // arrow/Home/End. No `onEscape`: Escape inside a sheet belongs to the
+  // sheet, which closes itself.
+  const list = useRovingFocus({ count: rows.length, orientation: "vertical" });
 
   const openRow = (file: DerivedPieFile): void => {
     // A member's path is either a real local path (the Received pie) or a
@@ -92,41 +70,46 @@ export default function PhonePieSheet({ pie, onClose }: PhonePieSheetProps): Rea
     onClose();
   };
 
+  // The pie went out from under the open sheet — its last beam/offer is
+  // gone, or the peer that held it dropped offline. Rendering nothing IS the
+  // whole guard: there is no stale copy to clamp, because this component
+  // never took one.
+  if (!pie) return null;
+
+  // One clock for every row in this pass, rather than a `Date.now()` per row.
+  const now = nowSecs();
+
   return (
     <PhoneSheet label={pie.name} title={pie.name} tall onClose={onClose}>
       <div className="phone-sheet-pie">
-        <Pie pie={pie} size={200} interactive={false} />
-        <div className="phone-sheet-pie-readout">{shareLabel(pie.files)}</div>
+        <Pie pie={pie} size={200} interactive={false} wedges={wedges} />
+        <div className="phone-sheet-pie-readout">{labelOfWedges(wedges)}</div>
       </div>
-      <div role="listbox" aria-label="Files" data-testid="pie-sheet" onKeyDown={onListKeyDown}>
-        {rows.map((file, i) => {
-          // The sender-supplied name (ios-pies.ts's `name`) when there is
-          // one, matching the "Received" list directly below on the same
-          // start page — a beam's landed path can carry a `-2`/`-3`
-          // collision suffix `basename(file.path)` alone would surface
-          // (review: PhonePieSheet.tsx:70, minor).
-          const name = file.name ?? basename(file.path);
-          return (
-            <button
-              key={file.path}
-              ref={setRowRef(i)}
-              type="button"
-              role="option"
-              aria-selected={i === focusedRow}
-              className="start-row"
-              title={file.path}
-              tabIndex={i === focusedRow ? 0 : -1}
-              onFocus={() => setFocusedRow(i)}
-              onClick={() => openRow(file)}
-            >
-              <span className="start-row-icon">
-                <FileGlyph name={name} size={15} />
-              </span>
-              <span className="start-row-name">{name}</span>
-              <span className="start-row-mtime">{mtimeAgo(file.mtime, nowSecs())}</span>
-            </button>
-          );
-        })}
+      <div role="listbox" aria-label="Files" data-testid="pie-sheet" onKeyDown={list.onKeyDown}>
+        {rows.map((file, i) => (
+          <button
+            key={file.path}
+            ref={list.setItemRef(i)}
+            type="button"
+            role="option"
+            aria-selected={i === list.focusedIndex}
+            className="start-row"
+            title={file.path}
+            tabIndex={i === list.focusedIndex ? 0 : -1}
+            onFocus={() => list.setFocusedIndex(i)}
+            onClick={() => openRow(file)}
+          >
+            <span className="start-row-icon">
+              <FileGlyph name={file.name} size={15} />
+            </span>
+            {/* `file.name` is the SENDER's own filename, which is what the
+                "Received" list on the same start page shows — a beam's
+                landed path can carry a `-2`/`-3` collision suffix that
+                `basename(file.path)` would surface instead. */}
+            <span className="start-row-name">{file.name}</span>
+            <span className="start-row-mtime">{mtimeAgo(file.mtime, now)}</span>
+          </button>
+        ))}
       </div>
     </PhoneSheet>
   );

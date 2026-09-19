@@ -1224,13 +1224,7 @@ html, body, #root {
 .start-page-inner {
   max-width: 560px;
   margin: 0 auto;
-  /* `--start-pad-top` is read back by `body.platform-ios .sky-band`'s own
-     pull-out below (`margin-top: calc(-1 * var(--start-pad-top))`) — a
-     custom property instead of two copies of `56px`, so the two stay in
-     sync and a future edit here cannot silently reopen the gap that rule's
-     own comment says it closes (review: styles.css:2077, minor). */
-  --start-pad-top: 56px;
-  padding: var(--start-pad-top) var(--space-6) var(--space-6);
+  padding: 56px var(--space-6) var(--space-6);
   animation: start-rise 360ms var(--ease);
 }
 @keyframes start-rise {
@@ -2097,31 +2091,20 @@ body.platform-ios .start-row {
    IosStartPage.tsx renders the SAME .sky-band/.sky-glaze/.sky-cloud/
    .sky-pies/.sky-pie markup Sky.tsx uses on macOS (M1) — no new class, no
    new departure, so every rule under "Sky band" below (height, glaze,
-   crust, wedge tones, --sky-focus) already applies unchanged. This
-   override only fixes where it SITS: the phone has no toolbar, so the
-   band is the first thing under .phone-titlebar, not a togglable strip
-   between a toolbar and a tab view. */
+   crust, wedge tones, --sky-focus) already applies unchanged, the 120px
+   height included.
+
+   The band is a SIBLING of .start-page-inner, above it, rather than its
+   first child: it is full-bleed chrome sitting straight under
+   .phone-titlebar, while everything below it belongs in the start page's
+   own padded, 560px-max column. It used to be inside that column and then
+   pulled back out with `width: 100vw`, two negative 50vw side margins and
+   a negative top margin — the same layout expressed twice, in two units,
+   where either copy could drift from the other. Put in the right parent it
+   needs no clawback at all, and the glaze meets the title bar because
+   nothing is between them. All that is left is the gap before the wordmark
+   that follows. */
 body.platform-ios .sky-band {
-  flex: none;
-  /* .start-page-inner's own top padding would otherwise inset the band and
-     break the glaze's continuity with .phone-titlebar directly above it —
-     pulling it out by exactly that padding (the shared `--start-pad-top`
-     custom property, set on `.start-page-inner` above, so the two can
-     never drift apart again — review: styles.css:2077, minor) is what
-     "flush" means here; the bottom margin restores the usual gap before
-     the wordmark that follows it. The side margins pull the band past
-     `.start-page-inner`'s own horizontal padding only — they do not reach
-     past its `max-width: 560px` column, so on an iPad-width viewport
-     (`guessPlatformOs` matches `iPad`, platform.tsx) the band still stops
-     short of the physical screen edges; `width: 100vw` plus the negative
-     `50vw` margins below break it out of that centered column too, the
-     same full-bleed trick `.tab-strip`-less phone chrome does not need
-     because the phone viewport never exceeds the column width in the
-     first place (review: styles.css:2070, minor). */
-  width: 100vw;
-  margin-left: calc(50% - 50vw);
-  margin-right: calc(50% - 50vw);
-  margin-top: calc(-1 * var(--start-pad-top));
   margin-bottom: var(--space-5);
 }
 
@@ -3050,12 +3033,18 @@ pre[data-fallback] .line::before {
    "Motion": "The band disc hides for the duration and reappears on
    close"). Scoped to `.sky-pies` so it never touches the plate's own
    portrait disc, which also carries `.sky-pie-disc`.
-   `body.platform-macos` only: the phone's PhonePieSheet.tsx is a bottom
-   sheet, not a plate that animates out of the band's own slot, so there is
-   no second copy of the disc to avoid doubling — hiding it there just made
-   the tapped tile's disc vanish behind the sheet for as long as it stayed
-   open (review: styles.css:3005, major). */
-body.platform-macos .sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidden; }
+   Scoped to `.sky-band-shell` as well, because that wrapper is exactly
+   what makes the doubling possible: it is the containing block the plate's
+   `position: absolute; top: 100%` drops out of (Sky.tsx), so a band inside
+   one has a plate and a band outside one does not. The phone's band is not
+   in one, and its PhonePieSheet.tsx is a bottom sheet rather than a plate
+   scaling out of the tapped tile's slot — there is no second copy of the
+   disc to avoid, so hiding this one only made the tapped tile go blank
+   behind the sheet (review: styles.css:3005, major). Keying on the
+   STRUCTURE that creates the problem, rather than on `body.platform-macos`,
+   means a future band gets the right behaviour from where it is mounted
+   rather than from which OS is running. */
+.sky-band-shell .sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidden; }
 .sky-pie-label {
   max-width: 96px;
   overflow: hidden;
@@ -3125,8 +3114,9 @@ body.platform-macos .sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidd
    which the M1 budget does not carry; a pixel-exact reuse of the clicked
    tile's own rect is left for a later pass if the approximation reads
    wrong in the demo. The band's own disc for this pie is hidden for as
-   long as the plate stays open (`.sky-pies .sky-pie.selected .sky-pie-disc`
-   above), so this is the only copy of the disc on screen while it runs. */
+   long as the plate stays open (`.sky-band-shell .sky-pies
+   .sky-pie.selected .sky-pie-disc` above), so this is the only copy of the
+   disc on screen while it runs. */
 .pie-plate-left .sky-pie-disc {
   transform-origin: top center;
   animation: pie-plate-disc-in 240ms var(--ease-emphasis);

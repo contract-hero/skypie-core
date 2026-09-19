@@ -11,6 +11,7 @@ import type { PieLayer } from "./pie-census";
 import type { PieCensus, PieMember } from "../ipc";
 import type { DerivedPieFile } from "./derived-pies";
 import type { FsChange } from "./watcher-bus";
+import { basename } from "../utils/path";
 
 function census(overrides: Partial<PieCensus> = {}): PieCensus {
   return {
@@ -24,7 +25,7 @@ function census(overrides: Partial<PieCensus> = {}): PieCensus {
 }
 
 function file(path: string, overrides: Partial<DerivedPieFile> = {}): DerivedPieFile {
-  return { path, kind: "html", mtime: 0, ...overrides };
+  return { path, name: basename(path), kind: "html", mtime: 0, ...overrides };
 }
 
 describe("censusToFiles", () => {
@@ -37,8 +38,8 @@ describe("censusToFiles", () => {
     });
     const members: PieMember[] = [{ kind: "folder", path: "/w/dir", added_at: 0 }];
     expect(censusToFiles(c, members)).toEqual([
-      { path: "/w/dir/a.html", kind: "html", mtime: 1000, folder: "/w/dir" },
-      { path: "/w/b.md", kind: "md", mtime: 2000, folder: undefined },
+      { path: "/w/dir/a.html", name: basename("/w/dir/a.html"), kind: "html", mtime: 1000, folder: "/w/dir" },
+      { path: "/w/b.md", name: basename("/w/b.md"), kind: "md", mtime: 2000, folder: undefined },
     ]);
   });
 
@@ -51,7 +52,7 @@ describe("censusToFiles", () => {
 
   it("keeps a direct file row (no folder) regardless of members", () => {
     const c = census({ files: [{ path: "/w/a.md", mtime: 1, size: 1 }] });
-    expect(censusToFiles(c, [])).toEqual([{ path: "/w/a.md", kind: "md", mtime: 1, folder: undefined }]);
+    expect(censusToFiles(c, [])).toEqual([{ path: "/w/a.md", name: basename("/w/a.md"), kind: "md", mtime: 1, folder: undefined }]);
   });
 
 });
@@ -223,7 +224,7 @@ describe("layersOf", () => {
 
   it("puts a missing FILE member's row in the 'files' layer, after the live rows", () => {
     const withMissing: DerivedPieFile[] = [
-      { path: "/w/gone.md", kind: "md", mtime: 0, missing: true },
+      { path: "/w/gone.md", name: basename("/w/gone.md"), kind: "md", mtime: 0, missing: true },
       file("/w/direct.md", { mtime: 50 }),
     ];
     const layers = layersOf(withMissing, [members[2]], undefined);

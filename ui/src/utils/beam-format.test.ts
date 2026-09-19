@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { expiresIn, formatAgo, formatLastSeen, humanBytes } from "./beam-format";
+import { expiresIn, formatAgo, formatLastSeen, humanBytes, mtimeAgo } from "./beam-format";
 
 describe("humanBytes", () => {
   it("scales through the units", () => {
@@ -51,5 +51,34 @@ describe("formatAgo", () => {
   });
   it("never reads as negative when the host clock is ahead", () => {
     expect(formatAgo(now + 500, now)).toBe("just now");
+  });
+});
+
+// `mtimeAgo` was the same six lines in PiePlate.tsx (the desktop plate) and
+// ios-pies.ts (the phone sheet), each with its own test. One function beside
+// `formatAgo`, whose "just now" contract is the only reason it exists, and
+// one test file.
+describe("mtimeAgo", () => {
+  const now = 1_700_000_100;
+
+  it("says 'just now' without appending ' ago'", () => {
+    expect(mtimeAgo(1_700_000_100_000, now)).toBe("just now");
+    expect(mtimeAgo(1_700_000_070_000, now)).toBe("just now");
+  });
+
+  it("appends ' ago' once the age reaches a minute", () => {
+    // Exactly 60s old — formatAgo's own >= 60 branch.
+    expect(mtimeAgo(1_700_000_040_000, now)).toBe("1 min ago");
+  });
+
+  it("appends ' ago' to every longer phrase too", () => {
+    expect(mtimeAgo(1_700_000_100_000 - 5 * 60_000, now)).toBe("5 min ago");
+    expect(mtimeAgo(1_700_000_000_000, 1_700_010_000)).toBe("3 h ago");
+    expect(mtimeAgo(1_700_000_100_000 - 2 * 86_400_000, now)).toBe("2 d ago");
+  });
+
+  it("defaults to the real clock, so a render site passes no second argument", () => {
+    expect(mtimeAgo(Date.now())).toBe("just now");
+    expect(mtimeAgo(Date.now() - 3 * 3_600_000)).toBe("3 h ago");
   });
 });
