@@ -3,6 +3,7 @@ import {
   guessPlatformOs,
   parsePlatformOs,
   platformBodyClass,
+  platformOverride,
   resolvePlatformOs,
 } from "./platform";
 
@@ -92,5 +93,43 @@ describe("platformBodyClass", () => {
   it("maps ios/macos to their body class", () => {
     expect(platformBodyClass("ios")).toBe("platform-ios");
     expect(platformBodyClass("macos")).toBe("platform-macos");
+  });
+});
+
+describe("platformOverride", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const stubLocalStorage = (value: string | null): void => {
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => (key === "skypie.platformOverride" ? value : null),
+    });
+  };
+
+  // Vitest runs in Vite's non-production mode, so `import.meta.env.DEV` is
+  // true for every case below — exactly the condition under which the e2e
+  // harness's own dev-profile binary runs (ui/e2e/README.md), which is the
+  // one place this seam is meant to work.
+  it("returns null when nothing is set", () => {
+    stubLocalStorage(null);
+    expect(platformOverride()).toBeNull();
+  });
+
+  it("returns null when there is no localStorage at all", () => {
+    vi.stubGlobal("localStorage", undefined);
+    expect(platformOverride()).toBeNull();
+  });
+
+  it("recognizes ios and macos", () => {
+    stubLocalStorage("ios");
+    expect(platformOverride()).toBe("ios");
+    stubLocalStorage("macos");
+    expect(platformOverride()).toBe("macos");
+  });
+
+  it("ignores an unrecognized value", () => {
+    stubLocalStorage("android");
+    expect(platformOverride()).toBeNull();
   });
 });

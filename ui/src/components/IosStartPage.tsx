@@ -5,65 +5,83 @@
 // and reading what has already arrived. Reuses the
 // same start-page/start-list/start-row classes as the macOS StartPage —
 // same visual language, different content.
+//
+// M6 adds the Sky band at the top: a "Received" pie plus one
+// "Shared from <Mac>" pie per online peer, both derived and owned by
+// `IosPiesProvider` (mounted in PhoneShell.tsx) — see `state/ios-pies.ts`
+// and `state/ios-pies-context.tsx`. Tapping a pie calls `onOpenPie`, which
+// is PhoneShell.tsx's own sheet state arriving through two pass-through
+// props; this component decides nothing about sheets.
+//
+// The band is a SIBLING of `.start-page-inner`, not a child of it: it is
+// full-bleed chrome under the phone's title bar, while everything below it
+// sits in the start page's own 560px padded column. Nesting it in that
+// column and then clawing the padding back with negative margins was the
+// same layout said twice, in two units that could drift.
 import * as React from "react";
 import { MonitorSmartphone } from "lucide-react";
 import { useRemoteState } from "../state/remote";
 import { useBeamActions, useBeamState } from "../state/beam";
 import { useTabsDispatch } from "../state/TabsProvider";
-import { tauriIpc, type SharedEntry } from "../ipc";
 import { formatRemoteAddress } from "../utils/remote-address";
 import { FileGlyph } from "./FileIcon";
 import { formatAgo, humanBytes, nowSecs } from "../utils/beam-format";
+import { useIosPies } from "../state/ios-pies-context";
+import { useRovingFocus } from "../hooks/useRovingFocus";
+import Pie from "./Pie";
+import SkyClouds from "./SkyClouds";
 
 export interface IosStartPageProps {
   /** Opens the Settings modal, which mounts the Remote pane (pairing UI is
    * reused as-is — see PRODUCT.md). */
   onOpenSettings?: () => void;
+  /** M6: a tap on a band pie. `PhoneShell.tsx` owns which sheet is open;
+   *  this only reports the tap. */
+  onOpenPie?: (id: string) => void;
+  /** M6: the pie whose sheet is open, for the band's own selection mark. */
+  openPieId?: string | null;
+  /** M6: one line for a sheet that dismissed ITSELF — a pie sheet whose pie
+   *  left the band while it was open. Without it the sheet simply vanishes
+   *  and the tap that follows shows nothing. */
+  notice?: string | null;
 }
 
-export default function IosStartPage({ onOpenSettings }: IosStartPageProps): React.ReactElement {
+export default function IosStartPage({
+  onOpenSettings,
+  onOpenPie,
+  openPieId = null,
+  notice = null,
+}: IosStartPageProps): React.ReactElement {
   const { peers, presence } = useRemoteState();
-  const { received } = useBeamState();
-  const { openReceived, refreshReceived } = useBeamActions();
+  const { received, receivedError } = useBeamState();
+  const { openReceived } = useBeamActions();
   const dispatch = useTabsDispatch();
 
-  React.useEffect(() => {
-    refreshReceived();
-  }, [refreshReceived]);
+  // M6: `IosPiesProvider` (an ancestor, PhoneShell.tsx) owns the
+  // `remoteListShared` fan-out and the `refreshReceived` call this
+  // component used to do on its own — `sharedEntries` is the exact flat,
+  // per-file shape the "Shared with you" section below already rendered
+  // before M6, now sourced from that one fetch instead of a second copy of
+  // it here.
+  const { pies, sharedEntries, failedPeers } = useIosPies();
 
-  // What each paired Mac has offered this phone. There is no push and no
-  // notification: the Mac records an offer when the user shares a link, and
-  // this asks for the list. The right moment to ask is whenever presence
-  // changes, because the iOS foreground hop drops every session and rewrites
-  // presence — so a resume refreshes this without a second signal.
-  const [shared, setShared] = React.useState<Array<SharedEntry & { peer: string }>>([]);
-  const onlineKey = peers
-    .filter((p) => presence[p.node_id]?.state === "online")
-    .map((p) => p.node_id)
-    .join(",");
-
-  React.useEffect(() => {
-    const online = onlineKey ? onlineKey.split(",") : [];
-    if (online.length === 0) {
-      setShared([]);
-      return;
-    }
-    let cancelled = false;
-    Promise.all(
-      online.map((peer) =>
-        (tauriIpc.remoteListShared?.(peer) ?? Promise.resolve([]))
-          .then((entries) => entries.map((e) => ({ ...e, peer })))
-          // One unreachable device must not blank the whole list.
-          .catch(() => [] as Array<SharedEntry & { peer: string }>),
-      ),
-    ).then((lists) => {
-      if (cancelled) return;
-      setShared(lists.flat().sort((a, b) => b.shared_at - a.shared_at));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [onlineKey]);
+  // The band declares role="listbox", so it owes the listbox keyboard
+  // contract: every tile would otherwise stay natively tabbable with the
+  // arrows doing nothing. `useRovingFocus` is the shared implementation of
+  // that contract (see its own file for why Sky.tsx and PiePlate.tsx keep
+  // their richer copies). The spec's iOS carve-out drops the tin, the
+  // drops, persistence, the census and the chords — not the listbox
+  // pattern itself. There is no Enter branch
+  // because none is needed: every tile is a real `<button>`, so a native
+  // Enter/Space keypress already fires its own `onClick`.
+  const band = useRovingFocus({
+    count: pies.length,
+    orientation: "horizontal",
+    // Leaves the band without closing anything else — the same "blur, do
+    // not close a sheet" split Sky.tsx's own Esc branch draws between the
+    // band and the plate (the plate/sheet owns its own Esc).
+    onEscape: () => (document.activeElement as HTMLElement | null)?.blur(),
+  });
 
   const openShared = React.useCallback(
     (peer: string, path: string) => {
@@ -81,9 +99,83 @@ export default function IosStartPage({ onOpenSettings }: IosStartPageProps): Rea
 
   const hasPeers = peers.length > 0;
 
+  // One clock for every row rendered in this pass. Called inside the map, a
+  // long list measured its first row against a different second than its
+  // last, and each row re-read `Date.now()`.
+  const now = nowSecs();
+
+  // O(1) per shared row instead of a `peers.find` scan inside the map.
+  const deviceByPeer = React.useMemo(
+    () => new Map(peers.map((p) => [p.node_id, p.device])),
+    [peers],
+  );
+
+  // A peer whose shared list could not be fetched has NO pie in the band
+  // and no rows below — identical on screen to a Mac that shared nothing.
+  // Naming the device is the only part of that the user can act on.
+  const failedDevices = React.useMemo(
+    () =>
+      Array.from(failedPeers)
+        .map((peer) => deviceByPeer.get(peer) ?? "a paired Mac")
+        .sort((a, b) => a.localeCompare(b)),
+    [failedPeers, deviceByPeer],
+  );
+
   return (
     <div className="start-page" data-testid="start-page">
+      {pies.length > 0 ? (
+        // M6: the same band markup Sky.tsx renders on macOS — role, the
+        // glaze, the two clouds, `.sky-pies` as `role="presentation"` so
+        // the tiles stay the listbox's own accessible children (Sky.tsx's
+        // own comment on that trap) — minus the tin and the plate: iOS
+        // writes nothing, so there is nothing to create and nowhere to
+        // drop a folder. Omitted entirely (not just left empty) when it
+        // would hold no pie — a bare 120px strip with nothing in it earns
+        // no place on a screen this small, and it must appear whether or
+        // not the phone has ever been paired (Received needs no peer).
+        <div
+          data-testid="ios-sky"
+          className="sky-band"
+          role="listbox"
+          aria-label="Pies"
+          onKeyDown={band.onKeyDown}
+        >
+          <div className="sky-glaze" aria-hidden />
+          <SkyClouds />
+          <div className="sky-pies" role="presentation">
+            {pies.map((pie, i) => (
+              <Pie
+                key={pie.id}
+                ref={band.setItemRef(i)}
+                pie={pie}
+                selected={pie.id === openPieId}
+                tabIndex={i === band.focusedIndex ? 0 : -1}
+                onFocus={() => band.setFocusedIndex(i)}
+                onOpen={() => onOpenPie?.(pie.id)}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       <div className="start-page-inner">
+        {/* Above the sections, not inside one: each of these explains why a
+            section below is EMPTY or why a sheet went away, so it has to be
+            readable before the reader concludes nothing arrived. */}
+        {notice ? (
+          <p className="beam-error" role="status" data-testid="ios-notice">{notice}</p>
+        ) : null}
+        {receivedError ? (
+          <p className="beam-error" role="alert" data-testid="ios-received-error">
+            {receivedError}
+          </p>
+        ) : null}
+        {failedDevices.length > 0 ? (
+          <p className="beam-error" role="alert" data-testid="ios-shared-error">
+            {`Could not read what ${failedDevices.join(", ")} is sharing.`}
+          </p>
+        ) : null}
+
         <div className="start-brand">
           <span className="start-mark" aria-hidden>V</span>
           <h1 className="start-title">Sky Pie</h1>
@@ -138,17 +230,17 @@ export default function IosStartPage({ onOpenSettings }: IosStartPageProps): Rea
               </button>
             </section>
 
-            {shared.length > 0 ? (
+            {sharedEntries.length > 0 ? (
               <section className="start-section">
                 <h2>Shared with you</h2>
                 <ul className="start-list">
-                  {shared.map((entry) => (
+                  {sharedEntries.map((entry) => (
                     <li key={`${entry.peer}:${entry.path}`}>
                       <button
                         type="button"
                         className="start-row"
                         title={`${entry.path} — from ${
-                          peers.find((p) => p.node_id === entry.peer)?.device ?? "a device"
+                          deviceByPeer.get(entry.peer) ?? "a device"
                         }`}
                         onClick={() => openShared(entry.peer, entry.path)}
                       >
@@ -161,7 +253,7 @@ export default function IosStartPage({ onOpenSettings }: IosStartPageProps): Rea
                             a path but ate the filename when it held a device
                             name. The device is in the title, and the list is
                             almost always one Mac anyway. */}
-                        <span className="start-row-dir">{formatAgo(entry.shared_at, nowSecs())}</span>
+                        <span className="start-row-dir">{formatAgo(entry.shared_at, now)}</span>
                       </button>
                     </li>
                   ))}
@@ -193,7 +285,10 @@ export default function IosStartPage({ onOpenSettings }: IosStartPageProps): Rea
               </section>
             ) : null}
 
-            {shared.length === 0 && received.length === 0 ? (
+            {/* Suppressed while `receivedError` is set: the advice below
+                sends the reader to their Mac, which is the wrong end when
+                the failure is this phone's own listing. */}
+            {sharedEntries.length === 0 && received.length === 0 && !receivedError ? (
               <p className="start-empty">
                 Nothing here yet. On your Mac, choose Share → Copy link for my
                 devices — the file shows up here — or beam a file to this phone.

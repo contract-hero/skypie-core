@@ -18,6 +18,13 @@ export interface StartPageProps {
   /** Opens the Settings modal — only used by the iOS variant's "Pair with a
    * Mac" call to action. */
   onOpenSettings?: () => void;
+  /** M6, iOS variant only: the Sky band's tap handler and the id of the pie
+   *  whose sheet is currently open, both owned by `PhoneShell.tsx`. This
+   *  component only passes them on. */
+  onOpenPie?: (id: string) => void;
+  openPieId?: string | null;
+  /** M6, iOS variant only: one line explaining a sheet that closed itself. */
+  notice?: string | null;
 }
 
 
@@ -66,6 +73,9 @@ export default function StartPage({
   onPickWorkspace,
   workspaceRoot,
   onOpenSettings,
+  onOpenPie,
+  openPieId,
+  notice,
 }: StartPageProps): React.ReactElement {
   const { isIos } = usePlatform();
   const { recents, refresh } = useRecentsContext();
@@ -80,7 +90,14 @@ export default function StartPage({
   // empty-tab surface is pairing + what Beam already delivered,
   // not a workspace/file picker built for a local tree that doesn't exist.
   if (isIos) {
-    return <IosStartPage onOpenSettings={onOpenSettings} />;
+    return (
+      <IosStartPage
+        onOpenSettings={onOpenSettings}
+        onOpenPie={onOpenPie}
+        openPieId={openPieId}
+        notice={notice}
+      />
+    );
   }
 
   return (

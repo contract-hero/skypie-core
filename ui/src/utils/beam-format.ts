@@ -54,3 +54,29 @@ export function formatAgo(then: number, now: number): string {
   if (ago < 86400) return `${Math.round(ago / 3600)} h`;
   return `${Math.round(ago / 86400)} d`;
 }
+
+/** A file row's age, e.g. "just now", "5 min ago", "3 h ago" — the one copy
+ *  shared by the desktop plate (`PiePlate.tsx`) and the phone sheet
+ *  (`PhonePieSheet.tsx`), which each carried their own identical version
+ *  before.
+ *
+ *  It lives HERE, beside `formatAgo`, because the whole reason it exists is
+ *  `formatAgo`'s own contract: that function already returns the complete
+ *  phrase "just now" for anything under 60s, so appending " ago"
+ *  unconditionally reads "just now ago". Keeping the two apart is what let
+ *  the rule be rediscovered — and re-implemented — twice.
+ *
+ *  BOTH arguments are MILLISECONDS — the unit `DerivedPieFile.mtime`
+ *  already carries — and the division to `formatAgo`'s seconds happens
+ *  inside. The signature used to take ms for the file and SECONDS for the
+ *  clock, so a caller that passed `Date.now()` (the obvious clock) read
+ *  "just now" for every row, silently. One unit per function is what makes
+ *  that unrepresentable.
+ *
+ *  `nowMs` defaults to the real clock so a render site needs no second
+ *  argument; a test passes a fixed "now" to reach the under-60s branch
+ *  deterministically. */
+export function mtimeAgo(mtimeMs: number, nowMs: number = Date.now()): string {
+  const ago = formatAgo(Math.floor(mtimeMs / 1000), Math.floor(nowMs / 1000));
+  return ago === "just now" ? ago : `${ago} ago`;
+}

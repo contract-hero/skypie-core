@@ -20,6 +20,7 @@ import { bandOrder, dropPlan, holdsFilePath, isUserPieId, pickerPathPlan, unique
 import { messageOf } from "../utils/error-message";
 import Pie from "./Pie";
 import PiePlate from "./PiePlate";
+import SkyClouds from "./SkyClouds";
 import Tooltip from "./Tooltip";
 import { useContextMenu } from "./ContextMenu";
 import type { IpcSurface } from "../ipc";
@@ -80,24 +81,6 @@ function TinGlyph(): React.ReactElement {
         strokeDasharray="3 4"
       />
       <path d="M24 16v16M16 24h16" stroke="var(--sky-ink-dim)" strokeWidth="1.3" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-/** One cumulus: three overlapping ellipses on a fixed 37×22 viewBox. The
- *  band's two clouds differ only in where CSS puts them, so this renders
- *  once and is placed twice — `className` carries the position. */
-function Cloud({ className }: { className: string }): React.ReactElement {
-  return (
-    <svg
-      className={`sky-cloud ${className}`}
-      viewBox="0 0 37 22"
-      aria-hidden
-      focusable="false"
-    >
-      <ellipse cx="10" cy="16" rx="10" ry="7" />
-      <ellipse cx="19" cy="9" rx="13" ry="9" />
-      <ellipse cx="28" cy="17" rx="9" ry="6" />
     </svg>
   );
 }
@@ -631,17 +614,13 @@ export default function Sky({
         onKeyDown={onKeyDown}
       >
         <div className="sky-glaze" aria-hidden />
-        {/* Two separate fixed-size SVGs, positioned by CSS `left` percentage
-            (22% / 71% of the band width — `.sky-cloud-1` / `.sky-cloud-2`,
-            styles.css). A single
-            SVG spanning the whole band with `preserveAspectRatio="none"`
-            used to stretch every ellipse horizontally by paneWidth/100
-            while its vertical scale stayed 1, turning each cumulus into a
-            flat smear at any pane wider than the 100-unit viewBox. Only the
-            CENTRE tracks the band width now; the
-            shapes themselves stay a fixed size at every pane width. */}
-        <Cloud className="sky-cloud-1" />
-        <Cloud className="sky-cloud-2" />
+        {/* SkyClouds.tsx: two fixed-size SVGs, positioned by CSS `left`
+            percentage (22% / 71% of the band width — `.sky-cloud-1` /
+            `.sky-cloud-2`, styles.css) — see that file's own comment for
+            why each cloud is a fixed-size SVG rather than one spanning the
+            whole band. Shared verbatim with the phone band
+            (IosStartPage.tsx, M6). */}
+        <SkyClouds />
         {/* role="presentation": the listbox's real options are this div's
             CHILDREN in the DOM, but an ARIA listbox only owns options that
             are its own accessible children — nesting them one div deeper

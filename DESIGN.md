@@ -741,7 +741,13 @@ focused tile or a cut slice.
   for reader mode's transient chrome. The band is not that: like
   `panes.sidebar_visible` moving the reading field sideways, it is a layout
   choice the user sets once and the app never toggles on its own. Reader
-  mode still strips it with the rest of the chrome.
+  mode still strips it with the rest of the chrome. The phone has no
+  toggle at all (M6, below): there `panes.sky_visible` is not read, and the
+  band's presence follows content — it shows whenever the derived Received/
+  Shared pies hold at least one file and is gone otherwise. The limit that
+  matters there is narrower than "the app never toggles on its own": the
+  band may come and go on its own, but it never moves an OPEN artifact —
+  only the phone's own start page, which is not reading chrome.
 - **A per-theme accent shade.** `--sky-focus` does the focus ring's job with
   its own value per theme (`#3b45b8` day, `#8b93e8` dusk), because
   `{colors.accent-focus}` falls under 3:1 non-text contrast on the day
@@ -852,6 +858,48 @@ plate.** Four additions, none a new departure — every color below is
   live, running app (not just read by eye) by `ui/e2e/m4.e2e.ts`'s closing
   step, which forces `<html data-theme>` and reads the computed styles
   back for both themes.
+
+**M6 — the phone band.** The iOS companion has no toolbar to toggle the
+band with, so `IosStartPage.tsx` renders it, with no toggle, at the top of
+the start page instead — SAME `.sky-band`/`.sky-glaze`/`.sky-cloud`/
+`.sky-pies` markup as the macOS band (`SkyClouds.tsx` is the two cumulus,
+shared verbatim between both), still exactly 120px and never elastic, just
+flush under the phone's own title band rather than under a toolbar. It is a
+SIBLING of `.start-page-inner`, above it, not its first child: full-bleed
+chrome belongs outside the start page's padded 560px column, and put in
+that parent it needs no negative margins or `100vw` clawback to reach the
+screen edges. The one band rule iOS overrides is the gap before the
+wordmark below it. Three
+things this milestone deliberately leaves OUT, each because the phone has
+no counterpart for what it would mean:
+
+- **No tin.** The phone writes nothing — there is no folder to feed a
+  user pie and nowhere to drop one — so its two pies are both derived
+  (`Received`, and one `Shared from <Mac>` per ONLINE paired peer),
+  never persisted, exactly like Pinned/Recent on macOS.
+- **No freshness pill.** A derived pie carries no `seen_at`, so `Pie.tsx`
+  never draws a `+N` — the same rule Pinned/Recent already follow, applied
+  here by construction (`ios-pies.ts`'s two builders leave `fresh` unset)
+  rather than a runtime check.
+- **No persistence.** `panes.sky_visible` has nothing to gate on iOS —
+  the band is either present (at least one non-empty derived pie) or
+  entirely absent, never a user-toggled posture.
+
+One more thing the phone does not inherit: the M1 rule that hides a band
+tile's own disc while its plate is open. That rule is keyed on
+`.sky-band-shell`, the wrapper that IS the plate's containing block — the
+plate is `position: absolute; top: 100%` inside it — so the rule applies
+exactly where a plate can exist, and the phone's band, which sits in no
+such wrapper, keeps its disc visible behind the sheet. Structure, not a
+`body.platform-*` class: where the band is mounted is what decides.
+
+Tapping a pie does not drop a plate — a plate assumes a pane wide enough
+to hold two columns beside the band it dropped from, which a phone is not
+— it opens a `PhonePieSheet.tsx` bottom sheet instead: the pie at 200px,
+a `labelOfWedges` readout, and a plain row list at the platform's own 44px
+tap target (`body.platform-ios .start-row`, already the phone's rule for
+every other retrieval list). No legend radiogroup, no slice filter, no
+layer tree — a phone screen has room for one list, not two panes of one.
 
 ## Known Gaps
 

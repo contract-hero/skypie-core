@@ -4,7 +4,7 @@
 // ui/e2e/README.md — macOS has no equivalent of a window screenshot here, so
 // this is the one smoke script that produces a visual artifact.
 import { evalIn, quit } from "./lib/app";
-import { launchIos } from "./lib/ios";
+import { SKIP_BUILD, launchIos } from "./lib/ios";
 
 // Arbitrary, fixed: nothing else on this machine's loopback has a reason to
 // claim it, and a fixed port means a stuck previous run is easy to spot
@@ -12,7 +12,7 @@ import { launchIos } from "./lib/ios";
 const E2E_PORT = 17_845;
 
 async function main(): Promise<void> {
-  const app = await launchIos({ port: E2E_PORT });
+  const app = await launchIos({ port: E2E_PORT, skipBuild: SKIP_BUILD });
   try {
     const title = await evalIn(app, "document.title");
     if (typeof title !== "string" || title.length === 0) {

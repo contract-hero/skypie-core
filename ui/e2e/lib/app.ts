@@ -353,6 +353,53 @@ export async function openViaQuickOpen(app: AppHandle, absPath: string): Promise
   await waitFor(app, `document.querySelector(".tab.active .tab-label") !== null`, 10_000);
 }
 
+/**
+ * Activate the phone Tabs sheet's row whose visible name is `label` — used
+ * to get back to the empty "New tab" (so the start page and its Sky band
+ * remount) and to bring a file's tab back to the front.
+ *
+ * Here rather than in one scenario file: this and
+ * `clickButtonByAriaLabelPrefix` below were written per scenario, so the
+ * "helpers in `lib/` are the whole API" rule in README.md was true of
+ * everything except the two helpers a phone scenario actually needs.
+ */
+export async function activateTabByLabel(app: AppHandle, label: string): Promise<void> {
+  const js = `(function(){
+    var rows = Array.from(document.querySelectorAll(".phone-tab-row"));
+    var row = rows.find(function(r){
+      var el = r.querySelector(".phone-tab-row-name");
+      return el && el.textContent === ${JSON.stringify(label)};
+    });
+    if (!row) return false;
+    row.querySelector(".phone-tab-row-label").click();
+    return true;
+  })()`;
+  const ok = await evalIn(app, js);
+  if (!ok) throw new Error(`activateTabByLabel: no tab row labeled ${JSON.stringify(label)}`);
+}
+
+/** `element.click()` via a JS predicate rather than a CSS selector — for a
+ *  button whose `aria-label` carries a live count or an extra "(N open)",
+ *  and so cannot be matched by an exact attribute selector. */
+export async function clickButtonByAriaLabelPrefix(app: AppHandle, prefix: string): Promise<void> {
+  const js = `(function(){
+    var buttons = Array.from(document.querySelectorAll("button"));
+    var btn = buttons.find(function(b){
+      var label = b.getAttribute("aria-label") || "";
+      return label.indexOf(${JSON.stringify(prefix)}) === 0;
+    });
+    if (!btn) return false;
+    btn.click();
+    return true;
+  })()`;
+  const ok = await evalIn(app, js);
+  if (!ok) {
+    throw new Error(
+      `clickButtonByAriaLabelPrefix: no button with aria-label starting ${JSON.stringify(prefix)}`,
+    );
+  }
+}
+
 /** Stop the app. Desktop kills the child process; `launchIos`'s handle
  *  terminates the simulator process instead — each `AppHandle` knows its
  *  own shutdown, this just calls it. */

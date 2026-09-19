@@ -17,6 +17,7 @@ import {
 } from "./pies";
 import type { Pie, PieCensus } from "../ipc";
 import type { DerivedPie } from "./derived-pies";
+import { basename } from "../utils/path";
 
 function pie(overrides: Partial<Pie> = {}): Pie {
   return {
@@ -38,8 +39,8 @@ describe("pieFiles / toDerivedPie", () => {
       ],
     });
     expect(pieFiles(p)).toEqual([
-      { path: "/w/a.html", kind: "html", mtime: 1000 },
-      { path: "/w/b.json", kind: "data", mtime: 2000 },
+      { path: "/w/a.html", name: basename("/w/a.html"), kind: "html", mtime: 1000 },
+      { path: "/w/b.json", name: basename("/w/b.json"), kind: "data", mtime: 2000 },
     ]);
   });
 
@@ -53,7 +54,7 @@ describe("pieFiles / toDerivedPie", () => {
     expect(toDerivedPie(p)).toEqual({
       id: "abc",
       name: "Pricing",
-      files: [{ path: "/w/a.md", kind: "md", mtime: 5 }],
+      files: [{ path: "/w/a.md", name: basename("/w/a.md"), kind: "md", mtime: 5 }],
     });
   });
 
@@ -72,7 +73,7 @@ describe("pieFiles / toDerivedPie", () => {
       truncated: false,
     };
     const derived = toDerivedPie(p, c);
-    expect(derived.files).toEqual([{ path: "/w/a.md", kind: "md", mtime: 999, folder: undefined }]);
+    expect(derived.files).toEqual([{ path: "/w/a.md", name: basename("/w/a.md"), kind: "md", mtime: 999, folder: undefined }]);
     expect(derived.census).toBe(c);
   });
 
@@ -326,15 +327,15 @@ describe("holdsPath is an exact compare", () => {
 describe("pieHoldingPath", () => {
   it("finds the user pie whose files include the path exactly", () => {
     const pies: DerivedPie[] = [
-      { id: "builtin:pinned", name: "Pinned", files: [{ path: "/w/a.md", kind: "md", mtime: 0 }] },
-      { id: "u1", name: "Pricing", files: [{ path: "/w/b.html", kind: "html", mtime: 0 }] },
+      { id: "builtin:pinned", name: "Pinned", files: [{ path: "/w/a.md", name: basename("/w/a.md"), kind: "md", mtime: 0 }] },
+      { id: "u1", name: "Pricing", files: [{ path: "/w/b.html", name: basename("/w/b.html"), kind: "html", mtime: 0 }] },
     ];
     expect(pieHoldingPath(pies, "/w/b.html")?.id).toBe("u1");
   });
 
   it("never matches a built-in pie even when its own files include the path", () => {
     const pies: DerivedPie[] = [
-      { id: "builtin:pinned", name: "Pinned", files: [{ path: "/w/a.md", kind: "md", mtime: 0 }] },
+      { id: "builtin:pinned", name: "Pinned", files: [{ path: "/w/a.md", name: basename("/w/a.md"), kind: "md", mtime: 0 }] },
     ];
     expect(pieHoldingPath(pies, "/w/a.md")).toBeNull();
   });
@@ -346,7 +347,7 @@ describe("pieHoldingPath", () => {
 });
 
 describe("revealRoute", () => {
-  const holder: DerivedPie[] = [{ id: "u1", name: "Pricing", files: [{ path: "/w/a.html", kind: "html", mtime: 0 }] }];
+  const holder: DerivedPie[] = [{ id: "u1", name: "Pricing", files: [{ path: "/w/a.html", name: basename("/w/a.html"), kind: "html", mtime: 0 }] }];
 
   it("reveals in the tree when the sidebar is visible and it's not reader mode", () => {
     expect(revealRoute({ sidebarVisible: true, readerMode: false }, holder, "/w/a.html")).toBe("tree");
@@ -384,7 +385,7 @@ describe("revealRoute", () => {
     // also the one place where the reveal's scope differs from the band's
     // active-file MARK, which does include the built-ins.
     const builtinOnly: DerivedPie[] = [
-      { id: "builtin:pinned", name: "Pinned", files: [{ path: "/w/a.html", kind: "html", mtime: 0 }] },
+      { id: "builtin:pinned", name: "Pinned", files: [{ path: "/w/a.html", name: basename("/w/a.html"), kind: "html", mtime: 0 }] },
     ];
     expect(revealRoute({ sidebarVisible: false, readerMode: false }, builtinOnly, "/w/a.html")).toBe(
       "show-sidebar",

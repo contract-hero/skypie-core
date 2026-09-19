@@ -2087,6 +2087,27 @@ body.platform-ios .start-row {
   min-height: var(--tap-min);
 }
 
+/* ── M6: the phone Sky band ("Sky band", DESIGN.md — the M6 paragraph) ───
+   IosStartPage.tsx renders the SAME .sky-band/.sky-glaze/.sky-cloud/
+   .sky-pies/.sky-pie markup Sky.tsx uses on macOS (M1) — no new class, no
+   new departure, so every rule under "Sky band" below (height, glaze,
+   crust, wedge tones, --sky-focus) already applies unchanged, the 120px
+   height included.
+
+   The band is a SIBLING of .start-page-inner, above it, rather than its
+   first child: it is full-bleed chrome sitting straight under
+   .phone-titlebar, while everything below it belongs in the start page's
+   own padded, 560px-max column. It used to be inside that column and then
+   pulled back out with `width: 100vw`, two negative 50vw side margins and
+   a negative top margin — the same layout expressed twice, in two units,
+   where either copy could drift from the other. Put in the right parent it
+   needs no clawback at all, and the glaze meets the title bar because
+   nothing is between them. All that is left is the gap before the wordmark
+   that follows. */
+body.platform-ios .sky-band {
+  margin-bottom: var(--space-5);
+}
+
 .phone-shell {
   position: relative; /* anchor for the floating .app-notice toast */
   display: flex;
@@ -2253,6 +2274,25 @@ body.platform-ios .start-row {
    takes the taller stop. The scrim stays visible above it — the sheet is
    still a sheet, not a second screen. */
 .phone-sheet-tall { max-height: 92%; }
+
+/* M6: PhonePieSheet's own block — the 200px portrait pie plus its one-line
+   readout, above the file rows. Same shape as the desktop plate's left
+   rail (.pie-plate-left/.pie-plate-readout) at phone width: no new token,
+   no new departure, only the chrome-level spacing/type tokens every other
+   sheet already uses. */
+.phone-sheet-pie {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) 0 var(--space-4);
+}
+.phone-sheet-pie-readout {
+  font-family: var(--font-mono);
+  font-size: var(--text-body-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
 
 /* Settings on the phone: the same panel as the desktop, at thumb scale.
    Nothing here changes what the panel says, only what it takes to hit. */
@@ -2992,8 +3032,19 @@ pre[data-fallback] .line::before {
    scale, so showing both at once would double it (spec section 4,
    "Motion": "The band disc hides for the duration and reappears on
    close"). Scoped to `.sky-pies` so it never touches the plate's own
-   portrait disc, which also carries `.sky-pie-disc`. */
-.sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidden; }
+   portrait disc, which also carries `.sky-pie-disc`.
+   Scoped to `.sky-band-shell` as well, because that wrapper is exactly
+   what makes the doubling possible: it is the containing block the plate's
+   `position: absolute; top: 100%` drops out of (Sky.tsx), so a band inside
+   one has a plate and a band outside one does not. The phone's band is not
+   in one, and its PhonePieSheet.tsx is a bottom sheet rather than a plate
+   scaling out of the tapped tile's slot — there is no second copy of the
+   disc to avoid, so hiding this one only made the tapped tile go blank
+   behind the sheet (review: styles.css:3005, major). Keying on the
+   STRUCTURE that creates the problem, rather than on `body.platform-macos`,
+   means a future band gets the right behaviour from where it is mounted
+   rather than from which OS is running. */
+.sky-band-shell .sky-pies .sky-pie.selected .sky-pie-disc { visibility: hidden; }
 .sky-pie-label {
   max-width: 96px;
   overflow: hidden;
@@ -3063,8 +3114,9 @@ pre[data-fallback] .line::before {
    which the M1 budget does not carry; a pixel-exact reuse of the clicked
    tile's own rect is left for a later pass if the approximation reads
    wrong in the demo. The band's own disc for this pie is hidden for as
-   long as the plate stays open (`.sky-pies .sky-pie.selected .sky-pie-disc`
-   above), so this is the only copy of the disc on screen while it runs. */
+   long as the plate stays open (`.sky-band-shell .sky-pies
+   .sky-pie.selected .sky-pie-disc` above), so this is the only copy of the
+   disc on screen while it runs. */
 .pie-plate-left .sky-pie-disc {
   transform-origin: top center;
   animation: pie-plate-disc-in 240ms var(--ease-emphasis);

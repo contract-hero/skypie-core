@@ -104,8 +104,12 @@ export type PieLayer =
 /** Newest file first — the agent's last write on top, the same order the
  *  flat M1/M2 layer list used. A `missing: true` row stands for a member
  *  with no file behind it and therefore no meaningful mtime, so those sink
- *  to the bottom of their layer instead of sorting as "1970". */
-function byRow(a: DerivedPieFile, b: DerivedPieFile): number {
+ *  to the bottom of their layer instead of sorting as "1970".
+ *
+ *  Exported so `ios-pies.ts`'s `pieRows` orders the phone sheet's rows with
+ *  THIS comparator rather than a second `b.mtime - a.mtime` of its own: one
+ *  row order for every pie surface, on either platform. */
+export function byRow(a: DerivedPieFile, b: DerivedPieFile): number {
   if (Boolean(a.missing) !== Boolean(b.missing)) return a.missing ? 1 : -1;
   return b.mtime - a.mtime;
 }

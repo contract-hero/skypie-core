@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   groupByWedge,
+  isUserPieId,
   pinnedPie,
   recentPie,
   shareLabel,
@@ -10,13 +11,14 @@ import {
 import { BEARINGS } from "../render/kind";
 import type { BookmarkEntry, RecentEntry } from "../ipc";
 import type { DerivedPieFile } from "./derived-pies";
+import { basename } from "../utils/path";
 
 describe("pinnedPie", () => {
   it("converts bookmarked_at seconds to ms", () => {
     const bookmarks: BookmarkEntry[] = [{ path: "/w/a.html", bookmarked_at: 1_700_000_000 }];
     const pie = pinnedPie(bookmarks);
     expect(pie.id).toBe("builtin:pinned");
-    expect(pie.files).toEqual([{ path: "/w/a.html", kind: "html", mtime: 1_700_000_000_000 }]);
+    expect(pie.files).toEqual([{ path: "/w/a.html", name: "a.html", kind: "html", mtime: 1_700_000_000_000 }]);
   });
 
   it("skips a skypie-remote:// bookmark — the star bookmarks whatever the tab holds", () => {
@@ -33,7 +35,7 @@ describe("recentPie", () => {
     const recents: RecentEntry[] = [{ path: "/w/a.md", opened_at: 1_700_000_100 }];
     const pie = recentPie(recents);
     expect(pie.id).toBe("builtin:recent");
-    expect(pie.files).toEqual([{ path: "/w/a.md", kind: "md", mtime: 1_700_000_100_000 }]);
+    expect(pie.files).toEqual([{ path: "/w/a.md", name: "a.md", kind: "md", mtime: 1_700_000_100_000 }]);
   });
 
   it("skips a skypie-remote:// address — useOpenFile pushes those to recents too", () => {
@@ -50,8 +52,8 @@ describe("wedgesOf", () => {
   it("merges a kind under 4% into other", () => {
     // 3 of 100 = 3% — under the threshold, folds into "other".
     const files = [
-      ...Array.from({ length: 97 }, (_, i) => ({ path: `/f${i}.html`, kind: "html" as const, mtime: 0 })),
-      ...Array.from({ length: 3 }, (_, i) => ({ path: `/d${i}.json`, kind: "data" as const, mtime: 0 })),
+      ...Array.from({ length: 97 }, (_, i) => ({ path: `/f${i}.html`, name: basename(`/f${i}.html`), kind: "html" as const, mtime: 0 })),
+      ...Array.from({ length: 3 }, (_, i) => ({ path: `/d${i}.json`, name: basename(`/d${i}.json`), kind: "data" as const, mtime: 0 })),
     ];
     const wedges = wedgesOf(files);
     expect(wedges.find((w) => w.kind === "data")).toBeUndefined();
@@ -62,8 +64,8 @@ describe("wedgesOf", () => {
   it("keeps a kind AT exactly 4% as its own wedge — 'under 4%' is strict", () => {
     // 4 of 100 = exactly 4%.
     const files = [
-      ...Array.from({ length: 96 }, (_, i) => ({ path: `/f${i}.html`, kind: "html" as const, mtime: 0 })),
-      ...Array.from({ length: 4 }, (_, i) => ({ path: `/d${i}.json`, kind: "data" as const, mtime: 0 })),
+      ...Array.from({ length: 96 }, (_, i) => ({ path: `/f${i}.html`, name: basename(`/f${i}.html`), kind: "html" as const, mtime: 0 })),
+      ...Array.from({ length: 4 }, (_, i) => ({ path: `/d${i}.json`, name: basename(`/d${i}.json`), kind: "data" as const, mtime: 0 })),
     ];
     const wedges = wedgesOf(files);
     const data = wedges.find((w) => w.kind === "data");
@@ -73,9 +75,9 @@ describe("wedgesOf", () => {
 
   it("returns wedges in BEARINGS order regardless of input order", () => {
     const files = [
-      { path: "/a.json", kind: "data" as const, mtime: 0 },
-      { path: "/a.html", kind: "html" as const, mtime: 0 },
-      { path: "/a.txt", kind: "text" as const, mtime: 0 },
+      { path: "/a.json", name: basename("/a.json"), kind: "data" as const, mtime: 0 },
+      { path: "/a.html", name: basename("/a.html"), kind: "html" as const, mtime: 0 },
+      { path: "/a.txt", name: basename("/a.txt"), kind: "text" as const, mtime: 0 },
     ];
     const wedges = wedgesOf(files);
     const order = wedges.map((w) => w.kind);
@@ -96,11 +98,13 @@ describe("groupByWedge", () => {
   it("folds a haze-merged kind's files into the 'other' group", () => {
     const html: DerivedPieFile[] = Array.from({ length: 97 }, (_, i) => ({
       path: `/f${i}.html`,
+      name: basename(`/f${i}.html`),
       kind: "html",
       mtime: 0,
     }));
     const data: DerivedPieFile[] = Array.from({ length: 3 }, (_, i) => ({
       path: `/d${i}.json`,
+      name: basename(`/d${i}.json`),
       kind: "data",
       mtime: 0,
     }));
@@ -111,11 +115,11 @@ describe("groupByWedge", () => {
 
   it("keeps a genuine 'other' group under 4% as its own entry, not double-merged", () => {
     const files: DerivedPieFile[] = [
-      ...Array.from({ length: 99 }, (_, i) => ({ path: `/f${i}.html`, kind: "html" as const, mtime: 0 })),
-      { path: "/x.bin", kind: "other", mtime: 0 },
+      ...Array.from({ length: 99 }, (_, i) => ({ path: `/f${i}.html`, name: basename(`/f${i}.html`), kind: "html" as const, mtime: 0 })),
+      { path: "/x.bin", name: basename("/x.bin"), kind: "other", mtime: 0 },
     ];
     const groups = groupByWedge(files);
-    expect(groups.get("other")).toEqual([{ path: "/x.bin", kind: "other", mtime: 0 }]);
+    expect(groups.get("other")).toEqual([{ path: "/x.bin", name: basename("/x.bin"), kind: "other", mtime: 0 }]);
   });
 
   it("returns an empty map for empty input", () => {
@@ -127,10 +131,10 @@ describe("groupByWedge", () => {
     // over the groups it was handed, so the disc can never be over- or
     // under-filled by a caller's stale count.
     const files: DerivedPieFile[] = [
-      { path: "/a.html", kind: "html", mtime: 0 },
-      { path: "/b.html", kind: "html", mtime: 0 },
-      { path: "/c.md", kind: "md", mtime: 0 },
-      { path: "/d.md", kind: "md", mtime: 0 },
+      { path: "/a.html", name: basename("/a.html"), kind: "html", mtime: 0 },
+      { path: "/b.html", name: basename("/b.html"), kind: "html", mtime: 0 },
+      { path: "/c.md", name: basename("/c.md"), kind: "md", mtime: 0 },
+      { path: "/d.md", name: basename("/d.md"), kind: "md", mtime: 0 },
     ];
     const wedges = wedgesOfGroups(groupByWedge(files));
     expect(wedges.map((w) => w.share)).toEqual([0.5, 0.5]);
@@ -142,7 +146,7 @@ describe("groupByWedge", () => {
   });
 
   it("does not alias the same map instance across calls", () => {
-    const files: DerivedPieFile[] = [{ path: "/a.html", kind: "html", mtime: 0 }];
+    const files: DerivedPieFile[] = [{ path: "/a.html", name: basename("/a.html"), kind: "html", mtime: 0 }];
     expect(groupByWedge(files)).not.toBe(groupByWedge(files));
   });
 });
@@ -150,14 +154,29 @@ describe("groupByWedge", () => {
 describe("shareLabel", () => {
   it("joins wedges as 'kind pct%' in BEARINGS order", () => {
     const files: DerivedPieFile[] = [
-      { path: "/a.html", kind: "html", mtime: 0 },
-      { path: "/b.html", kind: "html", mtime: 0 },
-      { path: "/c.md", kind: "md", mtime: 0 },
+      { path: "/a.html", name: basename("/a.html"), kind: "html", mtime: 0 },
+      { path: "/b.html", name: basename("/b.html"), kind: "html", mtime: 0 },
+      { path: "/c.md", name: basename("/c.md"), kind: "md", mtime: 0 },
     ];
     expect(shareLabel(files)).toBe("html 67% · md 33%");
   });
 
   it("reads 'No files' for an empty pie", () => {
     expect(shareLabel([])).toBe("No files");
+  });
+});
+
+describe("isUserPieId", () => {
+  it("is false for every built-in id, including M6's phone-band family", () => {
+    // A literal two-id test used to answer TRUE for the last two, which
+    // would let a shared band accept drops on Received.
+    expect(isUserPieId("builtin:pinned")).toBe(false);
+    expect(isUserPieId("builtin:recent")).toBe(false);
+    expect(isUserPieId("builtin:received")).toBe(false);
+    expect(isUserPieId("builtin:shared:k51qzi5uqu5d")).toBe(false);
+  });
+
+  it("is true for a stored pie's uuid", () => {
+    expect(isUserPieId("0192f3c4-5d6e-7f80-9123-456789abcdef")).toBe(true);
   });
 });
