@@ -44,12 +44,15 @@ export function guessPlatformOs(): PlatformOs {
 const PLATFORM_OVERRIDE_KEY = "skypie.platformOverride";
 
 /**
- * The e2e seam (M6): the desktop harness (`ui/e2e/`) drives the REAL app,
- * but has no other lever to reach the phone tree — there is no
- * `platform_info` override on a debug build, and the harness does not run
- * on an actual iPhone (`e2e:ios-smoke` only reads `document.title` and
- * takes a screenshot). `localStorage` is the one channel `evalIn` can
- * reach before a reload re-mounts `PlatformProvider`.
+ * The e2e seam (M6). NO SCENARIO USES IT TODAY: `m6.e2e.ts` drives the real
+ * simulator build, whose WKWebView reports an iPhone UA and whose compiled
+ * `platform_info` says `ios`, so it needs no override at all. This stays as
+ * the ONE lever a future DESKTOP-driven phone scenario would have — the
+ * desktop harness cannot reach the phone tree otherwise: there is no
+ * `platform_info` override on a debug build, and it does not run on an
+ * actual iPhone (`e2e:ios-smoke` only reads `document.title` and takes a
+ * screenshot). `localStorage` is the one channel `evalIn` can reach before
+ * a reload re-mounts `PlatformProvider`.
  *
  * Returns a value ONLY under `import.meta.env.DEV`: a release build
  * (`vite build`'s default, production mode) reads nothing here, so a stray
@@ -108,9 +111,10 @@ export function PlatformProvider({
 }): React.ReactElement {
   // The UA guess covers the first paint; the probe below is authoritative.
   // Without it every consumer renders the macOS tree once on the phone.
-  // `platformOverride()` (M6, dev-only) wins over BOTH: the e2e harness has
-  // no iPhone UA and no `platform_info` override to lean on, so it flips
-  // this via `localStorage` and reloads instead.
+  // `platformOverride()` (M6, dev-only) wins over BOTH: a desktop-driven
+  // phone scenario would have no iPhone UA and no `platform_info` override
+  // to lean on, so it would flip this via `localStorage` and reload. No
+  // scenario does that today — see the function's own comment.
   const [os, setOs] = React.useState<PlatformOs>(() => platformOverride() ?? guessPlatformOs());
 
   React.useEffect(() => {

@@ -10,12 +10,12 @@
 // Shared pie's members ARE `skypie-remote://peer/path` addresses by
 // design, so that guard would empty the pie instead of building it. This
 // file reuses derived-pies.ts's TYPES (`DerivedPie`/`DerivedPieFile`) and
-// its pure wedge helpers (`wedgesOf`/`groupByWedge`/`shareLabel`, consumed
+// its pure wedge helpers (`wedgesOf`/`groupByWedge`/`labelOfWedges`, consumed
 // by `Pie.tsx`/`PhonePieSheet.tsx` unchanged) — never its two pie BUILDERS.
-import type { BeamReceivedEntry, SharedEntry } from "../ipc";
+import type { BeamReceivedEntry, RemotePeer, SharedEntry } from "../ipc";
 import { kindOf } from "../render/kind";
 import { formatRemoteAddress } from "../utils/remote-address";
-import { secsToMs } from "./derived-pies";
+import { BUILTIN_RECEIVED_ID, secsToMs, sharedPieId } from "./derived-pies";
 import type { DerivedPie, DerivedPieFile } from "./derived-pies";
 import { byRow } from "./pie-census";
 
@@ -60,7 +60,7 @@ function pieOf<E extends { name: string }>(
  *  `received/` tree. */
 export function receivedPie(entries: BeamReceivedEntry[]): DerivedPie {
   return pieOf(
-    "builtin:received",
+    BUILTIN_RECEIVED_ID,
     "Received",
     entries,
     (e) => e.path,
@@ -78,7 +78,7 @@ export function receivedPie(entries: BeamReceivedEntry[]): DerivedPie {
  *  comment). */
 export function sharedPie(peer: string, device: string, entries: SharedEntry[]): DerivedPie {
   return pieOf(
-    `builtin:shared:${peer}`,
+    sharedPieId(peer),
     `Shared from ${device}`,
     entries,
     (e) => formatRemoteAddress(peer, e.path),
@@ -103,6 +103,48 @@ export interface IosSharedSource {
   peer: string;
   device: string;
   entries: SharedEntry[];
+}
+
+/** What each online peer has offered this phone, keyed by node id. A RECORD
+ *  rather than an array: one peer's slot is written without reading any
+ *  other's, which is what lets one device's fetch land — or one device drop
+ *  off — without disturbing the rest. */
+export type SharedByPeer = Record<string, SharedEntry[]>;
+
+/** One peer's fetch result written into the map. REPLACES that peer's array
+ *  (a second fetch for the same device must not append its list twice) and
+ *  leaves every other peer's array identical BY REFERENCE, so a neighbour's
+ *  pie is not rebuilt. Pure, and exported so that guarantee is testable —
+ *  it lives inside a `setShared` updater otherwise, where `ui/` (no jsdom)
+ *  cannot reach it. */
+export function withPeerEntries(
+  prev: SharedByPeer,
+  peer: string,
+  entries: SharedEntry[],
+): SharedByPeer {
+  return { ...prev, [peer]: entries };
+}
+
+/** One peer dropped. Returns `prev` ITSELF when the peer is not in the map,
+ *  so an unmount for a device that never answered schedules no re-render. */
+export function withoutPeer(prev: SharedByPeer, peer: string): SharedByPeer {
+  if (!(peer in prev)) return prev;
+  const next = { ...prev };
+  delete next[peer];
+  return next;
+}
+
+/** The `iosPies` input, resolved from the fetched map plus the paired-device
+ *  list. A peer absent from `peers` is DROPPED rather than labelled with its
+ *  raw node id: that pairing is gone, and a pie titled "Shared from
+ *  k51qzi5u…" names nothing a person recognises. This is reachable for the
+ *  render between a peer leaving `peers` and its fetch slot being cleaned
+ *  up. */
+export function sharedSourcesOf(shared: SharedByPeer, peers: RemotePeer[]): IosSharedSource[] {
+  const deviceOf = new Map(peers.map((p) => [p.node_id, p.device]));
+  return Object.entries(shared)
+    .filter(([peer]) => deviceOf.has(peer))
+    .map(([peer, entries]) => ({ peer, device: deviceOf.get(peer)!, entries }));
 }
 
 /**

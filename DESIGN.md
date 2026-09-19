@@ -887,15 +887,16 @@ no counterpart for what it would mean:
 
 One more thing the phone does not inherit: the M1 rule that hides a band
 tile's own disc while its plate is open. That rule is keyed on
-`.sky-band-shell`, the wrapper whose containing block the plate drops out
-of — so it applies exactly where a plate can exist, and the phone's band,
-which is not in one, keeps its disc visible behind the sheet. Structure,
-not a `body.platform-*` class: where the band is mounted is what decides.
+`.sky-band-shell`, the wrapper that IS the plate's containing block — the
+plate is `position: absolute; top: 100%` inside it — so the rule applies
+exactly where a plate can exist, and the phone's band, which sits in no
+such wrapper, keeps its disc visible behind the sheet. Structure, not a
+`body.platform-*` class: where the band is mounted is what decides.
 
 Tapping a pie does not drop a plate — a plate assumes a pane wide enough
 to hold two columns beside the band it dropped from, which a phone is not
 — it opens a `PhonePieSheet.tsx` bottom sheet instead: the pie at 200px,
-a `shareLabel` readout, and a plain row list at the platform's own 44px
+a `labelOfWedges` readout, and a plain row list at the platform's own 44px
 tap target (`body.platform-ios .start-row`, already the phone's rule for
 every other retrieval list). No legend radiogroup, no slice filter, no
 layer tree — a phone screen has room for one list, not two panes of one.

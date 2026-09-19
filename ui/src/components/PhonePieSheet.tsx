@@ -16,7 +16,7 @@ import { labelOfWedges, wedgesOf } from "../state/derived-pies";
 import type { DerivedPieFile } from "../state/derived-pies";
 import { pieRows } from "../state/ios-pies";
 import { useIosPies } from "../state/ios-pies-context";
-import { mtimeAgo, nowSecs } from "../utils/beam-format";
+import { mtimeAgo } from "../utils/beam-format";
 import { useRovingFocus } from "../hooks/useRovingFocus";
 import { useTabsDispatch } from "../state/TabsProvider";
 
@@ -25,7 +25,10 @@ export interface PhonePieSheetProps {
    *  list, never handed in as a snapshotted object: a beam landing while
    *  this sheet is open has to change what it shows, with no re-tap. */
   pieId: string;
-  onClose: () => void;
+  /** Dismisses the sheet. A `notice` argument means the sheet dismissed
+   *  ITSELF rather than the user dismissing it — the start page renders it
+   *  as one line, so the disappearance is explained instead of silent. */
+  onClose: (notice?: string) => void;
 }
 
 export default function PhonePieSheet({
@@ -43,17 +46,15 @@ export default function PhonePieSheet({
 
   // Grouped ONCE for this render, then handed to both consumers. `Pie`
   // groups `pie.files` itself when no `wedges` prop arrives, and the readout
-  // (`shareLabel`) grouped the identical list a second time — two full
+  // (`labelOfWedges`) grouped the identical list a second time — two full
   // passes over every file, per render, for one disc and one string.
   const wedges = React.useMemo(() => wedgesOf(pie?.files ?? []), [pie]);
 
-  // M6 review (major): the list declared role="listbox"/role="option" but
-  // implemented no roving tabindex and no arrow-key handling — every row
-  // stayed in the tab order and ArrowUp/ArrowDown/Home/End did nothing.
-  // Spec line 154 says the layer list is the SAME on iOS as on macOS, and
-  // spec line 134 defines that as role="listbox", roving tabindex,
-  // arrow/Home/End. No `onEscape`: Escape inside a sheet belongs to the
-  // sheet, which closes itself.
+  // The list declares role="listbox"/role="option", so it owes the listbox
+  // keyboard contract: a roving tabindex plus arrow/Home/End. The spec's
+  // iOS carve-out keeps the layer list the SAME on both platforms, and
+  // defines that list as exactly this contract. No `onEscape`: Escape
+  // inside a sheet belongs to the sheet, which closes itself.
   const list = useRovingFocus({ count: rows.length, orientation: "vertical" });
 
   const openRow = (file: DerivedPieFile): void => {
@@ -64,23 +65,35 @@ export default function PhonePieSheet({
     // (review: PhonePieSheet.tsx:51, minor), so this calls it directly
     // rather than branching on `isRemoteAddress` to reach it.
     dispatch({ type: "FOCUS_OR_OPEN", path: file.path, external: true });
-    // Spec section 8 / the M6 brief: a tap opens the file AND closes the
-    // sheet, the same "click closes the plate" convention PiePlate.tsx's
-    // own row click uses on macOS.
+    // The M6 brief: a tap opens the file AND closes the sheet, the same
+    // "click closes the plate" convention PiePlate.tsx's own row click uses
+    // on macOS.
     onClose();
   };
 
   // The pie went out from under the open sheet — its last beam/offer is
-  // gone, or the peer that held it dropped offline. Rendering nothing IS the
-  // whole guard: there is no stale copy to clamp, because this component
-  // never took one.
+  // gone, or the peer that held it dropped offline. Rendering nothing is
+  // only half the answer: `PhoneShell` would still hold `{ kind: "pie", id }`,
+  // the band would still mark a tile selected, focus would fall to `<body>`,
+  // and a second tap would show nothing with no explanation. So the sheet
+  // CLOSES itself and says why, once the list has actually loaded (an empty
+  // `pies` is the pre-load state, not a vanished pie).
+  const gone = pies.length > 0 && !pie;
+  React.useEffect(() => {
+    if (!gone) return;
+    console.warn("skypie: pie sheet closed, its pie is no longer in the band", { pieId });
+    onClose("This pie is no longer available.");
+  }, [gone, pieId, onClose]);
+
   if (!pie) return null;
 
-  // One clock for every row in this pass, rather than a `Date.now()` per row.
-  const now = nowSecs();
+  // One clock for every row in this pass, rather than a `Date.now()` per
+  // row. Milliseconds, the unit `mtimeAgo` and `DerivedPieFile.mtime` both
+  // speak.
+  const nowMs = Date.now();
 
   return (
-    <PhoneSheet label={pie.name} title={pie.name} tall onClose={onClose}>
+    <PhoneSheet label={pie.name} title={pie.name} tall onClose={() => onClose()}>
       <div className="phone-sheet-pie">
         <Pie pie={pie} size={200} interactive={false} wedges={wedges} />
         <div className="phone-sheet-pie-readout">{labelOfWedges(wedges)}</div>
@@ -107,7 +120,7 @@ export default function PhonePieSheet({
                 landed path can carry a `-2`/`-3` collision suffix that
                 `basename(file.path)` would surface instead. */}
             <span className="start-row-name">{file.name}</span>
-            <span className="start-row-mtime">{mtimeAgo(file.mtime, now)}</span>
+            <span className="start-row-mtime">{mtimeAgo(file.mtime, nowMs)}</span>
           </button>
         ))}
       </div>

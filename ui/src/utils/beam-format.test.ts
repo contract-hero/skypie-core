@@ -55,11 +55,11 @@ describe("formatAgo", () => {
 });
 
 // `mtimeAgo` was the same six lines in PiePlate.tsx (the desktop plate) and
-// ios-pies.ts (the phone sheet), each with its own test. One function beside
-// `formatAgo`, whose "just now" contract is the only reason it exists, and
-// one test file.
+// PhonePieSheet.tsx (the phone sheet), each with its own test. One function
+// beside `formatAgo`, whose "just now" contract is the only reason it
+// exists, and one test file. Both arguments are MILLISECONDS.
 describe("mtimeAgo", () => {
-  const now = 1_700_000_100;
+  const now = 1_700_000_100_000;
 
   it("says 'just now' without appending ' ago'", () => {
     expect(mtimeAgo(1_700_000_100_000, now)).toBe("just now");
@@ -73,8 +73,14 @@ describe("mtimeAgo", () => {
 
   it("appends ' ago' to every longer phrase too", () => {
     expect(mtimeAgo(1_700_000_100_000 - 5 * 60_000, now)).toBe("5 min ago");
-    expect(mtimeAgo(1_700_000_000_000, 1_700_010_000)).toBe("3 h ago");
+    expect(mtimeAgo(1_700_000_000_000, 1_700_010_000_000)).toBe("3 h ago");
     expect(mtimeAgo(1_700_000_100_000 - 2 * 86_400_000, now)).toBe("2 d ago");
+  });
+
+  it("reads the clock in milliseconds, the same unit as the file's mtime", () => {
+    // The old mixed-unit signature answered "just now" here, because a
+    // millisecond clock read as seconds is ~54_000 years in the future.
+    expect(mtimeAgo(1_700_000_100_000 - 5 * 60_000, Date.now())).not.toBe("just now");
   });
 
   it("defaults to the real clock, so a render site passes no second argument", () => {

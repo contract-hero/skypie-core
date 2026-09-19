@@ -166,7 +166,35 @@ async function main(): Promise<void> {
       10_000,
     );
     await waitFor(app, `document.querySelector(".tab-view")?.style.pointerEvents === "none"`, 10_000);
-    console.log("ok: clicking Recent drops the plate with a pie, a readout and legend rows");
+    // The selected band tile's own disc HIDES while its plate is open: the
+    // plate's portrait disc animates out of that slot, so two discs on
+    // screen at once would double it. The rule is keyed on `.sky-band-shell`
+    // rather than on an OS class (styles.css), and the phone's mirror of
+    // this assertion (m6 checkpoint 6) requires the opposite — the phone's
+    // band is not in a shell, so its disc stays visible. Asserting both ends
+    // is what keeps that narrowed selector honest.
+    const discFacts = (await evalIn(
+      app,
+      `(function(){
+        var selected = document.querySelector('.sky-band [data-pie-id="builtin:recent"] .sky-pie-disc');
+        var other = document.querySelector('.sky-band [data-pie-id="builtin:pinned"] .sky-pie-disc');
+        return {
+          selected: selected ? getComputedStyle(selected).visibility : null,
+          other: other ? getComputedStyle(other).visibility : null,
+        };
+      })()`,
+    )) as { selected: string | null; other: string | null };
+    if (discFacts.selected !== "hidden") {
+      throw new Error(
+        `expected the selected band tile's disc to be visibility: hidden while its plate is open, got ${JSON.stringify(discFacts.selected)}`,
+      );
+    }
+    if (discFacts.other !== "visible") {
+      throw new Error(
+        `expected an UNselected band tile's disc to stay visible, got ${JSON.stringify(discFacts.other)}`,
+      );
+    }
+    console.log("ok: clicking Recent drops the plate with a pie, a readout and legend rows; the selected tile's disc hides, its neighbour's stays visible");
 
     // ── Step 3: click the HTML legend row — the layer list narrows, newest first ──
     const clickedHtml = await evalIn(

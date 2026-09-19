@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { iosPies, pieRows, receivedPie, sharedPie } from "./ios-pies";
-import type { BeamReceivedEntry, SharedEntry } from "../ipc";
+import {
+  iosPies,
+  pieRows,
+  receivedPie,
+  sharedPie,
+  sharedSourcesOf,
+  withPeerEntries,
+  withoutPeer,
+} from "./ios-pies";
+import type { BeamReceivedEntry, RemotePeer, SharedEntry } from "../ipc";
 import type { DerivedPie } from "./derived-pies";
-import { basename } from "../utils/path";
 
 describe("receivedPie", () => {
   it("converts received_at seconds to ms", () => {
@@ -130,9 +137,9 @@ describe("pieRows", () => {
       id: "builtin:received",
       name: "Received",
       files: [
-        { path: "/a", name: basename("/a"), kind: "html", mtime: 10 },
-        { path: "/b", name: basename("/b"), kind: "html", mtime: 30 },
-        { path: "/c", name: basename("/c"), kind: "html", mtime: 20 },
+        { path: "/a", name: "a", kind: "html", mtime: 10 },
+        { path: "/b", name: "b", kind: "html", mtime: 30 },
+        { path: "/c", name: "c", kind: "html", mtime: 20 },
       ],
     };
     expect(pieRows(pie).map((f) => f.path)).toEqual(["/b", "/c", "/a"]);
@@ -143,9 +150,9 @@ describe("pieRows", () => {
       id: "builtin:received",
       name: "Received",
       files: [
-        { path: "/first", name: basename("/first"), kind: "html", mtime: 10 },
-        { path: "/second", name: basename("/second"), kind: "html", mtime: 10 },
-        { path: "/third", name: basename("/third"), kind: "html", mtime: 10 },
+        { path: "/first", name: "first", kind: "html", mtime: 10 },
+        { path: "/second", name: "second", kind: "html", mtime: 10 },
+        { path: "/third", name: "third", kind: "html", mtime: 10 },
       ],
     };
     expect(pieRows(pie).map((f) => f.path)).toEqual(["/first", "/second", "/third"]);
@@ -153,11 +160,90 @@ describe("pieRows", () => {
 
   it("does not mutate pie.files", () => {
     const files = [
-      { path: "/a", name: basename("/a"), kind: "html" as const, mtime: 10 },
-      { path: "/b", name: basename("/b"), kind: "html" as const, mtime: 30 },
+      { path: "/a", name: "a", kind: "html" as const, mtime: 10 },
+      { path: "/b", name: "b", kind: "html" as const, mtime: 30 },
     ];
     const pie: DerivedPie = { id: "builtin:received", name: "Received", files };
     pieRows(pie);
     expect(files.map((f) => f.path)).toEqual(["/a", "/b"]);
+  });
+  it("puts a `missing` row last, whatever its mtime", () => {
+    // `byRow` sorts every row that no longer resolves to the bottom, so the
+    // newest-first rule never floats a dead member above a live file.
+    const pie: DerivedPie = {
+      id: "builtin:received",
+      name: "Received",
+      files: [
+        { path: "/old", name: "old", kind: "html", mtime: 10 },
+        { path: "/dead", name: "dead", kind: "html", mtime: 99, missing: true },
+        { path: "/new", name: "new", kind: "html", mtime: 30 },
+      ],
+    };
+    expect(pieRows(pie).map((f) => f.path)).toEqual(["/new", "/old", "/dead"]);
+  });
+});
+
+describe("withPeerEntries / withoutPeer", () => {
+  const a: SharedEntry[] = [{ path: "/a", name: "a.md", shared_at: 1 }];
+  const b: SharedEntry[] = [{ path: "/b", name: "b.md", shared_at: 2 }];
+
+  it("writing peer B leaves A's array identical by reference", () => {
+    const prev = { "peer-a": a };
+    const next = withPeerEntries(prev, "peer-b", b);
+    expect(next["peer-a"]).toBe(a);
+    expect(next["peer-b"]).toBe(b);
+  });
+
+  it("a second fetch for A replaces its list, never appends to it", () => {
+    const again: SharedEntry[] = [{ path: "/a2", name: "a2.md", shared_at: 3 }];
+    const next = withPeerEntries({ "peer-a": a }, "peer-a", again);
+    expect(next["peer-a"]).toEqual(again);
+    expect(Object.keys(next)).toEqual(["peer-a"]);
+  });
+
+  it("withoutPeer drops only that peer", () => {
+    const next = withoutPeer({ "peer-a": a, "peer-b": b }, "peer-a");
+    expect(Object.keys(next)).toEqual(["peer-b"]);
+    expect(next["peer-b"]).toBe(b);
+  });
+
+  it("withoutPeer on an absent peer returns the SAME object — no re-render", () => {
+    const prev = { "peer-a": a };
+    expect(withoutPeer(prev, "peer-z")).toBe(prev);
+  });
+});
+
+describe("sharedSourcesOf", () => {
+  const peer = (node_id: string, device: string): RemotePeer => ({
+    node_id,
+    device,
+    paired_at: 0,
+    last_seen: 0,
+  });
+  const entries: SharedEntry[] = [{ path: "/a", name: "a.md", shared_at: 1 }];
+
+  it("drops a peer that is no longer in the paired list", () => {
+    // Real for the render between a device leaving `peers` and its fetch
+    // slot being cleaned up — a pie titled with a raw node id names nothing.
+    const sources = sharedSourcesOf({ "peer-a": entries, "peer-gone": entries }, [
+      peer("peer-a", "Alvaro's Mac"),
+    ]);
+    expect(sources.map((s) => s.peer)).toEqual(["peer-a"]);
+    expect(sources[0].device).toBe("Alvaro's Mac");
+  });
+
+  it("resolves each peer's own label, and iosPies orders the band by it", () => {
+    const sources = sharedSourcesOf({ "peer-z": entries, "peer-a": entries }, [
+      peer("peer-z", "Zed's Mac"),
+      peer("peer-a", "Alvaro's Mac"),
+    ]);
+    expect(iosPies([], sources).map((p) => p.name)).toEqual([
+      "Shared from Alvaro's Mac",
+      "Shared from Zed's Mac",
+    ]);
+  });
+
+  it("is empty when nothing has been fetched", () => {
+    expect(sharedSourcesOf({}, [peer("peer-a", "Mac")])).toEqual([]);
   });
 });

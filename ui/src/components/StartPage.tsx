@@ -23,6 +23,8 @@ export interface StartPageProps {
    *  component only passes them on. */
   onOpenPie?: (id: string) => void;
   openPieId?: string | null;
+  /** M6, iOS variant only: one line explaining a sheet that closed itself. */
+  notice?: string | null;
 }
 
 
@@ -73,6 +75,7 @@ export default function StartPage({
   onOpenSettings,
   onOpenPie,
   openPieId,
+  notice,
 }: StartPageProps): React.ReactElement {
   const { isIos } = usePlatform();
   const { recents, refresh } = useRecentsContext();
@@ -92,6 +95,7 @@ export default function StartPage({
         onOpenSettings={onOpenSettings}
         onOpenPie={onOpenPie}
         openPieId={openPieId}
+        notice={notice}
       />
     );
   }

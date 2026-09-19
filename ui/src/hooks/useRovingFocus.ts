@@ -19,6 +19,36 @@ import * as React from "react";
 
 export type RovingOrientation = "horizontal" | "vertical";
 
+/** The inclusive index span the roving slot may occupy. A RANGE rather than
+ *  a bare count because the two richer surfaces this hook is meant to grow
+ *  into — `Sky.tsx` and `PiePlate.tsx` — carry a TIN slot that sits outside
+ *  the pie list: it is reachable by the same arrows, at an index below 0
+ *  (`{ min: -1, max: count - 1 }`), so a count alone cannot describe where
+ *  focus is allowed to land. `rangeOfCount` below is the plain
+ *  `0..count-1` case the two current callers want. */
+export interface RovingRange {
+  /** Lowest index focus may hold, inclusive. */
+  min: number;
+  /** Highest index focus may hold, inclusive. */
+  max: number;
+}
+
+/** The plain list range `0..count-1` — empty for `count <= 0`, which
+ *  `rovingTarget` answers `null` for. */
+export function rangeOfCount(count: number): RovingRange {
+  return { min: 0, max: count - 1 };
+}
+
+/** The focused index a list of `count` items may actually render, given a
+ *  possibly stale stored index. Derived AT RENDER rather than repaired by an
+ *  effect: an effect runs after the paint, so for one frame after a list
+ *  shrank no item carried `tabIndex={0}` and the whole list dropped out of
+ *  the tab order. An empty list clamps to 0, which addresses no item — there
+ *  is nothing to put in the tab order anyway. */
+export function clampFocus(index: number, count: number): number {
+  return Math.max(0, Math.min(index, count - 1));
+}
+
 /**
  * The whole key-to-index decision, pure: the index the focus should move
  * to, or `null` for a key this pattern does not claim (so the caller leaves
@@ -36,22 +66,23 @@ export type RovingOrientation = "horizontal" | "vertical";
 export function rovingTarget(
   key: string,
   focusedIndex: number,
-  count: number,
+  range: RovingRange,
   orientation: RovingOrientation,
 ): number | null {
-  if (count <= 0) return null;
+  const { min, max } = range;
+  if (max < min) return null;
   const prev = orientation === "horizontal" ? "ArrowLeft" : "ArrowUp";
   const next = orientation === "horizontal" ? "ArrowRight" : "ArrowDown";
-  const clamp = (i: number): number => Math.max(0, Math.min(count - 1, i));
+  const clamp = (i: number): number => Math.max(min, Math.min(max, i));
   switch (key) {
     case next:
       return clamp(focusedIndex + 1);
     case prev:
       return clamp(focusedIndex - 1);
     case "Home":
-      return 0;
+      return min;
     case "End":
-      return count - 1;
+      return max;
     default:
       return null;
   }
@@ -81,7 +112,12 @@ export interface UseRovingFocusOptions {
 }
 
 export function useRovingFocus({ count, orientation, onEscape }: UseRovingFocusOptions): RovingFocus {
-  const [focusedIndex, setFocusedIndex] = React.useState(0);
+  // The RAW state, which may name an index the list no longer has (a beam
+  // expired, a peer went offline). What the caller reads is `clampFocus` of
+  // it, computed below at render — never a repaired copy written back by an
+  // effect. See `clampFocus`'s own comment for why.
+  const [rawFocusedIndex, setFocusedIndex] = React.useState(0);
+  const focusedIndex = clampFocus(rawFocusedIndex, count);
   const itemsRef = React.useRef<Array<HTMLElement | null>>([]);
 
   // One callback ref per index, created once and reused. A `(i) => (el) =>
@@ -100,20 +136,13 @@ export function useRovingFocus({ count, orientation, onEscape }: UseRovingFocusO
     return setter;
   }, []);
 
-  // The list shrank under the focused index (a beam expired, a peer went
-  // offline) — without this, `tabIndex={0}` lands on nothing and the list
-  // drops out of the tab order entirely.
-  React.useEffect(() => {
-    setFocusedIndex((i) => Math.min(i, Math.max(0, count - 1)));
-  }, [count]);
-
   const onKeyDown = React.useCallback(
     (e: React.KeyboardEvent): void => {
       if (e.key === "Escape") {
         onEscape?.();
         return;
       }
-      const target = rovingTarget(e.key, focusedIndex, count, orientation);
+      const target = rovingTarget(e.key, focusedIndex, rangeOfCount(count), orientation);
       if (target === null) return;
       e.preventDefault();
       setFocusedIndex(target);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   groupByWedge,
+  isUserPieId,
   pinnedPie,
   recentPie,
   shareLabel,
@@ -17,7 +18,7 @@ describe("pinnedPie", () => {
     const bookmarks: BookmarkEntry[] = [{ path: "/w/a.html", bookmarked_at: 1_700_000_000 }];
     const pie = pinnedPie(bookmarks);
     expect(pie.id).toBe("builtin:pinned");
-    expect(pie.files).toEqual([{ path: "/w/a.html", name: basename("/w/a.html"), kind: "html", mtime: 1_700_000_000_000 }]);
+    expect(pie.files).toEqual([{ path: "/w/a.html", name: "a.html", kind: "html", mtime: 1_700_000_000_000 }]);
   });
 
   it("skips a skypie-remote:// bookmark — the star bookmarks whatever the tab holds", () => {
@@ -34,7 +35,7 @@ describe("recentPie", () => {
     const recents: RecentEntry[] = [{ path: "/w/a.md", opened_at: 1_700_000_100 }];
     const pie = recentPie(recents);
     expect(pie.id).toBe("builtin:recent");
-    expect(pie.files).toEqual([{ path: "/w/a.md", name: basename("/w/a.md"), kind: "md", mtime: 1_700_000_100_000 }]);
+    expect(pie.files).toEqual([{ path: "/w/a.md", name: "a.md", kind: "md", mtime: 1_700_000_100_000 }]);
   });
 
   it("skips a skypie-remote:// address — useOpenFile pushes those to recents too", () => {
@@ -162,5 +163,20 @@ describe("shareLabel", () => {
 
   it("reads 'No files' for an empty pie", () => {
     expect(shareLabel([])).toBe("No files");
+  });
+});
+
+describe("isUserPieId", () => {
+  it("is false for every built-in id, including M6's phone-band family", () => {
+    // A literal two-id test used to answer TRUE for the last two, which
+    // would let a shared band accept drops on Received.
+    expect(isUserPieId("builtin:pinned")).toBe(false);
+    expect(isUserPieId("builtin:recent")).toBe(false);
+    expect(isUserPieId("builtin:received")).toBe(false);
+    expect(isUserPieId("builtin:shared:k51qzi5uqu5d")).toBe(false);
+  });
+
+  it("is true for a stored pie's uuid", () => {
+    expect(isUserPieId("0192f3c4-5d6e-7f80-9123-456789abcdef")).toBe(true);
   });
 });

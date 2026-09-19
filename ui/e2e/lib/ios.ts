@@ -111,8 +111,10 @@ export const SKIP_BUILD = process.env.SKYPIE_E2E_SKIP_BUILD === "1";
 
 export interface LaunchIosOptions {
   port: number;
-  /** Skip the build (core sync + `build-ios-sim.sh`) — the caller already
-   *  did it, or `SKIP_BUILD` above says so. Default: build. */
+  /** Skip the build (core sync + `build-ios-sim.sh`). DEFAULTS to
+   *  `SKIP_BUILD` above, so a scenario that never mentions the variable
+   *  still honours it — passing it per scenario let a new one ignore the
+   *  documented switch silently. Pass `false` to force a build. */
   skipBuild?: boolean;
   /** Extra env vars for the launched app, e.g. `{ SKYPIE_STATE_DIR: dir }`
    *  to point a real simulator run at a seeded scratch state dir —
@@ -132,12 +134,28 @@ export interface LaunchedIosApp extends AppHandle {
 }
 
 export async function launchIos(opts: LaunchIosOptions): Promise<LaunchedIosApp> {
-  if (!opts.skipBuild) {
+  const skipBuild = opts.skipBuild ?? SKIP_BUILD;
+  if (!skipBuild) {
     syncIosCoreToThisCommit();
     run(path.join(IOS_SHELL_DIR, "scripts", "build-ios-sim.sh"), [], IOS_SHELL_DIR);
   }
   if (!fs.existsSync(IOS_APP_PATH)) {
-    throw new Error(`built, but the bundle is not at ${IOS_APP_PATH}`);
+    throw new Error(
+      skipBuild
+        ? `SKYPIE_E2E_SKIP_BUILD is set, but there is no bundle to reuse at ${IOS_APP_PATH}. ` +
+          "Run once without it."
+        : `built, but the bundle is not at ${IOS_APP_PATH}`,
+    );
+  }
+  if (skipBuild) {
+    // A skipped build leaves no other trace in the log, so a run that
+    // silently tested a week-old bundle read exactly like a real one. The
+    // mtime is the one fact that says WHICH code is under test.
+    const built = fs.statSync(IOS_APP_PATH).mtime.toISOString();
+    console.warn(
+      `skypie: e2e: SKIPPING the iOS build — reusing the bundle built at ${built}. ` +
+        "This run does NOT test HEAD.",
+    );
   }
 
   // One device for every step below. `booted` is not a device: with two
@@ -180,12 +198,37 @@ export async function launchIos(opts: LaunchIosOptions): Promise<LaunchedIosApp>
         const detail = e instanceof Error && "stderr" in e ? String(e.stderr) : String(e);
         if (!detail.includes("found nothing to terminate")) {
           console.warn(`simctl terminate failed: ${detail.trim()}`);
+          // A terminate that failed may have left the app alive and still
+          // listening. The next scenario would then connect to the OLD
+          // process on this fixed port and test a bundle nobody built —
+          // passing for the wrong reason. Better to stop here.
+          if (await portIsBound(opts.port)) {
+            throw new Error(
+              `simctl terminate failed and :${opts.port} is still bound — the previous app is ` +
+                "still running. Kill it before the next run.",
+            );
+          }
         }
       }
     },
     screenshot,
   };
   return app;
+}
+
+/** Is anything still listening on the harness port? One short connect
+ *  attempt — the port is loopback and the answer is immediate either way. */
+function portIsBound(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: "127.0.0.1", port });
+    const done = (bound: boolean): void => {
+      socket.destroy();
+      resolve(bound);
+    };
+    socket.once("connect", () => done(true));
+    socket.once("error", () => done(false));
+    socket.setTimeout(1_000, () => done(false));
+  });
 }
 
 async function ensureBooted(udid: string): Promise<void> {

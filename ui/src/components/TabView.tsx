@@ -28,6 +28,9 @@ export interface TabViewProps {
    *  `PhoneShell.tsx`, which is where the open sheet is actually decided. */
   onOpenPie?: (id: string) => void;
   openPieId?: string | null;
+  /** M6, forwarded the same way: one line the phone shows when a sheet
+   *  dismissed itself (today, a pie sheet whose pie left the band). */
+  notice?: string | null;
 }
 
 function isErrorPayload(p: unknown): p is { error: { kind: string; path: string; reason: string } } {
@@ -42,6 +45,7 @@ export default function TabView({
   onOpenSettings,
   onOpenPie,
   openPieId,
+  notice,
 }: TabViewProps): React.ReactElement {
   const tab = useActiveTab();
   const dispatch = useTabsDispatch();
@@ -59,6 +63,7 @@ export default function TabView({
         onOpenSettings={onOpenSettings}
         onOpenPie={onOpenPie}
         openPieId={openPieId}
+        notice={notice}
       />
     );
   }

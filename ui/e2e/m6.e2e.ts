@@ -42,7 +42,7 @@ import {
   text,
   waitFor,
 } from "./lib/app";
-import { SKIP_BUILD, launchIos } from "./lib/ios";
+import { launchIos } from "./lib/ios";
 
 // Same fixed port `ios-smoke.ts` uses — scenarios run sequentially, never
 // concurrently, so one fixed port stays easy to spot stuck (`lsof -i`)
@@ -76,11 +76,9 @@ async function main(): Promise<void> {
   }
   const newestBasename = "pricing.html";
 
-  const app = await launchIos({
-    port: E2E_PORT,
-    skipBuild: SKIP_BUILD,
-    env: { SKYPIE_STATE_DIR: stateDir },
-  });
+  // `skipBuild` is not passed: `launchIos` defaults it to
+  // `SKYPIE_E2E_SKIP_BUILD` itself, so no scenario can forget the variable.
+  const app = await launchIos({ port: E2E_PORT, env: { SKYPIE_STATE_DIR: stateDir } });
   try {
     // ── Checkpoint 1: real phone chrome, no desktop chrome — the UA/compiled
     //    platform_info alone, no e2e override needed ────────────────────
@@ -291,29 +289,76 @@ async function main(): Promise<void> {
     await click(app, '.phone-sheet-action[aria-label="Close"]');
     await waitFor(app, `document.querySelector('[role="dialog"][aria-label="Comments"]') === null`, 10_000);
 
-    console.log("PASS");
+    // ── Checkpoint 13: the pie disappears while its sheet is open ──────
+    //    Every seeded file is removed while the sheet is up, so the Received
+    //    pie has no members and `iosPies` drops it from the band entirely.
+    //    Nothing may survive that: no band, no sheet, and above all no
+    //    scrim left covering the screen with nothing under it.
+    //
+    //    The Library sheet is the refresh: `ReceivedDrawer` calls
+    //    `refreshReceived` when it mounts, and it is the ONLY in-app trigger
+    //    a harness can reach on the phone — the other one is the iOS
+    //    foreground hop, and `location.reload()` is a no-op inside this
+    //    WKWebView. Opening it also closes the pie sheet, by the one-sheet
+    //    rule, which is why this asserts the OUTCOME (nothing orphaned)
+    //    rather than which of the two closes fired first.
+    await clickButtonByAriaLabelPrefix(app, "Open tabs");
+    await waitFor(app, `document.querySelector(".phone-tab-list") !== null`, 10_000);
+    await activateTabByLabel(app, "New tab");
+    await waitFor(app, `document.querySelector('[data-testid="ios-sky"]') !== null`, 10_000);
+    await click(app, '[data-pie-id="builtin:received"]');
+    await waitFor(app, `document.querySelector('[data-testid="pie-sheet"]') !== null`, 10_000);
+
+    await fs.promises.rm(receivedDay, { recursive: true, force: true });
+    await clickButtonByAriaLabelPrefix(app, "Library");
+    await waitFor(
+      app,
+      `document.querySelectorAll('[data-testid="received-group"] li').length === 0`,
+      15_000,
+    );
+    await click(app, '.phone-sheet-action[aria-label="Close"]');
+    await waitFor(app, `document.querySelector('[role="dialog"][aria-label="Library"]') === null`, 10_000);
+
+    const afterGone = (await evalIn(
+      app,
+      `(function(){
+        return {
+          band: document.querySelector('[data-testid="ios-sky"]') !== null,
+          sheet: document.querySelector('[data-testid="pie-sheet"]') !== null,
+          scrim: document.querySelector(".phone-scrim") !== null,
+          startPage: document.querySelector('[data-testid="start-page"]') !== null,
+        };
+      })()`,
+    )) as { band: boolean; sheet: boolean; scrim: boolean; startPage: boolean };
+    if (!afterGone.startPage) throw new Error("expected the start page to still render with no pies");
+    if (afterGone.band) throw new Error("expected no Sky band once every received file is gone");
+    if (afterGone.sheet) throw new Error("expected no pie sheet once its pie left the band");
+    if (afterGone.scrim) throw new Error("expected no .phone-scrim once its pie left the band");
+    console.log("ok: with its pie gone, the band, the sheet and the scrim are all gone");
   } finally {
     await quit(app);
     // `quit()` calls `simctl terminate`, which does not wait for the
-    // state-store's own ~250ms debounced writer to flush — this is a
-    // best-effort check, not a hard gate, so a slow-to-flush write does not
-    // flake the whole scenario.
+    // state-store's own ~250ms debounced writer to flush. A MISSING file is
+    // therefore inconclusive and only logged; a file that DOES carry the key
+    // is the exact regression this check exists for, so it fails the run.
     const statePath = path.join(stateDir, "state.json");
     if (fs.existsSync(statePath)) {
       const raw = fs.readFileSync(statePath, "utf8");
-      if (raw.includes("sky_visible") || raw.includes("panes.sky_visible")) {
-        console.warn(
-          `note: ${statePath} contains a "sky_visible" key — the phone has no toolbar to write ` +
-            "one, so this would mean something on iOS wrote a macOS-only persisted key.",
+      if (raw.includes("sky_visible")) {
+        throw new Error(
+          `${statePath} contains a "sky_visible" key — the phone has no toolbar to write one, ` +
+            "so something on iOS wrote a macOS-only persisted key.",
         );
-      } else {
-        console.log(`ok: ${statePath} carries no "sky_visible" key — the band's presence is derived, never persisted`);
       }
+      console.log(`ok: ${statePath} carries no "sky_visible" key — the band's presence is derived, never persisted`);
     } else {
       console.log(`ok: ${statePath} was never written — the band's presence is derived, never persisted`);
     }
     await fs.promises.rm(stateDir, { recursive: true, force: true });
   }
+  // AFTER the finally, so a `sky_visible` violation thrown in there cannot
+  // print under a PASS that is already on screen.
+  console.log("PASS");
 }
 
 main().catch((err: unknown) => {

@@ -55,7 +55,11 @@ export interface PhoneShellProps {
  *  open, whichever kind it was. The open pie is carried by ID, never as a
  *  snapshotted `DerivedPie`; `PhonePieSheet` looks it up fresh, so a beam
  *  landing while the sheet is open updates its rows with no re-tap. */
-type Sheet = null | "library" | "tabs" | "comments" | { kind: "pie"; id: string };
+/** The three sheets that carry no data of their own. Named ONCE so
+ *  `toggleSheet`'s parameter cannot drift from the union. */
+type SimpleSheet = "library" | "tabs" | "comments";
+
+type Sheet = null | SimpleSheet | { kind: "pie"; id: string };
 
 export default function PhoneShell({
   ipc,
@@ -71,16 +75,39 @@ export default function PhoneShell({
   const entry = currentEntry(active);
   const [sheet, setSheet] = React.useState<Sheet>(null);
 
-  // The band's own selection mark, and the id `PhonePieSheet` resolves.
-  const openPieId = typeof sheet === "object" && sheet !== null ? sheet.id : null;
-  const openPie = React.useCallback((id: string) => setSheet({ kind: "pie", id }), []);
+  // One line the start page shows when a sheet dismissed ITSELF — today
+  // only `PhonePieSheet` closing because its pie left the band.
+  const [notice, setNotice] = React.useState<string | null>(null);
 
-  const closeSheet = React.useCallback(() => setSheet(null), []);
+  // The band's own selection mark, and the id `PhonePieSheet` resolves.
+  // Narrowed on the DISCRIMINANT, not on `typeof`: a second object variant
+  // later (`{ kind: "share"; id }`) would otherwise leak its id in here with
+  // no type error.
+  const openPieId = sheet !== null && typeof sheet === "object" && sheet.kind === "pie" ? sheet.id : null;
+  const openPie = React.useCallback((id: string) => {
+    setNotice(null);
+    setSheet({ kind: "pie", id });
+  }, []);
+
+  const closeSheet = React.useCallback(() => {
+    setSheet(null);
+    setNotice(null);
+  }, []);
+
+  // `PhonePieSheet`'s own close. Separate from `closeSheet` because only
+  // this one may carry a reason: every other caller passes its handler
+  // straight to a DOM/child callback, which would hand an event object in
+  // as the notice.
+  const closePieSheet = React.useCallback((why?: string) => {
+    setSheet(null);
+    setNotice(why ?? null);
+  }, []);
 
   // The three toggle buttons below all want the same "open this, or close it
   // if it's already open" shape. Assigning over `sheet` is what drops a live
   // pie sheet — there is nothing else to reset.
-  const toggleSheet = React.useCallback((kind: "library" | "tabs" | "comments") => {
+  const toggleSheet = React.useCallback((kind: SimpleSheet) => {
+    setNotice(null);
     setSheet((s) => (s === kind ? null : kind));
   }, []);
 
@@ -203,6 +230,7 @@ export default function PhoneShell({
             onOpenSettings={onOpenSettings}
             onOpenPie={openPie}
             openPieId={openPieId}
+            notice={notice}
           />
         </div>
 
@@ -367,7 +395,7 @@ export default function PhoneShell({
             provider's live list on every render, so a beam landing while it
             is open updates its rows without a re-tap — and it renders
             nothing at all once that pie is gone. */}
-        {openPieId !== null ? <PhonePieSheet pieId={openPieId} onClose={closeSheet} /> : null}
+        {openPieId !== null ? <PhonePieSheet pieId={openPieId} onClose={closePieSheet} /> : null}
       </div>
     </IosPiesProvider>
   );

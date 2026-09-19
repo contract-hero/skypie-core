@@ -40,15 +40,20 @@ export interface IosStartPageProps {
   onOpenPie?: (id: string) => void;
   /** M6: the pie whose sheet is open, for the band's own selection mark. */
   openPieId?: string | null;
+  /** M6: one line for a sheet that dismissed ITSELF — a pie sheet whose pie
+   *  left the band while it was open. Without it the sheet simply vanishes
+   *  and the tap that follows shows nothing. */
+  notice?: string | null;
 }
 
 export default function IosStartPage({
   onOpenSettings,
   onOpenPie,
   openPieId = null,
+  notice = null,
 }: IosStartPageProps): React.ReactElement {
   const { peers, presence } = useRemoteState();
-  const { received } = useBeamState();
+  const { received, receivedError } = useBeamState();
   const { openReceived } = useBeamActions();
   const dispatch = useTabsDispatch();
 
@@ -58,15 +63,15 @@ export default function IosStartPage({
   // per-file shape the "Shared with you" section below already rendered
   // before M6, now sourced from that one fetch instead of a second copy of
   // it here.
-  const { pies, sharedEntries } = useIosPies();
+  const { pies, sharedEntries, failedPeers } = useIosPies();
 
-  // M6 review (major): the band declared role="listbox" but implemented
-  // none of the listbox keyboard contract — every tile stayed natively
-  // tabbable and arrow keys did nothing. `useRovingFocus` is the shared
-  // implementation of that contract (see its own file for why Sky.tsx and
-  // PiePlate.tsx keep their richer copies). The iOS carve-out (spec line
-  // 154) drops the tin, the drops, persistence, the census and the
-  // chords — not the listbox pattern itself. There is no Enter branch
+  // The band declares role="listbox", so it owes the listbox keyboard
+  // contract: every tile would otherwise stay natively tabbable with the
+  // arrows doing nothing. `useRovingFocus` is the shared implementation of
+  // that contract (see its own file for why Sky.tsx and PiePlate.tsx keep
+  // their richer copies). The spec's iOS carve-out drops the tin, the
+  // drops, persistence, the census and the chords — not the listbox
+  // pattern itself. There is no Enter branch
   // because none is needed: every tile is a real `<button>`, so a native
   // Enter/Space keypress already fires its own `onClick`.
   const band = useRovingFocus({
@@ -103,6 +108,17 @@ export default function IosStartPage({
   const deviceByPeer = React.useMemo(
     () => new Map(peers.map((p) => [p.node_id, p.device])),
     [peers],
+  );
+
+  // A peer whose shared list could not be fetched has NO pie in the band
+  // and no rows below — identical on screen to a Mac that shared nothing.
+  // Naming the device is the only part of that the user can act on.
+  const failedDevices = React.useMemo(
+    () =>
+      Array.from(failedPeers)
+        .map((peer) => deviceByPeer.get(peer) ?? "a paired Mac")
+        .sort((a, b) => a.localeCompare(b)),
+    [failedPeers, deviceByPeer],
   );
 
   return (
@@ -143,6 +159,23 @@ export default function IosStartPage({
       ) : null}
 
       <div className="start-page-inner">
+        {/* Above the sections, not inside one: each of these explains why a
+            section below is EMPTY or why a sheet went away, so it has to be
+            readable before the reader concludes nothing arrived. */}
+        {notice ? (
+          <p className="beam-error" role="status" data-testid="ios-notice">{notice}</p>
+        ) : null}
+        {receivedError ? (
+          <p className="beam-error" role="alert" data-testid="ios-received-error">
+            {receivedError}
+          </p>
+        ) : null}
+        {failedDevices.length > 0 ? (
+          <p className="beam-error" role="alert" data-testid="ios-shared-error">
+            {`Could not read what ${failedDevices.join(", ")} is sharing.`}
+          </p>
+        ) : null}
+
         <div className="start-brand">
           <span className="start-mark" aria-hidden>V</span>
           <h1 className="start-title">Sky Pie</h1>
@@ -252,7 +285,10 @@ export default function IosStartPage({
               </section>
             ) : null}
 
-            {sharedEntries.length === 0 && received.length === 0 ? (
+            {/* Suppressed while `receivedError` is set: the advice below
+                sends the reader to their Mac, which is the wrong end when
+                the failure is this phone's own listing. */}
+            {sharedEntries.length === 0 && received.length === 0 && !receivedError ? (
               <p className="start-empty">
                 Nothing here yet. On your Mac, choose Share → Copy link for my
                 devices — the file shows up here — or beam a file to this phone.

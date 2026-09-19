@@ -18,12 +18,26 @@ import { isRemoteAddress } from "../utils/remote-address";
 export const BUILTIN_PINNED_ID = "builtin:pinned";
 export const BUILTIN_RECENT_ID = "builtin:recent";
 
-/** True for a user pie's id — the built-in pies are exactly the two fixed
- *  ids above, and no user pie can ever carry one (`uuid::Uuid::now_v7()`
- *  never produces them). Lives HERE, beside the two ids it tests against.
- *  `pies.ts` re-exports it for its existing callers. */
+/** The phone band's own Received pie id (M6, `ios-pies.ts`). */
+export const BUILTIN_RECEIVED_ID = "builtin:received";
+
+/** One peer's "Shared from &lt;device&gt;" pie id (M6, `ios-pies.ts`).
+ *  Exported HERE, beside the fixed ids above, so the id FORMAT has exactly
+ *  one author: `ios-pies.ts` calls this, and no second module spells the
+ *  `builtin:shared:` prefix out. */
+export function sharedPieId(peer: string): string {
+  return `builtin:shared:${peer}`;
+}
+
+/** True for a user pie's id. Tests the `builtin:` PREFIX rather than a list
+ *  of literals: the built-in family grew in M6 (Received, plus one Shared
+ *  pie per peer), and a two-literal test classified every new member as a
+ *  USER pie — which would let a shared `SkyBand` accept drops on Received
+ *  and ask for a census over it. No user pie can carry the prefix: a user
+ *  pie's id is a `uuid::Uuid::now_v7()`. Lives HERE, beside the ids it
+ *  tests against. `pies.ts` re-exports it for its existing callers. */
 export function isUserPieId(id: string): boolean {
-  return id !== BUILTIN_PINNED_ID && id !== BUILTIN_RECENT_ID;
+  return !id.startsWith("builtin:");
 }
 
 export interface DerivedPieFile {
